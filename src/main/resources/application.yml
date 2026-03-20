@@ -1,0 +1,24 @@
+# JobClaw Application Configuration
+spring:
+  application:
+    name: JobClaw
+
+# Server Configuration
+server:
+  port: 18791
+
+# JobClaw Configuration
+jobclaw:
+  config-path: ~/.jobclaw/config.json
+  workspace-path: ~/.jobclaw/workspace
+
+# Logging
+logging:
+  level:
+    root: INFO
+    io.jobclaw: DEBUG
+  pattern:
+    console: '%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n'
+    file: '%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n'
+  file:
+    name: logs/jobclaw.log
