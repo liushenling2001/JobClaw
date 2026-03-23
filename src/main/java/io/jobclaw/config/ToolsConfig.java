@@ -38,15 +38,19 @@ public class ToolsConfig {
 
     public static class WebSearchConfig {
         private String apiKey;
+        private String secretKey;
         private int maxResults;
 
         public WebSearchConfig() {
             this.apiKey = "";
+            this.secretKey = "";
             this.maxResults = 5;
         }
 
         public String getApiKey() { return apiKey; }
         public void setApiKey(String apiKey) { this.apiKey = apiKey; }
+        public String getSecretKey() { return secretKey; }
+        public void setSecretKey(String secretKey) { this.secretKey = secretKey; }
         public int getMaxResults() { return maxResults; }
         public void setMaxResults(int maxResults) { this.maxResults = maxResults; }
     }
