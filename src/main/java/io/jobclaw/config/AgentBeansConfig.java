@@ -4,6 +4,7 @@ import io.jobclaw.agent.AgentLoop;
 import io.jobclaw.bus.MessageBus;
 import io.jobclaw.channels.ChannelManager;
 import io.jobclaw.cron.CronService;
+import io.jobclaw.mcp.MCPService;
 import io.jobclaw.providers.HTTPProvider;
 import io.jobclaw.providers.LLMProvider;
 import io.jobclaw.session.SessionManager;
@@ -103,6 +104,12 @@ public class AgentBeansConfig {
 
     @Bean
     @ConditionalOnMissingBean
+    public MCPService mcpService() {
+        return new MCPService();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
     public AgentLoop agentLoop(Config config, SessionManager sessionManager, FileTools fileTools) {
         return new AgentLoop(config, sessionManager, fileTools);
     }
@@ -121,6 +128,11 @@ public class AgentBeansConfig {
     @Bean
     public TokenUsageTool tokenUsageTool(TokenUsageService tokenUsageService) {
         return new TokenUsageTool(tokenUsageService);
+    }
+
+    @Bean
+    public MCPTool mcpTool(MCPService mcpService) {
+        return new MCPTool(mcpService);
     }
 
     /**
