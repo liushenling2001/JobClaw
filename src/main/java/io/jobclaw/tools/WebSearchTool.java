@@ -1,5 +1,7 @@
 package io.jobclaw.tools;
 
+import io.jobclaw.config.Config;
+import io.jobclaw.config.ToolsConfig;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
@@ -13,6 +15,10 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * Web search tool using Brave Search API
+ * 
+ * API Key 配置优先级：
+ * 1. config.json 中的 tools.web_search.api_key
+ * 2. 环境变量 BRAVE_API_KEY
  */
 @Component
 public class WebSearchTool {
@@ -21,14 +27,33 @@ public class WebSearchTool {
     private final int maxResults;
     private final OkHttpClient httpClient;
 
-    public WebSearchTool() {
-        // Try to get API key from environment
-        this.apiKey = System.getenv("BRAVE_API_KEY");
+    public WebSearchTool(Config config) {
+        // Try to get API key from config first, then environment
+        String configApiKey = getApiKeyFromConfig(config);
+        this.apiKey = configApiKey != null ? configApiKey : System.getenv("BRAVE_API_KEY");
         this.maxResults = 5;
         this.httpClient = new OkHttpClient.Builder()
                 .connectTimeout(10, TimeUnit.SECONDS)
                 .readTimeout(10, TimeUnit.SECONDS)
                 .build();
+    }
+
+    /**
+     * Extract API key from config
+     */
+    private String getApiKeyFromConfig(Config config) {
+        try {
+            ToolsConfig toolsConfig = config.getTools();
+            if (toolsConfig != null && toolsConfig.getWeb() != null) {
+                String apiKey = toolsConfig.getWeb().getSearch().getApiKey();
+                if (apiKey != null && !apiKey.isEmpty()) {
+                    return apiKey;
+                }
+            }
+        } catch (Exception e) {
+            // Ignore config errors, will fallback to environment
+        }
+        return null;
     }
 
     @Tool(name = "web_search", description = "Search the web for current information using Brave Search API")
