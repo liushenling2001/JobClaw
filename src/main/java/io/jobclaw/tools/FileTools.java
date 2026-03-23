@@ -108,57 +108,6 @@ public class FileTools {
         }
     }
 
-    /**
-     * Read .docx file (Office 2007+)
-     */
-    private String readDocx(String path) throws Exception {
-        StringBuilder content = new StringBuilder();
-        try (FileInputStream fis = new FileInputStream(path);
-             XWPFDocument document = new XWPFDocument(fis)) {
-            
-            // Extract paragraphs
-            List<XWPFParagraph> paragraphs = document.getParagraphs();
-            for (XWPFParagraph paragraph : paragraphs) {
-                String text = paragraph.getText();
-                if (text != null && !text.isEmpty()) {
-                    content.append(text).append("\n");
-                }
-            }
-
-            // Extract tables
-            document.getTables().forEach(table -> {
-                table.getRows().forEach(row -> {
-                    row.getTableCells().forEach(cell -> {
-                        content.append(cell.getText()).append("\t");
-                    });
-                    content.append("\n");
-                });
-                content.append("\n");
-            });
-        }
-        return content.toString().trim();
-    }
-
-    /**
-     * Read .doc file (Office 97-2003)
-     */
-    private String readDoc(String path) throws Exception {
-        StringBuilder content = new StringBuilder();
-        try (FileInputStream fis = new FileInputStream(path);
-             HWPFDocument document = new HWPFDocument(fis);
-             WordExtractor extractor = new WordExtractor(document)) {
-            
-            // Extract paragraphs
-            String[] paragraphs = extractor.getParagraphText();
-            for (String paragraph : paragraphs) {
-                if (paragraph != null && !paragraph.trim().isEmpty()) {
-                    content.append(paragraph.trim()).append("\n");
-                }
-            }
-        }
-        return content.toString().trim();
-    }
-
     @Tool(name = "read_excel", description = "Read the contents of an Excel workbook (.xls or .xlsx)")
     public String readExcel(
         @ToolParam(description = "The path of the Excel workbook (.xls or .xlsx)") String path,
@@ -182,6 +131,124 @@ public class FileTools {
         }
     }
 
+    @Tool(name = "edit_file", description = "Edit a file by replacing exact text (old_text must match exactly)")
+    public String editFile(
+        @ToolParam(description = "The path of the file to edit") String path,
+        @ToolParam(description = "The exact text to find and replace (must match exactly)") String oldText,
+        @ToolParam(description = "The new text to replace the old text with") String newText
+    ) {
+        if (path == null || path.isEmpty()) {
+            return "Error: path is required";
+        }
+        if (oldText == null) {
+            return "Error: old_text is required";
+        }
+        if (newText == null) {
+            return "Error: new_text is required";
+        }
+
+        try {
+            java.nio.file.Path resolvedPath = Paths.get(path).normalize();
+            
+            if (!Files.exists(resolvedPath)) {
+                return "Error: file not found: " + path;
+            }
+
+            String content = Files.readString(resolvedPath);
+
+            if (!content.contains(oldText)) {
+                return "Error: old_text not found in file. Make sure it matches exactly.";
+            }
+
+            int count = countOccurrences(content, oldText);
+            if (count > 1) {
+                return "Error: old_text appears " + count + " times. Provide more context.";
+            }
+
+            String newContent = content.replace(oldText, newText);
+            Files.writeString(resolvedPath, newContent);
+            return "Successfully edited " + path;
+        } catch (Exception e) {
+            return "Error editing file: " + e.getMessage();
+        }
+    }
+
+    @Tool(name = "append_file", description = "Append content to end of file (creates if not exists)")
+    public String appendFile(
+        @ToolParam(description = "The path of the file to append to") String path,
+        @ToolParam(description = "The content to append") String content
+    ) {
+        if (path == null || path.isEmpty()) {
+            return "Error: path is required";
+        }
+        if (content == null) {
+            return "Error: content is required";
+        }
+
+        try {
+            java.nio.file.Path resolvedPath = Paths.get(path).normalize();
+            java.nio.file.Path parentDir = resolvedPath.getParent();
+            
+            if (parentDir != null && !Files.exists(parentDir)) {
+                Files.createDirectories(parentDir);
+            }
+
+            Files.writeString(resolvedPath, content, 
+                java.nio.file.StandardOpenOption.CREATE, 
+                java.nio.file.StandardOpenOption.APPEND);
+            return "Successfully appended to " + path;
+        } catch (Exception e) {
+            return "Error appending to file: " + e.getMessage();
+        }
+    }
+
+    /**
+     * Read .docx file (Office 2007+)
+     */
+    private String readDocx(String path) throws Exception {
+        StringBuilder content = new StringBuilder();
+        try (FileInputStream fis = new FileInputStream(path);
+             XWPFDocument document = new XWPFDocument(fis)) {
+            
+            for (XWPFParagraph paragraph : document.getParagraphs()) {
+                String text = paragraph.getText();
+                if (text != null && !text.isEmpty()) {
+                    content.append(text).append("\n");
+                }
+            }
+
+            document.getTables().forEach(table -> {
+                table.getRows().forEach(row -> {
+                    row.getTableCells().forEach(cell -> {
+                        content.append(cell.getText()).append("\t");
+                    });
+                    content.append("\n");
+                });
+                content.append("\n");
+            });
+        }
+        return content.toString().trim();
+    }
+
+    /**
+     * Read .doc file (Office 97-2003)
+     */
+    private String readDoc(String path) throws Exception {
+        StringBuilder content = new StringBuilder();
+        try (FileInputStream fis = new FileInputStream(path);
+             HWPFDocument document = new HWPFDocument(fis);
+             WordExtractor extractor = new WordExtractor(document)) {
+            
+            String[] paragraphs = extractor.getParagraphText();
+            for (String paragraph : paragraphs) {
+                if (paragraph != null && !paragraph.trim().isEmpty()) {
+                    content.append(paragraph.trim()).append("\n");
+                }
+            }
+        }
+        return content.toString().trim();
+    }
+
     /**
      * Read .xlsx file (Office 2007+)
      */
@@ -193,13 +260,11 @@ public class FileTools {
             XSSFSheet sheetData;
             int sheetIndex = 0;
             
-            // Parse sheet parameter
             if (sheetParam != null && !sheetParam.isEmpty()) {
                 try {
                     sheetIndex = Integer.parseInt(sheetParam);
                     sheetData = workbook.getSheetAt(sheetIndex);
                 } catch (NumberFormatException e) {
-                    // Try to get by name
                     sheetData = workbook.getSheet(sheetParam);
                     if (sheetData == null) {
                         return "Error: sheet '" + sheetParam + "' not found";
@@ -215,11 +280,9 @@ public class FileTools {
 
             content.append("Sheet: ").append(sheetData.getSheetName()).append("\n\n");
 
-            // Iterate through rows
             sheetData.forEach(row -> {
                 row.forEach(cell -> {
-                    String cellValue = getCellValueAsString(cell);
-                    content.append(cellValue).append("\t");
+                    content.append(getCellValueAsString(cell)).append("\t");
                 });
                 content.append("\n");
             });
@@ -238,13 +301,11 @@ public class FileTools {
             Sheet sheetData;
             int sheetIndex = 0;
             
-            // Parse sheet parameter
             if (sheetParam != null && !sheetParam.isEmpty()) {
                 try {
                     sheetIndex = Integer.parseInt(sheetParam);
                     sheetData = workbook.getSheetAt(sheetIndex);
                 } catch (NumberFormatException e) {
-                    // Try to get by name
                     sheetData = workbook.getSheet(sheetParam);
                     if (sheetData == null) {
                         return "Error: sheet '" + sheetParam + "' not found";
@@ -260,11 +321,9 @@ public class FileTools {
 
             content.append("Sheet: ").append(sheetData.getSheetName()).append("\n\n");
 
-            // Iterate through rows
             for (Row row : sheetData) {
                 row.forEach(cell -> {
-                    String cellValue = getCellValueAsString(cell);
-                    content.append(cellValue).append("\t");
+                    content.append(getCellValueAsString(cell)).append("\t");
                 });
                 content.append("\n");
             }
@@ -298,5 +357,18 @@ public class FileTools {
             case FORMULA -> cell.getCellFormula();
             default -> "";
         };
+    }
+
+    /**
+     * Count occurrences of a substring in text
+     */
+    private int countOccurrences(String text, String substring) {
+        int count = 0;
+        int index = 0;
+        while ((index = text.indexOf(substring, index)) != -1) {
+            count++;
+            index += substring.length();
+        }
+        return count;
     }
 }
