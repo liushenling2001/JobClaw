@@ -82,6 +82,17 @@ public class AgentOrchestrator {
     public String process(String sessionKey, String userContent) {
         logger.info("Orchestrator processing request for session {}", sessionKey);
 
+        // 🔒 递归防护：子 Agent 不再自动触发多 Agent 协作
+        // 如果 sessionKey 包含 "spawn-" 或 "subagent-" 前缀，说明是子 Agent 调用
+        // 强制使用单 Agent 模式，避免无限递归
+        boolean isSubAgent = sessionKey.startsWith("spawn-") || sessionKey.startsWith("subagent-");
+        
+        if (isSubAgent) {
+            logger.debug("Sub-agent detected, forcing single-agent mode to prevent recursion");
+            // 子 Agent 默认使用 ASSISTANT 角色
+            return handleSingleAgentDefault(sessionKey, userContent);
+        }
+
         // 1. 判断是否需要创建团队
         if (isTeamModeRequest(userContent)) {
             logger.info("Team mode detected");
