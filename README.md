@@ -240,6 +240,23 @@ Orchestrator 分析（自动识别多 Agent 需求）
 |------|------|------|
 | `spawn` | 生成子 Agent | `task`, `label`, `async`, `role` |
 
+#### MCP 工具 (1 个)
+
+| 工具 | 功能 | 参数 |
+|------|------|------|
+| `mcp` | Model Context Protocol | `action`, `server_id`, `url`, `resource_uri`, `tool_name`, `arguments` |
+
+**MCP 支持的操作：**
+- `connect` - 连接 MCP 服务器
+- `disconnect` - 断开连接
+- `list_servers` - 列出已连接的服务器
+- `list_resources` - 列出资源
+- `list_tools` - 列出工具
+- `list_prompts` - 列出提示词
+- `read_resource` - 读取资源
+- `call_tool` - 调用工具
+- `get_prompt` - 获取提示词
+
 ### 工具调用示例
 
 #### 文件操作
@@ -349,6 +366,77 @@ Agent → message(
 ```
 用户：今天用了多少 Token？
 Agent → query_token_usage(type="today")
+```
+
+#### MCP 集成
+
+**连接文件系统 MCP 服务器：**
+```
+用户：连接本地文件系统 MCP
+Agent → mcp(
+  action="connect",
+  server_id="filesystem",
+  url="http://localhost:8080"
+)
+→ ✅ Connected to MCP server: filesystem
+   - URL: http://localhost:8080
+   - Name: Filesystem MCP
+   - Resources: 5 available
+   - Tools: 3 available
+```
+
+**列出可用资源：**
+```
+用户：filesystem 上有哪些资源？
+Agent → mcp(action="list_resources", server_id="filesystem")
+→ 📦 Resources on filesystem
+   - **etc-hosts**
+     - URI: file:///etc/hosts
+   - **config**
+     - URI: file:///app/config.json
+```
+
+**读取资源内容：**
+```
+用户：读取 /etc/hosts 文件
+Agent → mcp(
+  action="read_resource",
+  server_id="filesystem",
+  resource_uri="file:///etc/hosts"
+)
+→ 📄 Resource Content (file:///etc/hosts)
+   127.0.0.1       localhost
+   192.168.1.100   server.local
+```
+
+**调用远程工具：**
+```
+用户：克隆 GitHub 仓库
+Agent → mcp(
+  action="call_tool",
+  server_id="git",
+  tool_name="git_clone",
+  arguments='{"url":"https://github.com/user/repo.git"}'
+)
+→ 🛠️ Tool Result (git_clone)
+   Repository cloned successfully
+```
+
+**获取提示词模板：**
+```
+用户：获取代码审查提示词
+Agent → mcp(
+  action="get_prompt",
+  server_id="assistant",
+  prompt_name="code_review",
+  arguments='{"language":"java"}'
+)
+→ 💬 Prompt (code_review)
+   请审查以下 Java 代码，关注：
+   1. 代码规范
+   2. 潜在 bug
+   3. 性能优化
+   ...
 ```
 
 **查询总用量：**
