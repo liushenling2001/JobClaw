@@ -48,11 +48,22 @@ public class AgentRegistry {
      * @return AgentLoop 实例
      */
     public AgentLoop getOrCreateAgent(AgentRole role, String sessionKey) {
-        String key = buildAgentKey(role, sessionKey);
+        return getOrCreateAgent(AgentDefinition.fromRole(role), sessionKey);
+    }
+
+    /**
+     * 获取或创建指定 Agent 定义的 Agent
+     * 
+     * @param definition Agent 定义
+     * @param sessionKey 会话密钥
+     * @return AgentLoop 实例
+     */
+    public AgentLoop getOrCreateAgent(AgentDefinition definition, String sessionKey) {
+        String key = buildAgentKey(definition, sessionKey);
         
         return agentPool.computeIfAbsent(key, k -> {
-            logger.info("Creating new Agent instance: {} (role: {})", key, role.getDisplayName());
-            return createAgent(role, sessionKey);
+            logger.info("Creating new Agent instance: {} (definition: {})", key, definition.getDisplayName());
+            return createAgent(definition, sessionKey);
         });
     }
 
@@ -62,8 +73,21 @@ public class AgentRegistry {
      * @param role Agent 角色
      * @param sessionKey 会话密钥
      * @return AgentLoop 实例
+     * @deprecated Use {@link #createAgent(AgentDefinition, String)} instead
      */
+    @Deprecated
     private AgentLoop createAgent(AgentRole role, String sessionKey) {
+        return createAgent(AgentDefinition.fromRole(role), sessionKey);
+    }
+
+    /**
+     * 创建新的 Agent 实例
+     * 
+     * @param definition Agent 定义
+     * @param sessionKey 会话密钥
+     * @return AgentLoop 实例
+     */
+    private AgentLoop createAgent(AgentDefinition definition, String sessionKey) {
         try {
             // 从配置获取 API Key、模型和 API 地址
             String apiKey = config.getProviders().getDashscope().getApiKey();
@@ -107,7 +131,18 @@ public class AgentRegistry {
      * @return 缓存键
      */
     private String buildAgentKey(AgentRole role, String sessionKey) {
-        return sessionKey + ":" + role.getCode();
+        return buildAgentKey(AgentDefinition.fromRole(role), sessionKey);
+    }
+
+    /**
+     * 构建 Agent 缓存键
+     * 
+     * @param definition Agent 定义
+     * @param sessionKey 会话密钥
+     * @return 缓存键
+     */
+    private String buildAgentKey(AgentDefinition definition, String sessionKey) {
+        return sessionKey + ":" + definition.getCode();
     }
 
     /**

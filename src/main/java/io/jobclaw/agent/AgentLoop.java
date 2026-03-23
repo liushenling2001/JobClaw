@@ -12,6 +12,8 @@ import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.openai.api.OpenAiApi;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
+import org.springframework.ai.tool.ToolCallbackProvider;
+import java.util.stream.Collectors;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -89,7 +91,7 @@ public class AgentLoop {
      * 处理消息（带工具调用）
      */
     public String process(String sessionKey, String userContent) {
-        return process(sessionKey, userContent, null);
+        return processWithDefinition(sessionKey, userContent, null);
     }
 
     /**
@@ -101,21 +103,30 @@ public class AgentLoop {
      * @return Agent 响应
      */
     public String process(String sessionKey, String userContent, AgentRole role) {
+        return processWithDefinition(sessionKey, userContent, role != null ? AgentDefinition.fromRole(role) : null);
+    }
+
+    /**
+     * 处理消息（带工具调用和 Agent 定义）
+     * 
+     * @param sessionKey 会话密钥
+     * @param userContent 用户输入内容
+     * @param definition Agent 定义（可选，null 表示使用默认配置）
+     * @return Agent 响应
+     */
+    public String processWithDefinition(String sessionKey, String userContent, AgentDefinition definition) {
         try {
             Session session = sessionManager.getOrCreate(sessionKey);
 
             logger.info("Calling Spring AI with model: {}...", config.getAgent().getModel());
             long startTime = System.currentTimeMillis();
 
-            // 构建系统提示（支持角色指定）
-            String systemPrompt = role != null ? 
-                buildSystemPromptWithRole(role) : buildSystemPrompt();
+            // 构建系统提示（支持 Agent 定义）
+            String systemPrompt = definition != null ? 
+                buildSystemPromptWithDefinition(definition) : buildSystemPrompt();
 
-            // 创建工具回调（支持角色工具过滤）
-            ToolCallback[] tools = MethodToolCallbackProvider.builder()
-                    .toolObjects(fileTools)
-                    .build()
-                    .getToolCallbacks();
+            // 创建工具回调（支持工具过滤）
+            ToolCallback[] tools = filterToolsByDefinition(definition);
 
             // 调用 ChatClient（带工具）- 在 prompt 时指定模型，限制最大工具调用次数
             OpenAiChatOptions options = OpenAiChatOptions.builder()
@@ -139,8 +150,8 @@ public class AgentLoop {
             session.addMessage("assistant", response);
             sessionManager.save(session);
 
-            logger.debug("Processed message for session {} (role: {})", sessionKey, 
-                role != null ? role.getDisplayName() : "default");
+            logger.debug("Processed message for session {} (agent: {})", sessionKey, 
+                definition != null ? definition.getDisplayName() : "default");
 
             return response;
 
@@ -164,11 +175,21 @@ public class AgentLoop {
      * @return 系统提示
      */
     private String buildSystemPromptWithRole(AgentRole role) {
+        return buildSystemPromptWithDefinition(role != null ? AgentDefinition.fromRole(role) : null);
+    }
+
+    /**
+     * 构建带 Agent 定义的系统提示
+     * 
+     * @param definition Agent 定义（null 表示默认配置）
+     * @return 系统提示
+     */
+    private String buildSystemPromptWithDefinition(AgentDefinition definition) {
         StringBuilder sb = new StringBuilder();
 
-        if (role != null) {
-            sb.append("# JobClaw Agent - ").append(role.getDisplayName()).append("\n\n");
-            sb.append(role.getSystemPrompt()).append("\n\n");
+        if (definition != null) {
+            sb.append("# JobClaw Agent - ").append(definition.getDisplayName()).append("\n\n");
+            sb.append(definition.getSystemPrompt()).append("\n\n");
         } else {
             sb.append("# JobClaw Agent\n\n");
             sb.append("You are a helpful AI assistant powered by JobClaw framework.\n\n");
@@ -180,10 +201,17 @@ public class AgentLoop {
         sb.append("- **list_dir**: List the contents of a directory (path: required)\n");
         sb.append("\n\n");
 
-        if (role != null && role.getAllowedTools() != null && !role.getAllowedTools().isEmpty()) {
+        if (definition != null && definition.getAllowedTools() != null && !definition.getAllowedTools().isEmpty()) {
             sb.append("## Tool Restrictions\n");
             sb.append("You are only allowed to use the following tools: ");
-            sb.append(String.join(", ", role.getAllowedTools()));
+            sb.append(String.join(", ", definition.getAllowedTools()));
+            sb.append("\n\n");
+        }
+
+        if (definition != null && definition.getAllowedSkills() != null && !definition.getAllowedSkills().isEmpty()) {
+            sb.append("## Skill Restrictions\n");
+            sb.append("You are only allowed to use the following skills: ");
+            sb.append(String.join(", ", definition.getAllowedSkills()));
             sb.append("\n\n");
         }
 
@@ -205,6 +233,30 @@ public class AgentLoop {
         sb.append("Time: ").append(Instant.now()).append("\n");
 
         return sb.toString();
+    }
+
+    /**
+     * 根据 Agent 定义过滤工具
+     * 
+     * @param definition Agent 定义
+     * @return 过滤后的工具数组
+     */
+    private ToolCallback[] filterToolsByDefinition(AgentDefinition definition) {
+        // 获取所有工具
+        ToolCallback[] allTools = MethodToolCallbackProvider.builder()
+                .toolObjects(fileTools)
+                .build()
+                .getToolCallbacks();
+
+        // 如果没有定义或没有限制，返回所有工具
+        if (definition == null || definition.getAllowedTools() == null || definition.getAllowedTools().isEmpty()) {
+            return allTools;
+        }
+
+        // 过滤工具
+        return java.util.Arrays.stream(allTools)
+                .filter(tool -> definition.isToolAllowed(tool.getToolDefinition().name()))
+                .toArray(ToolCallback[]::new);
     }
 
     /**
