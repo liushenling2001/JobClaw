@@ -36,6 +36,7 @@
         <jline.version>3.25.0</jline.version>
         <spring-ai.version>1.0.0-SNAPSHOT</spring-ai.version>
         <poi.version>5.2.5</poi.version>
+        <commons-io.version>2.15.1</commons-io.version>
     </properties>
 
     <dependencies>
@@ -160,6 +161,13 @@
             <groupId>com.larksuite.oapi</groupId>
             <artifactId>oapi-sdk</artifactId>
             <version>2.5.3</version>
+        </dependency>
+
+        <!-- Apache Commons IO (required for POI 5.x) -->
+        <dependency>
+            <groupId>commons-io</groupId>
+            <artifactId>commons-io</artifactId>
+            <version>${commons-io.version}</version>
         </dependency>
 
         <!-- Testing -->
