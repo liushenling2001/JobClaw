@@ -96,9 +96,28 @@ public class Config {
 
     public static Config defaultConfig() {
         Config config = new Config();
+        // 确保所有配置对象不为 null
+        if (config.getAgent() == null) {
+            config.setAgent(new AgentConfig());
+        }
+        if (config.getProviders() == null) {
+            config.setProviders(new ProvidersConfig());
+        }
+        if (config.getChannels() == null) {
+            config.setChannels(new ChannelsConfig());
+        }
+        if (config.getTools() == null) {
+            config.setTools(new ToolsConfig());
+        }
+        if (config.getGateway() == null) {
+            config.setGateway(new GatewayConfig());
+        }
+        
         setAgentDefaults(config);
         setGatewayDefaults(config);
         setToolsDefaults(config);
+        setProvidersDefaults(config);
+        
         return config;
     }
 
@@ -114,6 +133,25 @@ public class Config {
     private static void setGatewayDefaults(Config config) {
         config.getGateway().setHost("0.0.0.0");
         config.getGateway().setPort(18791);
+    }
+
+    private static void setProvidersDefaults(Config config) {
+        // 确保所有 provider 配置不为 null，并设置默认 API Base
+        if (config.getProviders().getDashscope() == null) {
+            config.getProviders().setDashscope(
+                new ProvidersConfig.ProviderConfig("https://dashscope.aliyuncs.com/compatible-mode/v1")
+            );
+        }
+        if (config.getProviders().getOpenai() == null) {
+            config.getProviders().setOpenai(
+                new ProvidersConfig.ProviderConfig("https://api.openai.com/v1")
+            );
+        }
+        if (config.getProviders().getOllama() == null) {
+            config.getProviders().setOllama(
+                new ProvidersConfig.ProviderConfig("http://localhost:11434/v1")
+            );
+        }
     }
 
     private static void setToolsDefaults(Config config) {

@@ -87,6 +87,7 @@ public class ConfigLoader {
         applyChannelOverrides(config);
         applyProviderOverrides(config);
         applyToolsOverrides(config);
+        applySecurityOverrides(config);
     }
 
     private static void loadDotEnv() {
@@ -134,8 +135,23 @@ public class ConfigLoader {
     }
 
     private static void applyToolsOverrides(Config config) {
+        // 确保 tools 配置不为 null
+        if (config.getTools() == null) {
+            config.setTools(new ToolsConfig());
+        }
+        if (config.getTools().getWeb() == null) {
+            config.getTools().setWeb(new ToolsConfig.WebToolsConfig());
+        }
+        if (config.getTools().getWeb().getSearch() == null) {
+            config.getTools().getWeb().setSearch(new ToolsConfig.WebSearchConfig());
+        }
         applyStringOverride("JOBCLAW_TOOLS_WEB_SEARCH_API_KEY",
                 config.getTools().getWeb().getSearch()::setApiKey);
+    }
+
+    private static void applySecurityOverrides(Config config) {
+        // 确保 security 配置不为 null（如果需要）
+        // 目前通过 Config 构造函数已初始化
     }
 
     private static void applyStringOverride(String envKey, Consumer<String> setter) {
