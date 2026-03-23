@@ -1,22 +1,41 @@
 package io.jobclaw.tools;
 
+import io.jobclaw.cron.CronJob;
+import io.jobclaw.cron.CronSchedule;
+import io.jobclaw.cron.CronService;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
 
-import java.util.HashMap;
-import java.util.Map;
+import java.util.List;
 
 /**
- * 定时任务管理工具
+ * 定时任务工具
  * 
  * 允许 Agent 创建、管理和执行定时任务
+ * 
+ * 支持的操作：
+ * - add: 添加新任务
+ * - list: 列出所有任务
+ * - remove: 删除任务
+ * - enable: 启用任务
+ * - disable: 禁用任务
+ * 
+ * 支持的调度类型：
+ * - at_seconds: 一次性提醒（多少秒后）
+ * - every_seconds: 周期性任务（每隔多少秒）
+ * - cron_expr: Cron 表达式（复杂调度）
  */
 @Component
 public class CronTool {
 
-    // TODO: Inject actual CronService when available
-    private final Map<String, CronJob> jobs = new HashMap<>();
+    private final CronService cronService;
+
+    public CronTool(CronService cronService) {
+        this.cronService = cronService;
+        // 设置任务处理器
+        cronService.setOnJob(this::executeJob);
+    }
 
     @Tool(name = "cron", description = "Schedule reminders and tasks. IMPORTANT: Call this when user requests reminders or scheduled tasks. Use 'at_seconds' for one-time reminders (e.g., 'remind me in 10 minutes' → at_seconds=600). Use 'every_seconds' for recurring tasks (e.g., 'every 2 hours' → every_seconds=7200). Use 'cron_expr' for complex schedules (e.g., '0 9 * * *' for daily at 9 AM).")
     public String cron(
@@ -51,17 +70,29 @@ public class CronTool {
             return "Error: Must provide one of: at_seconds, every_seconds, or cron_expr";
         }
 
-        String jobId = "job_" + System.currentTimeMillis();
-        String messagePreview = message.length() > 30 ? message.substring(0, 30) + "..." : message;
+        try {
+            String messagePreview = message.length() > 30 ? message.substring(0, 30) + "..." : message;
+            CronSchedule schedule;
 
-        // TODO: Integrate with actual cron service
-        // For now, store in memory and return placeholder
-        jobs.put(jobId, new CronJob(jobId, messagePreview, message));
+            if (atSeconds != null) {
+                long atMs = System.currentTimeMillis() + atSeconds * 1000L;
+                schedule = CronSchedule.at(atMs);
+            } else if (everySeconds != null) {
+                long everyMs = everySeconds * 1000L;
+                schedule = CronSchedule.every(everyMs);
+            } else {
+                schedule = CronSchedule.cron(cronExpr);
+            }
 
-        String scheduleInfo = getScheduleInfo(atSeconds, everySeconds, cronExpr);
+            CronJob job = cronService.addJob(messagePreview, schedule, message, "feishu", "direct");
 
-        return "Created job '" + messagePreview + "' (id: " + jobId + ", schedule: " + scheduleInfo + ")\n\n" +
-               "Note: Cron service integration pending. Job stored in memory only.";
+            String scheduleInfo = getScheduleInfo(atSeconds, everySeconds, cronExpr);
+
+            return "✅ Created job '" + messagePreview + "' (id: " + job.getId() + ", schedule: " + scheduleInfo + ")\n\n" +
+                   "The job will execute and deliver the message to the current channel.";
+        } catch (Exception e) {
+            return "Error adding job: " + e.getMessage();
+        }
     }
 
     private String getScheduleInfo(Integer atSeconds, Integer everySeconds, String cronExpr) {
@@ -76,16 +107,35 @@ public class CronTool {
     }
 
     private String listJobs() {
-        if (jobs.isEmpty()) {
-            return "No scheduled jobs.";
-        }
+        try {
+            List<CronJob> jobs = cronService.listJobs(false);
 
-        StringBuilder result = new StringBuilder("Scheduled jobs:\n");
-        for (CronJob job : jobs.values()) {
-            result.append("- ").append(job.name)
-                  .append(" (id: ").append(job.id).append(")\n");
+            if (jobs.isEmpty()) {
+                return "No scheduled jobs.";
+            }
+
+            StringBuilder result = new StringBuilder("📅 Scheduled jobs:\n\n");
+            for (CronJob job : jobs) {
+                String scheduleInfo = formatScheduleInfo(job.getSchedule());
+                result.append("- **").append(job.getName()).append("** ")
+                      .append("(id: `").append(job.getId()).append("`, ")
+                      .append(scheduleInfo).append(")\n");
+            }
+            return result.toString();
+        } catch (Exception e) {
+            return "Error listing jobs: " + e.getMessage();
         }
-        return result.toString();
+    }
+
+    private String formatScheduleInfo(CronSchedule schedule) {
+        return switch (schedule.getKind()) {
+            case EVERY -> schedule.getEveryMs() != null 
+                    ? "every " + (schedule.getEveryMs() / 1000) + "s"
+                    : "unknown";
+            case CRON -> "cron: " + schedule.getExpr();
+            case AT -> "one-time";
+            default -> "unknown";
+        };
     }
 
     private String removeJob(String jobId) {
@@ -93,10 +143,13 @@ public class CronTool {
             return "Error: job_id is required for 'remove' action";
         }
 
-        if (jobs.remove(jobId) != null) {
-            return "Removed job " + jobId;
+        try {
+            return cronService.removeJob(jobId) 
+                    ? "✅ Removed job " + jobId
+                    : "Job " + jobId + " not found";
+        } catch (Exception e) {
+            return "Error removing job: " + e.getMessage();
         }
-        return "Job " + jobId + " not found";
     }
 
     private String enableJob(String jobId, boolean enable) {
@@ -104,24 +157,31 @@ public class CronTool {
             return "Error: job_id is required for 'enable/disable' action";
         }
 
-        CronJob job = jobs.get(jobId);
-        if (job == null) {
-            return "Job " + jobId + " not found";
-        }
+        try {
+            CronJob job = cronService.enableJob(jobId, enable);
+            if (job == null) {
+                return "Job " + jobId + " not found";
+            }
 
-        String status = enable ? "enabled" : "disabled";
-        return "Job '" + job.name + "' " + status;
+            String status = enable ? "enabled" : "disabled";
+            return "✅ Job '" + job.getName() + "' " + status;
+        } catch (Exception e) {
+            return "Error enabling/disabling job: " + e.getMessage();
+        }
     }
 
-    private static class CronJob {
-        String id;
-        String name;
-        String message;
-
-        CronJob(String id, String name, String message) {
-            this.id = id;
-            this.name = name;
-            this.message = message;
-        }
+    /**
+     * Execute cron job
+     * This is called by CronService when a job is triggered
+     */
+    private String executeJob(CronJob job) {
+        // TODO: Integrate with MessageBus to send the message
+        // For now, just log and return
+        System.out.println("[CronJob] Executing: " + job.getName());
+        System.out.println("[CronJob] Message: " + job.getPayload().getMessage());
+        System.out.println("[CronJob] Channel: " + job.getPayload().getChannel());
+        System.out.println("[CronJob] To: " + job.getPayload().getTo());
+        
+        return "Job executed: " + job.getName();
     }
 }

@@ -72,7 +72,6 @@ public class JobClawApplication {
             case "status" -> new StatusCommand();
             case "agent" -> new AgentCommand();
             case "gateway" -> new GatewayCommand();
-            case "cron" -> new CronCommand();
             case "skills" -> new SkillsCommand();
             case "mcp" -> new McpCommand();
             case "demo" -> new DemoCommand();

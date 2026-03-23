@@ -58,9 +58,8 @@ public class GatewayBootstrap {
         // 1. 初始化通道管理器
         channelManager = new ChannelManager(bus, config.getChannels(), List.of());
 
-        // 2. 初始化定时任务服务
-        String cronStorePath = Paths.get(workspace, "cron", "jobs.json").toString();
-        cronService = new CronService(cronStorePath, null);
+        // 2. 初始化定时任务服务（由 Spring 管理，此处不手动创建）
+        // cronService 将通过 Spring 依赖注入获取
 
         // 3. 初始化心跳服务
         heartbeatService = new HeartbeatService(
