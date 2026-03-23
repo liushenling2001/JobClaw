@@ -59,6 +59,20 @@ public class AgentOrchestrator {
     }
 
     /**
+     * 公开方法：使用指定角色处理请求
+     * 供 SpawnTool 调用
+     * 
+     * @param sessionKey 会话密钥
+     * @param userContent 用户输入
+     * @param role 指定的 Agent 角色
+     * @return Agent 响应
+     */
+    public String processWithRole(String sessionKey, String userContent, AgentRole role) {
+        logger.info("Orchestrator processing with role {} for session {}", role.getDisplayName(), sessionKey);
+        return handleSingleAgentWithRole(sessionKey, userContent, role);
+    }
+
+    /**
      * 处理用户请求
      * 
      * @param sessionKey 会话密钥
