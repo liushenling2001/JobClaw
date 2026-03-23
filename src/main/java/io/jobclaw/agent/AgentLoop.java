@@ -66,19 +66,52 @@ public class AgentLoop {
     }
 
     /**
+     * 创建 AgentLoop 实例（用于多 Agent 模式，由 AgentRegistry 调用）
+     * 
+     * @param config 配置
+     * @param sessionManager 会话管理器
+     * @param fileTools 文件工具
+     * @param chatClient ChatClient 实例
+     * @param model 模型名称
+     */
+    public AgentLoop(Config config, SessionManager sessionManager, FileTools fileTools, 
+                     ChatClient chatClient, String model) {
+        this.config = config;
+        this.sessionManager = sessionManager;
+        this.fileTools = fileTools;
+        this.chatClient = chatClient;
+        this.model = model;
+        
+        logger.debug("AgentLoop instance created for multi-agent mode (model: {})", model);
+    }
+
+    /**
      * 处理消息（带工具调用）
      */
     public String process(String sessionKey, String userContent) {
+        return process(sessionKey, userContent, null);
+    }
+
+    /**
+     * 处理消息（带工具调用和角色指定）
+     * 
+     * @param sessionKey 会话密钥
+     * @param userContent 用户输入内容
+     * @param role Agent 角色（可选，null 表示使用默认角色）
+     * @return Agent 响应
+     */
+    public String process(String sessionKey, String userContent, AgentRole role) {
         try {
             Session session = sessionManager.getOrCreate(sessionKey);
 
             logger.info("Calling Spring AI with model: {}...", config.getAgent().getModel());
             long startTime = System.currentTimeMillis();
 
-            // 构建系统提示
-            String systemPrompt = buildSystemPrompt();
+            // 构建系统提示（支持角色指定）
+            String systemPrompt = role != null ? 
+                buildSystemPromptWithRole(role) : buildSystemPrompt();
 
-            // 创建工具回调
+            // 创建工具回调（支持角色工具过滤）
             ToolCallback[] tools = MethodToolCallbackProvider.builder()
                     .toolObjects(fileTools)
                     .build()
@@ -106,7 +139,8 @@ public class AgentLoop {
             session.addMessage("assistant", response);
             sessionManager.save(session);
 
-            logger.debug("Processed message for session {}", sessionKey);
+            logger.debug("Processed message for session {} (role: {})", sessionKey, 
+                role != null ? role.getDisplayName() : "default");
 
             return response;
 
@@ -120,16 +154,38 @@ public class AgentLoop {
      * 构建系统提示
      */
     private String buildSystemPrompt() {
+        return buildSystemPromptWithRole(null);
+    }
+
+    /**
+     * 构建带角色的系统提示
+     * 
+     * @param role Agent 角色（null 表示默认角色）
+     * @return 系统提示
+     */
+    private String buildSystemPromptWithRole(AgentRole role) {
         StringBuilder sb = new StringBuilder();
 
-        sb.append("# JobClaw Agent\n\n");
-        sb.append("You are a helpful AI assistant powered by JobClaw framework.\n\n");
+        if (role != null) {
+            sb.append("# JobClaw Agent - ").append(role.getDisplayName()).append("\n\n");
+            sb.append(role.getSystemPrompt()).append("\n\n");
+        } else {
+            sb.append("# JobClaw Agent\n\n");
+            sb.append("You are a helpful AI assistant powered by JobClaw framework.\n\n");
+        }
 
         sb.append("## Tools Available\n");
         sb.append("- **read_file**: Read the contents of a file (path: required)\n");
         sb.append("- **write_file**: Write content to a file (path: required, content: required)\n");
         sb.append("- **list_dir**: List the contents of a directory (path: required)\n");
         sb.append("\n\n");
+
+        if (role != null && role.getAllowedTools() != null && !role.getAllowedTools().isEmpty()) {
+            sb.append("## Tool Restrictions\n");
+            sb.append("You are only allowed to use the following tools: ");
+            sb.append(String.join(", ", role.getAllowedTools()));
+            sb.append("\n\n");
+        }
 
         sb.append("## Important Rules\n");
         sb.append("1. **Think before acting**: Only use tools when necessary. If you can answer from your knowledge, do so directly.\n");

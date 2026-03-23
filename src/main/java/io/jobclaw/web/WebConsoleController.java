@@ -1,6 +1,7 @@
 package io.jobclaw.web;
 
 import io.jobclaw.agent.AgentLoop;
+import io.jobclaw.agent.AgentOrchestrator;
 import io.jobclaw.bus.InboundMessage;
 import io.jobclaw.bus.MessageBus;
 import io.jobclaw.config.Config;
@@ -28,15 +29,18 @@ public class WebConsoleController {
     private final Config config;
     private final SessionManager sessionManager;
     private final AgentLoop agentLoop;
+    private final AgentOrchestrator orchestrator;
     private final MessageBus messageBus;
 
     private final ExecutorService executor = Executors.newCachedThreadPool();
 
     public WebConsoleController(Config config, SessionManager sessionManager,
-                                 AgentLoop agentLoop, MessageBus messageBus) {
+                                 AgentLoop agentLoop, AgentOrchestrator orchestrator, 
+                                 MessageBus messageBus) {
         this.config = config;
         this.sessionManager = sessionManager;
         this.agentLoop = agentLoop;
+        this.orchestrator = orchestrator;
         this.messageBus = messageBus;
     }
 
@@ -55,7 +59,8 @@ public class WebConsoleController {
         Map<String, Object> response = new HashMap<>();
         try {
             String sessionKey = request.getSessionKey() != null ? request.getSessionKey() : "web:default";
-            String result = agentLoop.process(sessionKey, request.getMessage());
+            // 使用编排器处理请求（支持多 Agent 模式）
+            String result = orchestrator.process(sessionKey, request.getMessage());
             response.put("success", true);
             response.put("message", result);
             response.put("session", sessionKey);
