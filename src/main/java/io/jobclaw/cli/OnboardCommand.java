@@ -173,8 +173,8 @@ public class OnboardCommand extends CliCommand {
         System.out.println("   {");
         System.out.println("     \"providers\": {");
         System.out.println("       \"dashscope\": {");
-        System.out.println("         \"api_key\": \"sk-xxx\",  // 通义千问 API Key");
-        System.out.println("         \"api_base\": \"https://dashscope.aliyuncs.com/compatible-mode/v1\"");
+        System.out.println("         \"baseUrl\": \"https://dashscope.aliyuncs.com/compatible-mode/v1\",");
+        System.out.println("         \"apiKey\": \"sk-xxx\"  // 通义千问 API Key");
         System.out.println("       }");
         System.out.println("     }");
         System.out.println("   }");

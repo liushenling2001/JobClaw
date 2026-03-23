@@ -30,19 +30,13 @@ public class AgentOrchestrator {
     private final FileTools fileTools;
     private final AgentTeamManager teamManager;
 
-    // 用于识别多 Agent 请求的模式
-    private static final Pattern MULTI_AGENT_PATTERN = Pattern.compile(
-        "(多智能体 | 多 agent|multi.agent|协作 | 协同 | 团队 | team|collaborat)",
-        Pattern.CASE_INSENSITIVE
-    );
-
-    // 用于识别团队模式请求的模式
+    // 用于识别团队模式请求的模式（明确指令）
     private static final Pattern TEAM_MODE_PATTERN = Pattern.compile(
         "(创建团队 | 组建团队 |create.team|setup.team|agent.team)",
         Pattern.CASE_INSENSITIVE
     );
 
-    // 用于识别指定角色的模式
+    // 用于识别指定角色的模式（明确指令）
     private static final Pattern ROLE_PATTERN = Pattern.compile(
         "(作为 | 扮演 | 用|use|as|role)[:：\\s]*(程序员 | 研究员 | 作家 | 审查员 | 规划师 | 测试员|coder|researcher|writer|reviewer|planner|tester)",
         Pattern.CASE_INSENSITIVE
@@ -93,27 +87,22 @@ public class AgentOrchestrator {
             return handleSingleAgentDefault(sessionKey, userContent);
         }
 
-        // 1. 判断是否需要创建团队
+        // 1. 判断是否需要创建团队（明确指令）
         if (isTeamModeRequest(userContent)) {
             logger.info("Team mode detected");
             return handleTeamMode(sessionKey, userContent);
         }
 
-        // 2. 判断是否需要多 Agent 协作
-        if (isMultiAgentRequest(userContent)) {
-            logger.info("Multi-agent mode detected");
-            return handleMultiAgent(sessionKey, userContent);
-        }
-
-        // 3. 判断是否指定了角色
+        // 2. 判断是否指定了角色（明确指令）
         AgentRole specifiedRole = extractSpecifiedRole(userContent);
         if (specifiedRole != null) {
             logger.info("Specified role detected: {}", specifiedRole.getDisplayName());
             return handleSingleAgentWithRole(sessionKey, userContent, specifiedRole);
         }
 
-        // 4. 默认单 Agent 模式
-        logger.info("Single-agent mode (default)");
+        // 3. 默认单 Agent 模式
+        // Agent 可通过 spawn 工具自主决定是否需要子 Agent 协作
+        logger.info("Single-agent mode (Agent can use spawn tool if needed)");
         return handleSingleAgentDefault(sessionKey, userContent);
     }
 
@@ -126,18 +115,6 @@ public class AgentOrchestrator {
         }
         
         Matcher matcher = TEAM_MODE_PATTERN.matcher(userContent);
-        return matcher.find();
-    }
-
-    /**
-     * 判断是否为多 Agent 请求
-     */
-    private boolean isMultiAgentRequest(String userContent) {
-        if (userContent == null || userContent.isEmpty()) {
-            return false;
-        }
-        
-        Matcher matcher = MULTI_AGENT_PATTERN.matcher(userContent);
         return matcher.find();
     }
 

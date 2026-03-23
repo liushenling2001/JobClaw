@@ -212,6 +212,12 @@ public class Config {
             config.getProviders().setDashscope(
                 new ProvidersConfig.ProviderConfig("https://dashscope.aliyuncs.com/compatible-mode/v1")
             );
+        } else {
+            // 如果已有配置但 apiBase 为空，设置默认值
+            if (config.getProviders().getDashscope().getApiBase() == null || 
+                config.getProviders().getDashscope().getApiBase().isEmpty()) {
+                config.getProviders().getDashscope().setApiBase("https://dashscope.aliyuncs.com/compatible-mode/v1");
+            }
         }
         if (config.getProviders().getOpenai() == null) {
             config.getProviders().setOpenai(
