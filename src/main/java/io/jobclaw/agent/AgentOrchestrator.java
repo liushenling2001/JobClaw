@@ -6,6 +6,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+import java.util.List;
+
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -26,10 +28,17 @@ public class AgentOrchestrator {
     private final AgentRegistry agentRegistry;
     private final SessionManager sessionManager;
     private final FileTools fileTools;
+    private final AgentTeamManager teamManager;
 
     // 用于识别多 Agent 请求的模式
     private static final Pattern MULTI_AGENT_PATTERN = Pattern.compile(
         "(多智能体 | 多 agent|multi.agent|协作 | 协同 | 团队 | team|collaborat)",
+        Pattern.CASE_INSENSITIVE
+    );
+
+    // 用于识别团队模式请求的模式
+    private static final Pattern TEAM_MODE_PATTERN = Pattern.compile(
+        "(创建团队 | 组建团队 |create.team|setup.team|agent.team)",
         Pattern.CASE_INSENSITIVE
     );
 
@@ -39,12 +48,14 @@ public class AgentOrchestrator {
         Pattern.CASE_INSENSITIVE
     );
 
-    public AgentOrchestrator(AgentRegistry agentRegistry, SessionManager sessionManager, FileTools fileTools) {
+    public AgentOrchestrator(AgentRegistry agentRegistry, SessionManager sessionManager, 
+                             FileTools fileTools, AgentTeamManager teamManager) {
         this.agentRegistry = agentRegistry;
         this.sessionManager = sessionManager;
         this.fileTools = fileTools;
+        this.teamManager = teamManager;
         
-        logger.info("AgentOrchestrator initialized");
+        logger.info("AgentOrchestrator initialized with AgentTeamManager support");
     }
 
     /**
@@ -57,22 +68,40 @@ public class AgentOrchestrator {
     public String process(String sessionKey, String userContent) {
         logger.info("Orchestrator processing request for session {}", sessionKey);
 
-        // 1. 判断是否需要多 Agent 协作
+        // 1. 判断是否需要创建团队
+        if (isTeamModeRequest(userContent)) {
+            logger.info("Team mode detected");
+            return handleTeamMode(sessionKey, userContent);
+        }
+
+        // 2. 判断是否需要多 Agent 协作
         if (isMultiAgentRequest(userContent)) {
             logger.info("Multi-agent mode detected");
             return handleMultiAgent(sessionKey, userContent);
         }
 
-        // 2. 判断是否指定了角色
+        // 3. 判断是否指定了角色
         AgentRole specifiedRole = extractSpecifiedRole(userContent);
         if (specifiedRole != null) {
             logger.info("Specified role detected: {}", specifiedRole.getDisplayName());
             return handleSingleAgentWithRole(sessionKey, userContent, specifiedRole);
         }
 
-        // 3. 默认单 Agent 模式
+        // 4. 默认单 Agent 模式
         logger.info("Single-agent mode (default)");
         return handleSingleAgentDefault(sessionKey, userContent);
+    }
+
+    /**
+     * 判断是否为团队模式请求
+     */
+    private boolean isTeamModeRequest(String userContent) {
+        if (userContent == null || userContent.isEmpty()) {
+            return false;
+        }
+        
+        Matcher matcher = TEAM_MODE_PATTERN.matcher(userContent);
+        return matcher.find();
     }
 
     /**
@@ -126,6 +155,97 @@ public class AgentOrchestrator {
             return agent.process(sessionKey, userContent, role);
         } catch (Exception e) {
             logger.error("Error in single-agent mode with role", e);
+            return "Error: " + e.getMessage();
+        }
+    }
+
+    /**
+     * 处理团队模式请求
+     * 
+     * 流程：
+     * 1. 创建 Agent 团队
+     * 2. 主智能体分析任务
+     * 3. 动态创建需要的子智能体
+     * 4. 分配任务给子智能体
+     * 5. 汇总结果
+     */
+    private String handleTeamMode(String sessionKey, String userContent) {
+        try {
+            StringBuilder result = new StringBuilder();
+            result.append("## 🤖 Agent 团队模式\n\n");
+
+            // Step 1: 创建团队
+            logger.info("Step 1: Creating agent team");
+            AgentDefinition masterDef = AgentDefinition.fromRole(AgentRole.PLANNER);
+            AgentTeam team = teamManager.createTeam("临时团队", masterDef, sessionKey);
+            result.append("### 1️⃣ 团队创建\n\n");
+            result.append("**团队名称**: ").append(team.getTeamName()).append("\n");
+            result.append("**团队 ID**: ").append(team.getTeamId()).append("\n");
+            result.append("**主智能体**: ").append(team.getMasterAgent().getDisplayName()).append("\n\n");
+
+            // Step 2: 主智能体分析任务并决定需要的子智能体
+            logger.info("Step 2: Master agent analyzing task");
+            result.append("### 2️⃣ 任务分析\n\n");
+
+            AgentLoop masterAgent = agentRegistry.getOrCreateAgent(team.getMasterAgent(), sessionKey);
+            String analysisContent = userContent + "\n\n请分析这个任务，并列出需要哪些专业角色的智能体来协作完成。";
+            String analysis = masterAgent.processWithDefinition(sessionKey, analysisContent, team.getMasterAgent());
+            result.append(analysis).append("\n\n");
+
+            // Step 3: 动态创建子智能体
+            logger.info("Step 3: Creating sub-agents dynamically");
+            result.append("### 3️⃣ 子智能体创建\n\n");
+
+            // 根据分析结果创建子智能体（这里简化处理，创建常用角色）
+            List<AgentDefinition> subAgents = List.of(
+                AgentDefinition.fromRole(AgentRole.CODER),
+                AgentDefinition.fromRole(AgentRole.RESEARCHER),
+                AgentDefinition.fromRole(AgentRole.WRITER)
+            );
+
+            for (AgentDefinition subAgent : subAgents) {
+                team.addSubAgent(subAgent);
+                result.append("✅ 创建 **").append(subAgent.getDisplayName())
+                      .append("** (`").append(subAgent.getCode()).append("`)\n");
+            }
+            result.append("\n");
+
+            // Step 4: 分配任务给子智能体
+            logger.info("Step 4: Assigning tasks to sub-agents");
+            result.append("### 4️⃣ 任务执行\n\n");
+
+            for (AgentDefinition subAgent : subAgents) {
+                AgentLoop agent = agentRegistry.getOrCreateAgent(subAgent, sessionKey);
+                String taskContent = userContent + "\n\n请从你的专业角度完成这个任务。";
+                String subResult = agent.processWithDefinition(sessionKey, taskContent, subAgent);
+                
+                result.append("**").append(subAgent.getDisplayName()).append("**:\n")
+                      .append(subResult).append("\n\n");
+                
+                // 添加到共享记忆
+                team.addToSharedMemory(subAgent.getDisplayName() + ": " + subResult.substring(0, Math.min(200, subResult.length())));
+            }
+
+            // Step 5: 汇总结果
+            logger.info("Step 5: Summarizing results");
+            result.append("### 5️⃣ 最终总结\n\n");
+
+            AgentLoop summarizer = agentRegistry.getOrCreateAgent(AgentRole.WRITER, sessionKey);
+            String summaryContent = "请综合以下所有子智能体的工作成果，提供一个清晰、完整的最终答案：\n\n" + 
+                team.getSharedMemory().stream().map(m -> "- " + m).reduce((a, b) -> a + "\n" + b).orElse("");
+            String summary = summarizer.processWithDefinition(sessionKey, summaryContent, 
+                AgentDefinition.fromRole(AgentRole.WRITER));
+            result.append(summary);
+
+            // 保存团队信息到共享记忆
+            team.addToSharedMemory("最终总结：" + summary.substring(0, Math.min(200, summary.length())));
+
+            logger.info("Team mode completed: {} ({} sub-agents)", 
+                team.getTeamName(), team.getSubAgentCount());
+            return result.toString();
+
+        } catch (Exception e) {
+            logger.error("Error in team mode", e);
             return "Error: " + e.getMessage();
         }
     }

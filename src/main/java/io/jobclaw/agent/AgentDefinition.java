@@ -12,6 +12,8 @@ import java.util.Map;
  * - 运行时动态创建
  * - 自定义工具集
  * - 自定义技能集
+ * - 专属配置（模型、温度等）
+ * - 专属记忆（独立会话历史）
  * - 灵活配置
  */
 public class AgentDefinition {
@@ -21,10 +23,70 @@ public class AgentDefinition {
     private final String systemPrompt;
     private final List<String> allowedTools;
     private final List<String> allowedSkills;
+    private final AgentConfig config;
     private final Map<String, Object> metadata;
 
     /**
-     * 创建 Agent 定义
+     * Agent 专属配置
+     */
+    public static class AgentConfig {
+        private String model;
+        private Double temperature;
+        private Integer maxTokens;
+        private String apiBase;
+        private Map<String, Object> customSettings;
+
+        public AgentConfig() {
+            this.customSettings = new HashMap<>();
+        }
+
+        public String getModel() {
+            return model;
+        }
+
+        public void setModel(String model) {
+            this.model = model;
+        }
+
+        public Double getTemperature() {
+            return temperature;
+        }
+
+        public void setTemperature(Double temperature) {
+            this.temperature = temperature;
+        }
+
+        public Integer getMaxTokens() {
+            return maxTokens;
+        }
+
+        public void setMaxTokens(Integer maxTokens) {
+            this.maxTokens = maxTokens;
+        }
+
+        public String getApiBase() {
+            return apiBase;
+        }
+
+        public void setApiBase(String apiBase) {
+            this.apiBase = apiBase;
+        }
+
+        public Map<String, Object> getCustomSettings() {
+            return customSettings;
+        }
+
+        public void setCustomSetting(String key, Object value) {
+            this.customSettings.put(key, value);
+        }
+
+        public Object getCustomSetting(String key) {
+            return this.customSettings.get(key);
+        }
+    }
+
+    /**
+     * 创建 Agent 定义（默认配置）
      * 
      * @param code 角色代码（唯一标识）
      * @param displayName 显示名称
@@ -34,11 +96,28 @@ public class AgentDefinition {
      */
     public AgentDefinition(String code, String displayName, String systemPrompt,
                           List<String> allowedTools, List<String> allowedSkills) {
+        this(code, displayName, systemPrompt, allowedTools, allowedSkills, null);
+    }
+
+    /**
+     * 创建 Agent 定义（带专属配置）
+     * 
+     * @param code 角色代码（唯一标识）
+     * @param displayName 显示名称
+     * @param systemPrompt 系统提示词
+     * @param allowedTools 允许使用的工具列表（null 表示不限制）
+     * @param allowedSkills 允许使用的技能列表（null 表示不限制）
+     * @param config Agent 专属配置（null 表示使用全局配置）
+     */
+    public AgentDefinition(String code, String displayName, String systemPrompt,
+                          List<String> allowedTools, List<String> allowedSkills,
+                          AgentConfig config) {
         this.code = code;
         this.displayName = displayName;
         this.systemPrompt = systemPrompt;
         this.allowedTools = allowedTools != null ? new ArrayList<>(allowedTools) : null;
         this.allowedSkills = allowedSkills != null ? new ArrayList<>(allowedSkills) : null;
+        this.config = config;
         this.metadata = new HashMap<>();
     }
 
@@ -73,6 +152,10 @@ public class AgentDefinition {
 
     public List<String> getAllowedSkills() {
         return allowedSkills;
+    }
+
+    public AgentConfig getConfig() {
+        return config;
     }
 
     public Map<String, Object> getMetadata() {
@@ -119,6 +202,7 @@ public class AgentDefinition {
         private String systemPrompt;
         private List<String> allowedTools;
         private List<String> allowedSkills;
+        private AgentConfig config;
 
         public Builder code(String code) {
             this.code = code;
@@ -145,8 +229,13 @@ public class AgentDefinition {
             return this;
         }
 
+        public Builder config(AgentConfig config) {
+            this.config = config;
+            return this;
+        }
+
         public AgentDefinition build() {
-            return new AgentDefinition(code, displayName, systemPrompt, allowedTools, allowedSkills);
+            return new AgentDefinition(code, displayName, systemPrompt, allowedTools, allowedSkills, config);
         }
     }
 
