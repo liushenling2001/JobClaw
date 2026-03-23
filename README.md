@@ -1,4 +1,4 @@
-# JobClaw 🦞
+# JobClaw 👨‍🔧
 
 **AI Agent Framework based on Spring Boot 3.3 + Java 17 + Spring AI**
 
