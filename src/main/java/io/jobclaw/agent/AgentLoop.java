@@ -14,7 +14,6 @@ import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import java.util.stream.Collectors;
-import org.springframework.stereotype.Component;
 
 import java.time.Instant;
 import java.util.List;
@@ -22,7 +21,6 @@ import java.util.List;
 /**
  * AgentLoop - 基于 Spring AI 重构（使用 OpenAI 兼容模式支持 DashScope Coding Plan）
  */
-@Component
 public class AgentLoop {
 
     private static final Logger logger = LoggerFactory.getLogger(AgentLoop.class);

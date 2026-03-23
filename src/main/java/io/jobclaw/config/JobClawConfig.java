@@ -73,12 +73,6 @@ public class JobClawConfig {
 
     @Bean
     @ConditionalOnMissingBean
-    public AgentLoop agentLoop(Config config, SessionManager sessionManager, FileTools fileTools) {
-        return new AgentLoop(config, sessionManager, fileTools);
-    }
-
-    @Bean
-    @ConditionalOnMissingBean
     public CronService cronService() {
         return new CronService();
     }
