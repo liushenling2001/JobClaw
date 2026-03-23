@@ -1,9 +1,15 @@
 package io.jobclaw.tools;
 
-import org.apache.poi.xwpf.usermodel.XWPFDocument;
-import org.apache.poi.xwpf.usermodel.XWPFParagraph;
+import org.apache.poi.hssf.usermodel.HSSFWorkbook;
+import org.apache.poi.hwpf.HWPFDocument;
+import org.apache.poi.hwpf.extractor.WordExtractor;
+import org.apache.poi.ss.usermodel.Row;
+import org.apache.poi.ss.usermodel.Sheet;
+import org.apache.poi.ss.usermodel.Workbook;
 import org.apache.poi.xssf.usermodel.XSSFSheet;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.apache.poi.xwpf.usermodel.XWPFDocument;
+import org.apache.poi.xwpf.usermodel.XWPFParagraph;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
@@ -80,107 +86,190 @@ public class FileTools {
         }
     }
 
-    @Tool(name = "read_word", description = "Read the contents of a Word document (.docx)")
+    @Tool(name = "read_word", description = "Read the contents of a Word document (.doc or .docx)")
     public String readWord(
-        @ToolParam(description = "The path of the Word document (.docx)") String path
+        @ToolParam(description = "The path of the Word document (.doc or .docx)") String path
     ) {
         if (path == null || path.isEmpty()) {
             return "Error: path is required";
         }
 
+        String lowerPath = path.toLowerCase();
         try {
-            if (!path.toLowerCase().endsWith(".docx")) {
-                return "Error: file must be a .docx file";
+            if (lowerPath.endsWith(".docx")) {
+                return readDocx(path);
+            } else if (lowerPath.endsWith(".doc")) {
+                return readDoc(path);
+            } else {
+                return "Error: file must be a .doc or .docx file, got: " + path;
             }
-
-            StringBuilder content = new StringBuilder();
-            try (FileInputStream fis = new FileInputStream(path);
-                 XWPFDocument document = new XWPFDocument(fis)) {
-                
-                // Extract paragraphs
-                List<XWPFParagraph> paragraphs = document.getParagraphs();
-                for (XWPFParagraph paragraph : paragraphs) {
-                    String text = paragraph.getText();
-                    if (text != null && !text.isEmpty()) {
-                        content.append(text).append("\n");
-                    }
-                }
-
-                // Extract tables
-                document.getTables().forEach(table -> {
-                    table.getRows().forEach(row -> {
-                        row.getTableCells().forEach(cell -> {
-                            content.append(cell.getText()).append("\t");
-                        });
-                        content.append("\n");
-                    });
-                    content.append("\n");
-                });
-            }
-
-            return content.toString().trim();
         } catch (Exception e) {
             return "Error reading Word document: " + e.getMessage();
         }
     }
 
-    @Tool(name = "read_excel", description = "Read the contents of an Excel workbook (.xlsx)")
+    /**
+     * Read .docx file (Office 2007+)
+     */
+    private String readDocx(String path) throws Exception {
+        StringBuilder content = new StringBuilder();
+        try (FileInputStream fis = new FileInputStream(path);
+             XWPFDocument document = new XWPFDocument(fis)) {
+            
+            // Extract paragraphs
+            List<XWPFParagraph> paragraphs = document.getParagraphs();
+            for (XWPFParagraph paragraph : paragraphs) {
+                String text = paragraph.getText();
+                if (text != null && !text.isEmpty()) {
+                    content.append(text).append("\n");
+                }
+            }
+
+            // Extract tables
+            document.getTables().forEach(table -> {
+                table.getRows().forEach(row -> {
+                    row.getTableCells().forEach(cell -> {
+                        content.append(cell.getText()).append("\t");
+                    });
+                    content.append("\n");
+                });
+                content.append("\n");
+            });
+        }
+        return content.toString().trim();
+    }
+
+    /**
+     * Read .doc file (Office 97-2003)
+     */
+    private String readDoc(String path) throws Exception {
+        StringBuilder content = new StringBuilder();
+        try (FileInputStream fis = new FileInputStream(path);
+             HWPFDocument document = new HWPFDocument(fis);
+             WordExtractor extractor = new WordExtractor(document)) {
+            
+            // Extract paragraphs
+            String[] paragraphs = extractor.getParagraphText();
+            for (String paragraph : paragraphs) {
+                if (paragraph != null && !paragraph.trim().isEmpty()) {
+                    content.append(paragraph.trim()).append("\n");
+                }
+            }
+        }
+        return content.toString().trim();
+    }
+
+    @Tool(name = "read_excel", description = "Read the contents of an Excel workbook (.xls or .xlsx)")
     public String readExcel(
-        @ToolParam(description = "The path of the Excel workbook (.xlsx)") String path,
+        @ToolParam(description = "The path of the Excel workbook (.xls or .xlsx)") String path,
         @ToolParam(description = "Sheet name or index (0-based, optional, default: 0)") String sheet
     ) {
         if (path == null || path.isEmpty()) {
             return "Error: path is required";
         }
 
+        String lowerPath = path.toLowerCase();
         try {
-            if (!path.toLowerCase().endsWith(".xlsx")) {
-                return "Error: file must be a .xlsx file";
+            if (lowerPath.endsWith(".xlsx")) {
+                return readXlsx(path, sheet);
+            } else if (lowerPath.endsWith(".xls")) {
+                return readXls(path, sheet);
+            } else {
+                return "Error: file must be a .xls or .xlsx file, got: " + path;
             }
-
-            StringBuilder content = new StringBuilder();
-            try (FileInputStream fis = new FileInputStream(path);
-                 XSSFWorkbook workbook = new XSSFWorkbook(fis)) {
-                
-                XSSFSheet sheetData;
-                int sheetIndex = 0;
-                
-                // Parse sheet parameter
-                if (sheet != null && !sheet.isEmpty()) {
-                    try {
-                        sheetIndex = Integer.parseInt(sheet);
-                        sheetData = workbook.getSheetAt(sheetIndex);
-                    } catch (NumberFormatException e) {
-                        // Try to get by name
-                        sheetData = workbook.getSheet(sheet);
-                        if (sheetData == null) {
-                            return "Error: sheet '" + sheet + "' not found";
-                        }
-                    }
-                } else {
-                    sheetData = workbook.getSheetAt(0);
-                }
-
-                if (sheetData == null) {
-                    return "Error: sheet at index " + sheetIndex + " not found";
-                }
-
-                content.append("Sheet: ").append(sheetData.getSheetName()).append("\n\n");
-
-                // Iterate through rows
-                sheetData.forEach(row -> {
-                    row.forEach(cell -> {
-                        String cellValue = getCellValueAsString(cell);
-                        content.append(cellValue).append("\t");
-                    });
-                    content.append("\n");
-                });
-            }
-
-            return content.toString().trim();
         } catch (Exception e) {
             return "Error reading Excel workbook: " + e.getMessage();
         }
+    }
+
+    /**
+     * Read .xlsx file (Office 2007+)
+     */
+    private String readXlsx(String path, String sheetParam) throws Exception {
+        StringBuilder content = new StringBuilder();
+        try (FileInputStream fis = new FileInputStream(path);
+             XSSFWorkbook workbook = new XSSFWorkbook(fis)) {
+            
+            XSSFSheet sheetData;
+            int sheetIndex = 0;
+            
+            // Parse sheet parameter
+            if (sheetParam != null && !sheetParam.isEmpty()) {
+                try {
+                    sheetIndex = Integer.parseInt(sheetParam);
+                    sheetData = workbook.getSheetAt(sheetIndex);
+                } catch (NumberFormatException e) {
+                    // Try to get by name
+                    sheetData = workbook.getSheet(sheetParam);
+                    if (sheetData == null) {
+                        return "Error: sheet '" + sheetParam + "' not found";
+                    }
+                }
+            } else {
+                sheetData = workbook.getSheetAt(0);
+            }
+
+            if (sheetData == null) {
+                return "Error: sheet at index " + sheetIndex + " not found";
+            }
+
+            content.append("Sheet: ").append(sheetData.getSheetName()).append("\n\n");
+
+            // Iterate through rows
+            sheetData.forEach(row -> {
+                row.forEach(cell -> {
+                    String cellValue = getCellValueAsString(cell);
+                    content.append(cellValue).append("\t");
+                });
+                content.append("\n");
+            });
+        }
+        return content.toString().trim();
+    }
+
+    /**
+     * Read .xls file (Office 97-2003)
+     */
+    private String readXls(String path, String sheetParam) throws Exception {
+        StringBuilder content = new StringBuilder();
+        try (FileInputStream fis = new FileInputStream(path);
+             HSSFWorkbook workbook = new HSSFWorkbook(fis)) {
+            
+            Sheet sheetData;
+            int sheetIndex = 0;
+            
+            // Parse sheet parameter
+            if (sheetParam != null && !sheetParam.isEmpty()) {
+                try {
+                    sheetIndex = Integer.parseInt(sheetParam);
+                    sheetData = workbook.getSheetAt(sheetIndex);
+                } catch (NumberFormatException e) {
+                    // Try to get by name
+                    sheetData = workbook.getSheet(sheetParam);
+                    if (sheetData == null) {
+                        return "Error: sheet '" + sheetParam + "' not found";
+                    }
+                }
+            } else {
+                sheetData = workbook.getSheetAt(0);
+            }
+
+            if (sheetData == null) {
+                return "Error: sheet at index " + sheetIndex + " not found";
+            }
+
+            content.append("Sheet: ").append(sheetData.getSheetName()).append("\n\n");
+
+            // Iterate through rows
+            for (Row row : sheetData) {
+                row.forEach(cell -> {
+                    String cellValue = getCellValueAsString(cell);
+                    content.append(cellValue).append("\t");
+                });
+                content.append("\n");
+            }
+        }
+        return content.toString().trim();
     }
 
     /**
