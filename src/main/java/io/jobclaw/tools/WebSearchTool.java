@@ -15,6 +15,8 @@ import org.springframework.stereotype.Component;
 
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -34,17 +36,13 @@ public class WebSearchTool {
     private static final MediaType JSON = MediaType.parse("application/json; charset=utf-8");
 
     private final String apiKey;
-    private final String secretKey;
     private final int maxResults;
     private final OkHttpClient httpClient;
 
     public WebSearchTool(Config config) {
-        // Try to get API keys from config first, then environment
+        // Try to get API key from config first, then environment
         String configApiKey = getApiKeyFromConfig(config);
-        String configSecretKey = getSecretKeyFromConfig(config);
-        
         this.apiKey = configApiKey != null ? configApiKey : System.getenv("QIANFAN_API_KEY");
-        this.secretKey = configSecretKey != null ? configSecretKey : System.getenv("QIANFAN_SECRET_KEY");
         this.maxResults = 5;
         this.httpClient = new OkHttpClient.Builder()
                 .connectTimeout(10, TimeUnit.SECONDS)
@@ -70,24 +68,6 @@ public class WebSearchTool {
         return null;
     }
 
-    /**
-     * Extract Secret key from config
-     */
-    private String getSecretKeyFromConfig(Config config) {
-        try {
-            ToolsConfig toolsConfig = config.getTools();
-            if (toolsConfig != null && toolsConfig.getWeb() != null) {
-                String secretKey = toolsConfig.getWeb().getSearch().getSecretKey();
-                if (secretKey != null && !secretKey.isEmpty()) {
-                    return secretKey;
-                }
-            }
-        } catch (Exception e) {
-            // Ignore config errors, will fallback to environment
-        }
-        return null;
-    }
-
     @Tool(name = "web_search", description = "Search the web for current information using Baidu Qianfan Search API. Use this to find latest news, articles, and web content. Returns search results with titles, URLs, and snippets.")
     public String search(
         @ToolParam(description = "Search query") String query,
@@ -97,10 +77,6 @@ public class WebSearchTool {
             return "Error: QIANFAN_API_KEY not configured. Please set in config.json (tools.web.search.api_key) or environment variable.";
         }
 
-        if (secretKey == null || secretKey.isEmpty()) {
-            return "Error: QIANFAN_SECRET_KEY not configured. Please set in config.json (tools.web.search.secret_key) or environment variable.";
-        }
-
         if (query == null || query.isEmpty()) {
             return "Error: query is required";
         }
@@ -108,20 +84,17 @@ public class WebSearchTool {
         int resultCount = count != null && count > 0 && count <= 10 ? count : maxResults;
 
         try {
-            // Step 1: Get access token
-            String accessToken = getAccessToken();
-            
-            // Step 2: Search with access token
-            String url = String.format(
-                    "https://qianfan.baidubce.com/api/v1/search?q=%s&top=%d",
-                    URLEncoder.encode(query, StandardCharsets.UTF_8),
-                    resultCount
-            );
+            // Use the correct API endpoint from documentation
+            String url = "https://qianfan.baidubce.com/v2/ai_search/websearch";
+
+            // Build request body according to documentation
+            String requestBody = buildSearchRequestBody(query, resultCount);
 
             Request request = new Request.Builder()
                     .url(url)
+                    .post(RequestBody.create(requestBody, JSON))
                     .header("Content-Type", "application/json")
-                    .header("Authorization", "Bearer " + accessToken)
+                    .header("Authorization", "Bearer " + apiKey)
                     .build();
 
             try (Response response = httpClient.newCall(request).execute()) {
@@ -139,36 +112,27 @@ public class WebSearchTool {
     }
 
     /**
-     * Get access token from Baidu OAuth
+     * Build search request body according to Baidu Qianfan API documentation
      */
-    private String getAccessToken() throws Exception {
-        String oauthUrl = "https://qianfan.baidubce.com/oauth/2.0/token";
-        
-        String requestBody = String.format(
-                "grant_type=client_credentials&client_id=%s&client_secret=%s",
-                apiKey,
-                secretKey
+    private String buildSearchRequestBody(String query, int topK) throws Exception {
+        // Use Map for simpler JSON building
+        Map<String, Object> message = Map.of(
+            "content", query,
+            "role", "user"
         );
 
-        Request request = new Request.Builder()
-                .url(oauthUrl)
-                .post(RequestBody.create(requestBody, MediaType.parse("application/x-www-form-urlencoded")))
-                .build();
+        Map<String, Object> resourceFilter = Map.of(
+            "type", "web",
+            "top_k", topK
+        );
 
-        try (Response response = httpClient.newCall(request).execute()) {
-            if (!response.isSuccessful()) {
-                throw new Exception("Failed to get access token: " + response.code());
-            }
+        Map<String, Object> requestBody = Map.of(
+            "messages", List.of(message),
+            "search_source", "baidu_search_v2",
+            "resource_type_filter", List.of(resourceFilter)
+        );
 
-            String responseBody = response.body().string();
-            JsonNode jsonNode = objectMapper.readTree(responseBody);
-            
-            if (jsonNode.has("access_token")) {
-                return jsonNode.get("access_token").asText();
-            } else {
-                throw new Exception("No access_token in response");
-            }
-        }
+        return objectMapper.writeValueAsString(requestBody);
     }
 
     /**
