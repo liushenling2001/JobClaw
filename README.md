@@ -194,25 +194,178 @@ Orchestrator 分析（自动识别多 Agent 需求）
 
 ## 🛠️ 工具系统
 
-### 内置工具
+### 完整工具列表 (13 个)
+
+#### 文件操作工具 (5 个)
 
 | 工具 | 功能 | 参数 |
 |------|------|------|
-| `read_file` | 读取文件内容 | `path` (必需) |
-| `write_file` | 写入文件内容 | `path`, `content` (必需) |
+| `read_file` | 读取任意文本文件 | `path` (必需) |
+| `write_file` | 写入/创建文件 | `path`, `content` (必需) |
 | `list_dir` | 浏览目录内容 | `path` (必需) |
+| `edit_file` | 精确文本替换 | `path`, `old_text`, `new_text` |
+| `append_file` | 追加内容到文件末尾 | `path`, `content` |
+
+#### 文档处理工具 (2 个)
+
+| 工具 | 功能 | 参数 |
+|------|------|------|
+| `read_word` | 读取 Word 文档 (.doc/.docx) | `path` (必需) |
+| `read_excel` | 读取 Excel 表格 (.xls/.xlsx) | `path`, `sheet_name`, `max_rows` |
+
+#### 命令执行工具 (1 个)
+
+| 工具 | 功能 | 参数 |
+|------|------|------|
+| `exec` | 执行 Shell 命令 | `command`, `timeout_seconds`, `workdir` |
+
+#### 网络工具 (2 个)
+
+| 工具 | 功能 | 参数 |
+|------|------|------|
+| `web_search` | 网页搜索 (Brave API) | `query`, `count` |
+| `web_fetch` | 抓取网页内容 | `url`, `extract_mode` |
+
+#### 系统工具 (3 个)
+
+| 工具 | 功能 | 参数 |
+|------|------|------|
+| `cron` | 定时任务管理 | `action`, `message`, `at_seconds`, `every_seconds`, `cron_expr` |
+| `message` | 发送消息到 IM 通道 | `channel`, `content`, `chat_id` |
+| `query_token_usage` | 查询 Token 使用统计 | `type`, `start_date`, `end_date` |
+
+#### 多 Agent 工具 (1 个)
+
+| 工具 | 功能 | 参数 |
+|------|------|------|
+| `spawn` | 生成子 Agent | `task`, `label`, `async`, `role` |
 
 ### 工具调用示例
 
-**用户请求：**
+#### 文件操作
+
+**读取文件：**
 ```
-读取 /home/user/config.json 的内容并分析
+用户：读取 /home/user/config.json 的内容
+Agent → read_file(path="/home/user/config.json")
 ```
 
-**Agent 执行流程：**
-1. 调用 `read_file` 工具读取文件
-2. 分析文件内容
-3. 返回分析结果
+**编辑文件：**
+```
+用户：把 config.json 里的 debug 改为 true
+Agent → edit_file(
+  path="/home/user/config.json",
+  old_text="debug: false",
+  new_text="debug: true"
+)
+```
+
+#### 文档处理
+
+**读取 Word 文档：**
+```
+用户：读取会议记录.docx
+Agent → read_word(path="/docs/会议记录.docx")
+```
+
+**读取 Excel 表格：**
+```
+用户：查看销售数据.xlsx 的前 10 行
+Agent → read_excel(
+  path="/docs/销售数据.xlsx",
+  max_rows=10
+)
+```
+
+#### 命令执行
+
+**执行 Shell 命令：**
+```
+用户：列出当前目录下的所有文件
+Agent → exec(command="ls -la", timeout_seconds=30)
+```
+
+#### 网络工具
+
+**网页搜索：**
+```
+用户：搜索 Spring AI 的最新版本
+Agent → web_search(query="Spring AI latest version 2026", count=5)
+```
+
+**抓取网页：**
+```
+用户：获取 https://spring.io 的内容
+Agent → web_fetch(url="https://spring.io", extract_mode="markdown")
+```
+
+#### 定时任务
+
+**一次性提醒：**
+```
+用户：10 分钟后提醒我喝水
+Agent → cron(
+  action="add",
+  message="喝水休息",
+  at_seconds=600
+)
+```
+
+**周期性任务：**
+```
+用户：每 2 小时检查一次邮箱
+Agent → cron(
+  action="add",
+  message="检查邮箱",
+  every_seconds=7200
+)
+```
+
+**Cron 表达式：**
+```
+用户：每天早上 9 点提醒晨会
+Agent → cron(
+  action="add",
+  message="晨会提醒",
+  cron_expr="0 9 * * *"
+)
+```
+
+#### 消息发送
+
+**发送通知：**
+```
+用户：通知所有用户服务器维护
+Agent → message(
+  channel="feishu",
+  content="⚠️ 服务器将于今晚 23:00 进行维护，预计持续 2 小时",
+  chat_id="all_users"
+)
+```
+
+#### Token 统计
+
+**查询今日用量：**
+```
+用户：今天用了多少 Token？
+Agent → query_token_usage(type="today")
+```
+
+**查询总用量：**
+```
+用户：总共花了多少 API 费用？
+Agent → query_token_usage(type="total")
+```
+
+**查询指定范围：**
+```
+用户：查询 3 月份的 Token 使用
+Agent → query_token_usage(
+  type="range",
+  start_date="2026-03-01",
+  end_date="2026-03-31"
+)
+```
 
 ---
 
