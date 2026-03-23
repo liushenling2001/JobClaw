@@ -117,6 +117,16 @@ public class Config {
     }
 
     private static void setToolsDefaults(Config config) {
+        // 确保 tools 和 web.search 不为 null
+        if (config.getTools() == null) {
+            config.setTools(new ToolsConfig());
+        }
+        if (config.getTools().getWeb() == null) {
+            config.getTools().setWeb(new ToolsConfig.WebToolsConfig());
+        }
+        if (config.getTools().getWeb().getSearch() == null) {
+            config.getTools().getWeb().setSearch(new ToolsConfig.WebSearchConfig());
+        }
         config.getTools().getWeb().getSearch().setMaxResults(5);
         // 注意：API Key 需要用户在配置文件中手动填写
         // config.getTools().getWeb().getSearch().setApiKey("");

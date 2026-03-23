@@ -41,8 +41,14 @@ public class AgentLoop {
         this.model = config.getAgent().getModel();
         String apiBase = config.getProviders().getDashscope().getApiBase();
         
+        // 如果 apiBase 为空，使用默认值
+        if (apiBase == null || apiBase.isEmpty()) {
+            apiBase = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+            logger.warn("apiBase not configured, using default: {}", apiBase);
+        }
+        
         // Spring AI OpenAI 兼容模式会自动追加/v1，所以去掉配置中的/v1 后缀
-        String baseUrlForSpringAi = apiBase != null ? apiBase.replaceAll("/v1$", "") : null;
+        String baseUrlForSpringAi = apiBase.replaceAll("/v1$", "");
 
         logger.info("Spring AI OpenAI Compatible config - apiKey: {}***, model: {}, apiBase: {} -> using: {}", 
             apiKey != null && apiKey.length() > 4 ? apiKey.substring(0, 4) : "null", 
