@@ -2,11 +2,13 @@ package io.jobclaw.config;
 
 import io.jobclaw.agent.AgentLoop;
 import io.jobclaw.bus.MessageBus;
+import io.jobclaw.channels.ChannelManager;
+import io.jobclaw.cron.CronService;
 import io.jobclaw.providers.HTTPProvider;
 import io.jobclaw.providers.LLMProvider;
 import io.jobclaw.session.SessionManager;
-import io.jobclaw.tools.FileTools;
-import io.jobclaw.tools.ToolRegistry;
+import io.jobclaw.stats.TokenUsageService;
+import io.jobclaw.tools.*;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -89,8 +91,36 @@ public class AgentBeansConfig {
 
     @Bean
     @ConditionalOnMissingBean
+    public CronService cronService() {
+        return new CronService();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public TokenUsageService tokenUsageService() {
+        return new TokenUsageService();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
     public AgentLoop agentLoop(Config config, SessionManager sessionManager, FileTools fileTools) {
         return new AgentLoop(config, sessionManager, fileTools);
+    }
+
+    // Tool beans with dependencies
+    @Bean
+    public CronTool cronTool(CronService cronService) {
+        return new CronTool(cronService);
+    }
+
+    @Bean
+    public MessageTool messageTool(ChannelManager channelManager) {
+        return new MessageTool(channelManager);
+    }
+
+    @Bean
+    public TokenUsageTool tokenUsageTool(TokenUsageService tokenUsageService) {
+        return new TokenUsageTool(tokenUsageService);
     }
 
     /**
