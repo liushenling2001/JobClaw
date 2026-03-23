@@ -136,6 +136,13 @@
             <version>${spring-ai.version}</version>
         </dependency>
 
+        <!-- Feishu/Lark Open Platform SDK -->
+        <dependency>
+            <groupId>com.larksuite.oapi</groupId>
+            <artifactId>oapi-sdk</artifactId>
+            <version>2.5.3</version>
+        </dependency>
+
         <!-- Testing -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
