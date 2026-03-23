@@ -81,13 +81,84 @@ public class Config {
 
     @JsonIgnore
     public Optional<String> validate() {
-        if (getApiKey().isEmpty()) {
-            return Optional.of("未配置任何 LLM Provider 的 API Key");
-        }
+        // 检查工作空间
         if (!isValidWorkspace()) {
-            return Optional.of("工作空间路径未配置");
+            return Optional.of("工作空间路径未配置 (agent.workspace)");
         }
+        
+        // 检查 LLM Provider 配置
+        String validationError = validateProviders();
+        if (validationError != null) {
+            return Optional.of(validationError);
+        }
+        
+        // 检查网关配置
+        if (gateway != null) {
+            int port = gateway.getPort();
+            if (port < 1 || port > 65535) {
+                return Optional.of("网关端口必须在 1-65535 之间，当前值：" + port);
+            }
+        }
+        
         return Optional.empty();
+    }
+
+    /**
+     * 验证 LLM Provider 配置
+     * @return 错误信息，如果没有错误返回 null
+     */
+    @JsonIgnore
+    private String validateProviders() {
+        if (providers == null) {
+            return "providers 配置为空，需要至少配置一个 LLM Provider";
+        }
+        
+        // 检查选中的 provider
+        String selectedProvider = agent != null ? agent.getProvider() : null;
+        if (selectedProvider == null || selectedProvider.isEmpty()) {
+            return "未指定默认 Provider (agent.provider)";
+        }
+        
+        // 根据选中的 provider 检查对应的配置
+        ProvidersConfig.ProviderConfig providerConfig = getProviderConfigByName(selectedProvider);
+        if (providerConfig == null) {
+            return "Provider '" + selectedProvider + "' 未在 providers 中配置";
+        }
+        
+        if (providerConfig.getApiKey() == null || providerConfig.getApiKey().trim().isEmpty()) {
+            return "Provider '" + selectedProvider + "' 的 API Key 未配置";
+        }
+        
+        // 验证 API Key 格式（基本检查）
+        String apiKey = providerConfig.getApiKey().trim();
+        if (selectedProvider.equals("dashscope") && !apiKey.startsWith("sk-")) {
+            return "DashScope API Key 应该以 'sk-' 开头，请检查配置";
+        }
+        
+        if (selectedProvider.equals("openai") && !apiKey.startsWith("sk-")) {
+            return "OpenAI API Key 应该以 'sk-' 开头，请检查配置";
+        }
+        
+        return null;
+    }
+
+    /**
+     * 根据名称获取 Provider 配置
+     */
+    @JsonIgnore
+    public ProvidersConfig.ProviderConfig getProviderConfigByName(String providerName) {
+        if (providers == null) return null;
+        
+        return switch (providerName) {
+            case "dashscope" -> providers.getDashscope();
+            case "openai" -> providers.getOpenai();
+            case "openrouter" -> providers.getOpenrouter();
+            case "anthropic" -> providers.getAnthropic();
+            case "zhipu" -> providers.getZhipu();
+            case "gemini" -> providers.getGemini();
+            case "ollama" -> providers.getOllama();
+            default -> null;
+        };
     }
 
     private boolean isValidWorkspace() {

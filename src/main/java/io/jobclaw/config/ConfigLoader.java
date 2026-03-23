@@ -43,10 +43,49 @@ public class ConfigLoader {
     private static Config loadFromFile(String path) throws IOException {
         File configFile = new File(path);
         if (!configFile.exists()) {
+            System.out.println();
+            System.out.println("ℹ️  配置文件不存在，将使用默认配置");
+            System.out.println();
             return Config.defaultConfig();
         }
-        String content = Files.readString(configFile.toPath());
-        return objectMapper.readValue(content, Config.class);
+        
+        try {
+            String content = Files.readString(configFile.toPath());
+            Config config = objectMapper.readValue(content, Config.class);
+            
+            // 验证加载的配置
+            if (config.getAgent() == null) {
+                config.setAgent(new AgentConfig());
+            }
+            if (config.getProviders() == null) {
+                config.setProviders(new ProvidersConfig());
+            }
+            if (config.getTools() == null) {
+                config.setTools(new ToolsConfig());
+            }
+            if (config.getGateway() == null) {
+                config.setGateway(new GatewayConfig());
+            }
+            
+            return config;
+        } catch (Exception e) {
+            System.err.println();
+            System.err.println("⚠️  配置文件加载失败：" + e.getMessage());
+            System.err.println();
+            System.err.println("可能原因：");
+            System.err.println("  • JSON 格式错误（缺少逗号、引号等）");
+            System.err.println("  • 配置文件编码问题");
+            System.err.println("  • 配置文件权限问题");
+            System.err.println();
+            System.err.println("建议：");
+            System.err.println("  1. 检查配置文件 JSON 格式：cat " + path);
+            System.err.println("  2. 使用 JSON 验证工具：https://jsonlint.com/");
+            System.err.println("  3. 重新生成配置：jobclaw onboard");
+            System.err.println();
+            System.err.println("将使用默认配置继续启动...");
+            System.err.println();
+            return Config.defaultConfig();
+        }
     }
 
     public static void save(String path, Config config) throws IOException {

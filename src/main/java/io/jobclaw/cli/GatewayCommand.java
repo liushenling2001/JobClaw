@@ -98,6 +98,23 @@ public class GatewayCommand extends CliCommand {
      * @return Agent 上下文
      */
     private AgentContext createAgentContext(Config config) {
+        // 首先验证配置
+        if (config != null) {
+            var validationError = config.validate();
+            if (validationError.isPresent()) {
+                System.err.println();
+                System.err.println("⚠️  配置验证警告：" + validationError.get());
+                System.err.println();
+                System.err.println("服务仍可启动，但部分功能可能无法使用。");
+                System.err.println();
+                System.err.println("建议修复配置：");
+                System.err.println("  1. 编辑配置文件：nano ~/.jobclaw/config.json");
+                System.err.println("  2. 参考配置示例：https://github.com/liushenling2001/JobClaw#%E9%85%8D%E7%BD%AE");
+                System.err.println("  3. 重新生成配置：jobclaw onboard");
+                System.err.println();
+            }
+        }
+
         try {
             // 从 Spring 获取 AgentLoop
             AgentLoop agentLoop = getAgentLoop();
@@ -106,6 +123,12 @@ public class GatewayCommand extends CliCommand {
             if (!providerConfigured) {
                 System.out.println();
                 System.out.println(WARNING_NO_PROVIDER);
+                System.out.println();
+                System.out.println("配置问题：");
+                if (config != null && config.getAgent() != null) {
+                    System.out.println("  • Provider: " + config.getAgent().getProvider());
+                    System.out.println("  • Model: " + config.getAgent().getModel());
+                }
                 System.out.println();
             }
 
@@ -116,11 +139,17 @@ public class GatewayCommand extends CliCommand {
             if (providerConfigured) {
                 System.out.println(LOGO + " Agent 已初始化");
                 System.out.println("  • 模型：" + config.getAgent().getModel());
+                System.out.println("  • Provider: " + config.getAgent().getProvider());
             }
 
             return new AgentContext(agentLoop, bus, providerConfigured);
         } catch (Exception e) {
-            System.err.println("Error creating AgentLoop: " + e.getMessage());
+            System.err.println();
+            System.err.println("⚠️  AgentLoop 创建失败：" + e.getMessage());
+            System.err.println();
+            System.err.println("服务将以受限模式启动（无 LLM 能力）");
+            System.err.println();
+            e.printStackTrace(System.err);
             return new AgentContext(null, new MessageBus(), false);
         }
     }
