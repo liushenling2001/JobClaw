@@ -118,5 +118,7 @@ public class Config {
 
     private static void setToolsDefaults(Config config) {
         config.getTools().getWeb().getSearch().setMaxResults(5);
+        // 注意：API Key 需要用户在配置文件中手动填写
+        // config.getTools().getWeb().getSearch().setApiKey("");
     }
 }

@@ -167,8 +167,37 @@ public class OnboardCommand extends CliCommand {
         System.out.println(LOGO + READY_MESSAGE);
         System.out.println();
         System.out.println("下一步：");
-        System.out.println("  1. 将你的 API 密钥添加到 " + configPath);
-        System.out.println("  2. 聊天：java -jar jobclaw.jar agent -m \"Hello!\"");
+        System.out.println();
+        System.out.println("1️⃣ 配置 LLM Provider（必需）");
+        System.out.println("   编辑 " + configPath + "，添加你的 API Key：");
+        System.out.println("   {");
+        System.out.println("     \"providers\": {");
+        System.out.println("       \"dashscope\": {");
+        System.out.println("         \"api_key\": \"sk-xxx\",  // 通义千问 API Key");
+        System.out.println("         \"api_base\": \"https://dashscope.aliyuncs.com/compatible-mode/v1\"");
+        System.out.println("       }");
+        System.out.println("     }");
+        System.out.println("   }");
+        System.out.println();
+        System.out.println("2️⃣ 配置搜索工具（可选，推荐）");
+        System.out.println("   百度千帆搜索 API Key：");
+        System.out.println("   {");
+        System.out.println("     \"tools\": {");
+        System.out.println("       \"web\": {");
+        System.out.println("         \"search\": {");
+        System.out.println("           \"api_key\": \"你的千帆 API Key\"  // 百度千帆 API Key");
+        System.out.println("         }");
+        System.out.println("       }");
+        System.out.println("     }");
+        System.out.println("   }");
+        System.out.println();
+        System.out.println("3️⃣ 启动服务");
+        System.out.println("   java -jar jobclaw.jar gateway  # 启动网关服务");
+        System.out.println("   java -jar jobclaw.jar agent    # CLI 交互模式");
+        System.out.println();
+        System.out.println("📖 获取 API Key：");
+        System.out.println("   • 通义千问：https://dashscope.console.aliyun.com/apiKey");
+        System.out.println("   • 百度千帆：https://cloud.baidu.com/product/qianfan");
         System.out.println();
     }
 
@@ -239,7 +268,35 @@ public class OnboardCommand extends CliCommand {
                 "- 使用工具来帮助完成任务\n" +
                 "- 在你的记忆文件中记住重要信息\n" +
                 "- 要积极主动和乐于助人\n" +
-                "- 从用户反馈中学习\n";
+                "- 从用户反馈中学习\n\n" +
+                "## 多智能体协作\n\n" +
+                "当遇到复杂任务时，可以使用多 Agent 协作模式：\n\n" +
+                "### 触发方式\n" +
+                "- 用户说：\"用多智能体模式\"、\"协作完成\"、\"作为 [角色]\"\n" +
+                "- 或者调用 spawn 工具创建子 Agent\n\n" +
+                "### 协作流程\n" +
+                "1. **Planner**：分析任务，制定计划\n" +
+                "2. **Executors**：执行具体任务（Coder/Researcher/Writer/Tester）\n" +
+                "3. **Reviewer**：审查质量和准确性\n" +
+                "4. **Writer**：汇总输出最终结果\n\n" +
+                "### 可用角色\n" +
+                "- **Assistant**：通用助手\n" +
+                "- **Coder**：编程专家\n" +
+                "- **Researcher**：信息收集\n" +
+                "- **Writer**：内容创作\n" +
+                "- **Reviewer**：质量审查\n" +
+                "- **Planner**：任务规划\n" +
+                "- **Tester**：测试验证\n\n" +
+                "## 工具使用规范\n\n" +
+                "- 搜索信息用 `web_search`（百度千帆）\n" +
+                "- 读取文档用 `read_word` / `read_excel`\n" +
+                "- 文件操作用 `read_file` / `write_file` / `edit_file`\n" +
+                "- 执行命令用 `exec`（注意安全）\n" +
+                "- 定时任务用 `cron`\n" +
+                "- 发送消息用 `message`\n" +
+                "- 创建子 Agent 用 `spawn`\n" +
+                "- 查询用量用 `query_token_usage`\n" +
+                "- 连接 MCP 服务器用 `mcp`\n";
     }
 
     /**
@@ -292,22 +349,47 @@ public class OnboardCommand extends CliCommand {
     private String buildIdentityTemplate() {
         return "# 身份\n\n" +
                 "## 名称\n" +
-                "JobClaw 🦞\n\n" +
+                "JobClaw 👨‍🔧\n\n" +
                 "## 描述\n" +
-                "用 Java 编写的超轻量级个人 AI 助手（基于 Spring Boot 3.3）。\n\n" +
+                "用 Java 编写的轻量级 AI Agent 框架（基于 Spring Boot 3.3 + Spring AI 1.0）。\n\n" +
                 "## 版本\n" +
-                "0.1.0\n\n" +
+                "1.0.0\n\n" +
                 "## 目的\n" +
-                "- 以最少的资源使用提供智能 AI 辅助\n" +
-                "- 支持多个 LLM 提供商（OpenAI、Anthropic、智谱、通义千问等）\n" +
-                "- 通过技能系统实现简单定制\n\n" +
-                "## 能力\n\n" +
-                "- 网络搜索和内容获取\n" +
-                "- 文件系统操作（读取、写入、编辑）\n" +
-                "- Shell 命令执行\n" +
-                "- 多通道消息传递（Telegram、Discord、WhatsApp、飞书、钉钉等）\n" +
-                "- 基于技能的可扩展性\n" +
-                "- 记忆和上下文管理\n";
+                "- 提供强大的 AI Agent 能力\n" +
+                "- 支持多 LLM 提供商（通义千问、OpenAI、智谱等）\n" +
+                "- 支持多智能体协作\n" +
+                "- 支持 MCP（Model Context Protocol）扩展\n\n" +
+                "## 核心能力\n\n" +
+                "### 🛠️ 工具系统（14 个内置工具）\n" +
+                "- **文件操作**：read_file, write_file, list_dir, edit_file, append_file\n" +
+                "- **文档处理**：read_word (.doc/.docx), read_excel (.xls/.xlsx)\n" +
+                "- **命令执行**：exec（跨平台，安全控制）\n" +
+                "- **网络工具**：web_search（百度千帆）, web_fetch（网页抓取）\n" +
+                "- **系统工具**：cron（定时任务）, message（消息发送）, spawn（子 Agent）, query_token_usage（用量统计）\n" +
+                "- **MCP 集成**：mcp（Model Context Protocol，支持外部服务器）\n" +
+                "\n" +
+                "### 🤖 多智能体协作\n" +
+                "- **7 个预设角色**：Assistant, Coder, Researcher, Writer, Reviewer, Planner, Tester\n" +
+                "- **4 步协作流程**：Planner 分析 → Executors 执行 → Reviewer 审查 → Writer 汇总\n" +
+                "- **自动检测**：根据关键词自动触发多 Agent 模式\n" +
+                "- **递归保护**：防止子 Agent 无限循环\n" +
+                "\n" +
+                "### 📡 通道集成（7 个平台）\n" +
+                "- 飞书、WhatsApp、Telegram、Discord、QQ、钉钉、MaixCam\n" +
+                "- 统一 MessageBus 消息总线\n" +
+                "- 支持官方 SDK（如飞书 lark-oapi-sdk）\n" +
+                "\n" +
+                "### 🧠 记忆系统\n" +
+                "- 长期记忆（MEMORY.md）\n" +
+                "- 每日笔记（memory/YYYY-MM-DD.md）\n" +
+                "- 心跳检查（HEARTBEAT.md）\n" +
+                "- Token 用量追踪\n" +
+                "\n" +
+                "### 🔌 扩展能力\n" +
+                "- MCP（Model Context Protocol）支持外部工具服务器\n" +
+                "- 技能系统（Skills）\n" +
+                "- 定时任务（Cron）\n" +
+                "- 自定义 Agent 角色\n";
     }
 
     /**
