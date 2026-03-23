@@ -390,6 +390,139 @@ java -jar target/jobclaw-1.0.0.jar agent
 > 你好，请介绍一下 JobClaw
 ```
 
+## 🛠️ 可用工具
+
+JobClaw 集成了 **14 个核心工具**，分为 5 大类：
+
+### 文件操作工具（5 个）
+
+| 工具名 | 描述 | 状态 |
+|--------|------|------|
+| `read_file` | 读取任意文本文件内容 | ✅ |
+| `write_file` | 创建或覆盖写入文件 | ✅ |
+| `list_dir` | 列出目录内容 | ✅ |
+| `edit_file` | 精确替换文件中的文本（old_text 必须完全匹配） | ✅ |
+| `append_file` | 在文件末尾追加内容 | ✅ |
+
+### 文档处理工具（2 个）
+
+| 工具名 | 描述 | 支持格式 | 状态 |
+|--------|------|----------|------|
+| `read_word` | 读取 Word 文档内容 | .doc, .docx | ✅ |
+| `read_excel` | 读取 Excel 工作簿内容 | .xls, .xlsx | ✅ |
+
+### 命令执行工具（1 个）
+
+| 工具名 | 描述 | 状态 |
+|--------|------|------|
+| `exec` | 执行 Shell 命令并返回输出<br>- 跨平台支持（Windows/Linux/macOS）<br>- 超时控制（默认 60 秒）<br>- 输出截断（最大 10000 字符）<br>- ⚠️ 安全警告：需配合权限控制使用 | ✅ |
+
+### 网络工具（2 个）
+
+| 工具名 | 描述 | 状态 |
+|--------|------|------|
+| `web_search` | 使用 Brave Search API 搜索网络<br>- 需要配置 `BRAVE_API_KEY` 环境变量<br>- 可配置结果数量（1-10） | ✅ |
+| `web_fetch` | 抓取网页并提取可读内容<br>- HTML 转文本（移除 script/style）<br>- JSON 内容支持<br>- URL 验证（仅 http/https） | ✅ |
+
+### 系统工具（4 个）
+
+| 工具名 | 描述 | 状态 |
+|--------|------|------|
+| `cron` | 定时任务管理<br>- 支持一次性提醒（at_seconds）<br>- 支持周期性任务（every_seconds）<br>- 支持复杂调度（cron_expr）<br>- 操作：add, list, remove, enable, disable | ⏳ 占位符 |
+| `message` | 发送消息到指定通道<br>- 支持所有消息平台（feishu, telegram, whatsapp 等）<br>- 通道和 chat_id 定位 | ⏳ 占位符 |
+| `spawn` | 生成子 Agent 处理任务<br>- 同步模式：等待结果并返回<br>- 异步模式：后台运行，完成后通知 | ⏳ 占位符 |
+| `query_token_usage` | 查询 Token 使用统计<br>- 按日期范围查询<br>- 按模型分组统计<br>- 按日期分组统计 | ⏳ 占位符 |
+
+**图例**：
+- ✅ 已实现并可用
+- ⏳ 占位符（待服务集成后完全可用）
+
+---
+
+### 工具使用示例
+
+#### 文件操作
+
+```bash
+# 读取文件
+read_file(path="/home/user/config.json")
+
+# 写入文件
+write_file(path="/tmp/test.txt", content="Hello World")
+
+# 精确编辑文件（old_text 必须完全匹配）
+edit_file(path="config.json", 
+          old_text='"port": 8080', 
+          new_text='"port": 9090')
+
+# 追加内容到文件末尾
+append_file(path="log.txt", content="2024-01-01 12:00:00 - App started\n")
+
+# 列出目录内容
+list_dir(path="/home/user")
+```
+
+#### 文档处理
+
+```bash
+# 读取 Word 文档
+read_word(path="/home/user/report.docx")
+
+# 读取 Excel 工作簿
+read_excel(path="/home/user/data.xlsx", sheet="Sheet1")
+```
+
+#### 命令执行
+
+```bash
+# 执行 Git 命令
+exec(command="git status")
+
+# 执行 Maven 构建（带超时）
+exec(command="mvn clean package", workingDir="/home/user/JobClaw", timeout=120)
+```
+
+#### 网络搜索
+
+```bash
+# 搜索 AI 新闻
+web_search(query="AI news 2024", count=5)
+
+# 搜索 Spring AI 教程
+web_search(query="Spring AI tutorial", count=10)
+```
+
+#### 网页抓取
+
+```bash
+# 抓取网页内容
+web_fetch(url="https://example.com")
+
+# 抓取 JSON API
+web_fetch(url="https://api.example.com/data.json", maxChars=10000)
+```
+
+#### 定时任务
+
+```bash
+# 10 分钟后提醒
+cron(action="add", message="喝水休息", at_seconds=600)
+
+# 每小时提醒
+cron(action="add", message="检查系统状态", every_seconds=3600)
+
+# 每天上午 9 点提醒（Cron 表达式）
+cron(action="add", message="晨会提醒", cron_expr="0 9 * * *")
+
+# 列出所有任务
+cron(action="list")
+
+# 删除任务
+cron(action="remove", job_id="job_1234567890")
+```
+
+---
+
 ### 使用工具
 
 ```
