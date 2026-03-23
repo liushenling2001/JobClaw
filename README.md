@@ -8,6 +8,7 @@ JobClaw 是一个轻量级的 AI Agent 框架，基于 Spring Boot 3.3、Java 17
 
 - 🚀 **Spring Boot 3.3** - 现代化的微服务框架
 - 🤖 **Spring AI 1.0** - 基于 Spring AI 1.0.0-SNAPSHOT，支持 OpenAI 兼容模式
+- 🤝 **多智能体协作** - 支持多 Agent 协作完成复杂任务（7 种预置角色）
 - 💬 **多通道支持** - Telegram, Discord, 钉钉，飞书（官方 SDK）, QQ, WhatsApp
 - 🛠️ **工具系统** - 文件读写、目录浏览等内置工具（基于 Spring AI @Tool）
 - 🎯 **技能扩展** - 可扩展的技能注册系统
@@ -187,7 +188,58 @@ java -jar target/jobclaw-1.0.0.jar agent -m "你好，请介绍一下 JobClaw"
 ### 运行演示
 
 ```bash
+# 单 Agent 演示
 java -jar target/jobclaw-1.0.0.jar demo agent-basic
+
+# 多 Agent 协作演示
+java -jar target/jobclaw-1.0.0.jar demo agent-multi
+```
+
+### 多智能体协作
+
+JobClaw 支持多智能体协作模式，自动协调多个专业 Agent 完成复杂任务。
+
+**预置角色:**
+- 👨‍💼 **Assistant** - 通用助手（默认）
+- 👨‍💻 **Coder** - 程序员（代码编写和审查）
+- 🔬 **Researcher** - 研究员（信息收集和分析）
+- ✍️ **Writer** - 作家（文档和内容创作）
+- 🔍 **Reviewer** - 审查员（质量检查和验证）
+- 📋 **Planner** - 规划师（任务分解和规划）
+- 🧪 **Tester** - 测试员（测试和验证）
+
+**使用方式:**
+
+1. **自动多 Agent 模式** - 请求中包含"多智能体"、"协作"、"团队"等关键词
+```
+请用多智能体协作模式开发一个 Java 工具类...
+```
+
+2. **指定角色** - 明确指定 Agent 角色
+```
+作为程序员，请帮我编写一个 JSON 处理工具...
+扮演研究员，分析这个技术方案...
+```
+
+3. **命令行演示**
+```bash
+# 运行多 Agent 协作演示
+java -jar target/jobclaw-1.0.0.jar demo agent-multi
+```
+
+**协作流程:**
+```
+用户请求 → Orchestrator 分析
+  ↓
+Planner 分解任务
+  ↓
+Executors (Coder/Researcher/Writer/Tester) 执行
+  ↓
+Reviewer 质量审查
+  ↓
+Writer 汇总输出
+  ↓
+用户收到完整结果
 ```
 
 ### 使用工具
@@ -236,13 +288,21 @@ Agent: [使用 read_file 工具读取文件并返回内容]
 
 ## 🔄 重大更新
 
-### v1.0.0 - Spring AI 迁移 (2026-03-23)
+### v1.0.0 - Spring AI 迁移 + 多智能体支持 (2026-03-23)
 
 **框架迁移:**
 - ✅ 从 AgentScope 迁移到 Spring AI 1.0.0-SNAPSHOT
 - ✅ 使用 OpenAI 兼容模式支持 DashScope Coding Plan
 - ✅ 重构 AgentLoop 使用 ChatClient + OpenAiChatModel
 - ✅ 工具系统使用 Spring AI @Tool 注解
+
+**多智能体系统:**
+- ✅ 新增 AgentOrchestrator（编排器）
+- ✅ 新增 AgentRegistry（Agent 注册表）
+- ✅ 新增 AgentRole（7 种预置角色）
+- ✅ 支持自动多 Agent 协作
+- ✅ 支持角色指定（"作为程序员..."）
+- ✅ 4 步协作流程（规划→执行→审查→汇总）
 
 **通道升级:**
 - ✅ 飞书通道使用官方 SDK（lark-oapi-sdk v2.5.3）
