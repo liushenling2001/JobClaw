@@ -1,6 +1,7 @@
 package io.jobclaw.config;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.*;
 
 /**
@@ -97,6 +98,8 @@ public class ProvidersConfig {
 
     public static class ProviderConfig {
         private String apiKey;
+        
+        @JsonProperty("baseUrl")
         private String apiBase;
 
         public ProviderConfig() {
@@ -111,6 +114,8 @@ public class ProvidersConfig {
 
         public String getApiKey() { return apiKey; }
         public void setApiKey(String apiKey) { this.apiKey = apiKey; }
+        
+        @JsonProperty("baseUrl")
         public String getApiBase() { return apiBase; }
         public void setApiBase(String apiBase) { this.apiBase = apiBase; }
 

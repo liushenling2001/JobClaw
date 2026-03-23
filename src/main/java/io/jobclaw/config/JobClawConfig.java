@@ -73,9 +73,8 @@ public class JobClawConfig {
 
     @Bean
     @ConditionalOnMissingBean
-    public AgentLoop agentLoop(Config config, SessionManager sessionManager, ContextBuilder contextBuilder,
-                                LLMProvider provider, ToolRegistry toolRegistry, MessageBus messageBus) {
-        return new AgentLoop(config, sessionManager, contextBuilder, provider, toolRegistry, messageBus);
+    public AgentLoop agentLoop(Config config, SessionManager sessionManager, FileTools fileTools) {
+        return new AgentLoop(config, sessionManager, fileTools);
     }
 
     @Bean

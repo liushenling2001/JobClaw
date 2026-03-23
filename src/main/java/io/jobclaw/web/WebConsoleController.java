@@ -55,7 +55,7 @@ public class WebConsoleController {
         Map<String, Object> response = new HashMap<>();
         try {
             String sessionKey = request.getSessionKey() != null ? request.getSessionKey() : "web:default";
-            String result = agentLoop.processWithTools(sessionKey, request.getMessage());
+            String result = agentLoop.process(sessionKey, request.getMessage());
             response.put("success", true);
             response.put("message", result);
             response.put("session", sessionKey);
@@ -73,7 +73,7 @@ public class WebConsoleController {
         executor.submit(() -> {
             try {
                 String sessionKey = request.getSessionKey() != null ? request.getSessionKey() : "web:default";
-                String result = agentLoop.processWithTools(sessionKey, request.getMessage());
+                String result = agentLoop.process(sessionKey, request.getMessage());
 
                 emitter.send(SseEmitter.event()
                         .name("message")

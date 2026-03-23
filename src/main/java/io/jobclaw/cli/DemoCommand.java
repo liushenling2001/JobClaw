@@ -72,11 +72,11 @@ public class DemoCommand extends CliCommand {
 
         // 3. 构造固定问题并调用 processDirect
         String sessionKey = "demo:agent-basic";
-        String question = "请用中文介绍一下 jobclaw 的架构，并简要说明一次消息是如何从命令行流经 Agent 再返回给用户的。";
+        String question = "请用简短的中文（3-5 句话）介绍一下什么是 AI Agent，以及它如何帮助用户完成任务。";
 
         System.out.println("示例问题：" + question + "\n");
         try {
-            String answer = agentLoop.processDirect(sessionKey, question);
+            String answer = agentLoop.process(sessionKey, question);
             System.out.println(LOGO + " Demo 响应:\n");
             System.out.println(answer);
             System.out.println();

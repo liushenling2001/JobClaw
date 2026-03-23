@@ -1,11 +1,11 @@
 package io.jobclaw.config;
 
 import io.jobclaw.agent.AgentLoop;
-import io.jobclaw.agent.ContextBuilder;
 import io.jobclaw.bus.MessageBus;
 import io.jobclaw.providers.HTTPProvider;
 import io.jobclaw.providers.LLMProvider;
 import io.jobclaw.session.SessionManager;
+import io.jobclaw.tools.FileTools;
 import io.jobclaw.tools.ToolRegistry;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
@@ -89,15 +89,8 @@ public class AgentBeansConfig {
 
     @Bean
     @ConditionalOnMissingBean
-    public ContextBuilder contextBuilder(Config config, SessionManager sessionManager, ToolRegistry toolRegistry) {
-        return new ContextBuilder(config, sessionManager, toolRegistry);
-    }
-
-    @Bean
-    @ConditionalOnMissingBean
-    public AgentLoop agentLoop(Config config, SessionManager sessionManager, ContextBuilder contextBuilder,
-                                LLMProvider provider, ToolRegistry toolRegistry, MessageBus messageBus) {
-        return new AgentLoop(config, sessionManager, contextBuilder, provider, toolRegistry, messageBus);
+    public AgentLoop agentLoop(Config config, SessionManager sessionManager, FileTools fileTools) {
+        return new AgentLoop(config, sessionManager, fileTools);
     }
 
     /**

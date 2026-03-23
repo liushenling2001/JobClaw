@@ -142,7 +142,7 @@ public class AgentCommand extends CliCommand {
         System.out.println();
         System.out.print(LOGO + PROMPT_SEPARATOR);
 
-        String response = agentLoop.processDirect(cmdArgs.sessionKey, cmdArgs.message);
+        String response = agentLoop.process(cmdArgs.sessionKey, cmdArgs.message);
         System.out.println(response);
         System.out.println();
     }
@@ -226,7 +226,7 @@ public class AgentCommand extends CliCommand {
             System.out.println();
             System.out.print(LOGO + PROMPT_SEPARATOR);
 
-            String response = agentLoop.processDirect(sessionKey, input);
+            String response = agentLoop.process(sessionKey, input);
             System.out.println(response);
             System.out.println();
 

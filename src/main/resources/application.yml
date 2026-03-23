@@ -2,6 +2,15 @@
 spring:
   application:
     name: JobClaw
+  ai:
+    openai:
+      # 使用 DashScope Coding Plan 的 API Key（从 config.json 读取，这里是占位符）
+      api-key: ${DASHSCOPE_API_KEY:sk-placeholder}
+      # Spring AI 会自动追加/v1，所以这里不需要/v1
+      base-url: ${DASHSCOPE_BASE_URL:https://coding.dashscope.aliyuncs.com}
+      chat:
+        options:
+          model: ${DASHSCOPE_MODEL:qwen3.5-plus}
 
 # Server Configuration
 server:
@@ -17,6 +26,7 @@ logging:
   level:
     root: INFO
     io.jobclaw: DEBUG
+    org.springframework.ai: DEBUG
   pattern:
     console: '%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n'
     file: '%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n'
