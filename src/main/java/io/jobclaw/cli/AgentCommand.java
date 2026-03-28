@@ -9,6 +9,7 @@ import io.jobclaw.session.SessionManager;
 import io.jobclaw.tools.ToolRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -16,16 +17,8 @@ import java.util.Scanner;
 
 /**
  * Agent 命令，直接与 Agent 交互。
- *
- * 提供两种交互模式：
- * - 单条消息模式：发送一条消息后退出
- * - 交互模式：持续对话直到用户退出
- *
- * 使用场景：
- * - 快速测试 Agent 功能
- * - 命令行中进行对话
- * - 调试 Agent 行为
  */
+@Component
 public class AgentCommand extends CliCommand {
 
     private static final Logger logger = LoggerFactory.getLogger(AgentCommand.class);

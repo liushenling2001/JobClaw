@@ -3,29 +3,14 @@ package io.jobclaw.cli;
 import io.jobclaw.config.Config;
 import io.jobclaw.config.ConfigLoader;
 import io.jobclaw.config.ProvidersConfig;
+import org.springframework.stereotype.Component;
 
 import java.io.File;
 
 /**
  * 状态命令，显示 JobClaw 系统状态。
- *
- * 核心功能：
- * - 检查配置文件是否存在
- * - 显示工作空间路径和状态
- * - 显示当前使用的模型
- * - 显示各 Provider 的 API Key 配置状态
- *
- * 检查项：
- * 1. 配置文件：~/.jobclaw/config.json 是否存在
- * 2. 工作空间：配置的工作空间目录是否存在
- * 3. 模型配置：当前使用的模型名称
- * 4. API 密钥：各 Provider（OpenRouter、Anthropic、OpenAI、Gemini、Zhipu、DashScope、Ollama）的配置状态
- *
- * 使用场景：
- * - 快速检查 JobClaw 配置是否正确
- * - 诊断配置问题
- * - 查看当前系统状态
  */
+@Component
 public class StatusCommand extends CliCommand {
 
     private static final String CHECK_MARK = "✓";          // 检查通过标记

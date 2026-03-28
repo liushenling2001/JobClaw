@@ -4,6 +4,7 @@ import io.jobclaw.config.Config;
 import io.jobclaw.skills.SkillInfo;
 import io.jobclaw.skills.SkillsInstaller;
 import io.jobclaw.skills.SkillsLoader;
+import org.springframework.stereotype.Component;
 
 import java.io.File;
 import java.io.IOException;
@@ -14,32 +15,8 @@ import java.util.List;
 
 /**
  * 技能命令，管理技能的安装、列表、移除和查看。
- *
- * 核心功能：
- * - 列出已安装的技能
- * - 安装内置技能到工作空间
- * - 从 GitHub 安装技能
- * - 移除已安装的技能
- * - 查看技能详情
- *
- * 技能来源：
- * 1. 本地技能：工作空间中的 skills 目录
- * 2. 内置技能：预装在系统中的技能模板
- * 3. 远程技能：从 GitHub 仓库安装
- *
- * 支持的子命令：
- * - list：列出已安装的技能
- * - install-builtin：安装所有内置技能到工作空间
- * - list-builtin：列出可用的内置技能
- * - install <repo>：从 GitHub 仓库安装技能
- * - remove/uninstall <name>：移除已安装的技能
- * - show <name>：显示技能的详细内容
- *
- * 技能结构：
- * - 每个技能是 skills 目录下的一个子目录
- * - 每个技能包含一个 SKILL.md 文件定义功能
- * - SKILL.md 包含 YAML frontmatter（name、description）和正文
  */
+@Component
 public class SkillsCommand extends CliCommand {
 
     private static final String SUBCOMMAND_LIST = "list";                  // 列出技能子命令

@@ -6,18 +6,12 @@ import io.jobclaw.config.Config;
 import io.jobclaw.config.ConfigLoader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Component;
 
 /**
  * Demo 命令 - 一键运行可复现的演示流程
- *
- * 当前支持的子模式：
- * - agent-basic：构造一个固定问题，直接通过 AgentLoop 跑完一轮 CLI 对话链路，方便现场演示。
- *
- * 学习/演示提示：
- * 结合 README 中的"5 分钟 Demo / Demo 1"，可以先执行 jobclaw demo agent-basic，
- * 再对照 JobClaw → DemoCommand → AgentLoop 的调用关系，向听众讲解从配置加载、
- * LLM Provider 初始化，到一次完整推理流程的关键步骤。
  */
+@Component
 public class DemoCommand extends CliCommand {
 
     private static final Logger logger = LoggerFactory.getLogger(DemoCommand.class);

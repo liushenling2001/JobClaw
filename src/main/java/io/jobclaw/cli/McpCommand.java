@@ -3,6 +3,7 @@ package io.jobclaw.cli;
 import io.jobclaw.config.Config;
 import io.jobclaw.config.MCPServersConfig;
 import io.jobclaw.tools.ToolRegistry;
+import org.springframework.stereotype.Component;
 
 import java.util.Collections;
 import java.util.List;
@@ -10,12 +11,8 @@ import java.util.Map;
 
 /**
  * MCP 管理命令
- *
- * 提供 MCP 服务器的管理和测试功能，支持子命令：
- * - list：列出所有已配置的 MCP 服务器
- * - test：测试指定服务器的连接和握手
- * - tools：列出指定服务器提供的工具
  */
+@Component
 public class McpCommand extends CliCommand {
 
     @Override

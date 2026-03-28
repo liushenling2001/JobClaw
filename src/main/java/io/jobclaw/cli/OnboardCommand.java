@@ -2,6 +2,7 @@ package io.jobclaw.cli;
 
 import io.jobclaw.config.Config;
 import io.jobclaw.config.ConfigLoader;
+import org.springframework.stereotype.Component;
 
 import java.io.File;
 import java.io.IOException;
@@ -40,6 +41,7 @@ import java.util.Scanner;
  * - 重置配置和工作空间
  * - 创建新的工作环境
  */
+@Component
 public class OnboardCommand extends CliCommand {
 
     private static final String CONFIRM_YES = "y";                    // 确认覆盖的输入
