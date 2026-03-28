@@ -10,19 +10,19 @@ export const mcpApi = {
     return apiClient.put('/mcp', { enabled }).then(res => res.data);
   },
 
-  addServer(server: MCPServer): Promise<void> {
-    return apiClient.post('/mcp', server).then(res => res.data);
+  add(data: Partial<MCPServer>): Promise<void> {
+    return apiClient.post('/mcp', data).then(res => res.data);
   },
 
-  updateServer(name: string, server: Partial<MCPServer>): Promise<void> {
-    return apiClient.put(`/mcp/${name}`, server).then(res => res.data);
+  updateServer(name: string, data: Partial<MCPServer>): Promise<void> {
+    return apiClient.put(`/mcp/${name}`, data).then(res => res.data);
   },
 
-  deleteServer(name: string): Promise<void> {
+  delete(name: string): Promise<void> {
     return apiClient.delete(`/mcp/${name}`).then(res => res.data);
   },
 
-  testServer(name: string): Promise<{ connected: boolean }> {
+  test(name: string): Promise<{ connected: boolean; initialized?: boolean }> {
     return apiClient.post(`/mcp/${name}/test`).then(res => res.data);
   }
 };

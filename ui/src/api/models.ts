@@ -10,7 +10,7 @@ export const modelsApi = {
     return apiClient.get('/config/model').then(res => res.data);
   },
 
-  update(model: string, provider?: string): Promise<void> {
-    return apiClient.put('/config/model', { model, provider }).then(res => res.data);
+  update(modelName: string): Promise<void> {
+    return apiClient.put('/config/model', { model: modelName }).then(res => res.data);
   }
 };

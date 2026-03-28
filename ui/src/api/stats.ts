@@ -1,17 +1,19 @@
 import apiClient from './index';
 
 export interface TokenStats {
-  totalTokens: number;
-  totalCost: number;
-  byModel: Array<{ model: string; tokens: number; cost: number }>;
-  byDate: Array<{ date: string; tokens: number }>;
+  totalTokens?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  byModel?: Array<{ model: string; total?: number; inputTokens?: number; outputTokens?: number }>;
+  byDate?: Array<{ date: string; total?: number; inputTokens?: number; outputTokens?: number }>;
 }
 
 export const statsApi = {
-  get(startDate?: string, endDate?: string): Promise<TokenStats> {
-    const params = new URLSearchParams();
-    if (startDate) params.append('startDate', startDate);
-    if (endDate) params.append('endDate', endDate);
-    return apiClient.get(`/token-stats?${params}`).then(res => res.data);
+  get(params?: { startDate?: string; endDate?: string }): Promise<TokenStats> {
+    const queryParams = new URLSearchParams();
+    if (params?.startDate) queryParams.append('startDate', params.startDate);
+    if (params?.endDate) queryParams.append('endDate', params.endDate);
+    const url = queryParams.toString() ? `/token-stats?${queryParams}` : '/token-stats';
+    return apiClient.get(url).then(res => res.data);
   }
 };
