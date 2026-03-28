@@ -7,7 +7,7 @@ import './styles/main.css';
 const app = createApp(App);
 
 // 全局错误处理
-app.config.errorHandler = (err, instance, info) => {
+app.config.errorHandler = (err, _instance, info) => {
   console.error('Global error:', err, info);
 };
 

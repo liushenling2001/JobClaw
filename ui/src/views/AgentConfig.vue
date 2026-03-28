@@ -31,18 +31,18 @@
 
           <div>
             <label class="block text-sm text-on-surface-variant mb-2">最大 Token 数</label>
-            <Input v-model="configForm.maxTokens" type="number" placeholder="4096" />
+            <input v-model.number="configForm.maxTokens" type="number" placeholder="4096" class="w-full bg-surface-container-high border-none text-sm px-4 py-2 rounded text-on-surface outline-none focus:ring-2 focus:ring-secondary/50" />
           </div>
 
           <div>
             <label class="block text-sm text-on-surface-variant mb-2">Temperature</label>
-            <Input v-model="configForm.temperature" type="number" step="0.1" min="0" max="2" placeholder="0.7" />
+            <input v-model.number="configForm.temperature" type="number" step="0.1" min="0" max="2" placeholder="0.7" class="w-full bg-surface-container-high border-none text-sm px-4 py-2 rounded text-on-surface outline-none focus:ring-2 focus:ring-secondary/50" />
             <p class="text-xs text-on-surface-variant mt-1">值越大输出越随机，0 为确定性输出</p>
           </div>
 
           <div>
             <label class="block text-sm text-on-surface-variant mb-2">最大工具迭代次数</label>
-            <Input v-model="configForm.maxToolIterations" type="number" placeholder="10" />
+            <input v-model.number="configForm.maxToolIterations" type="number" placeholder="10" class="w-full bg-surface-container-high border-none text-sm px-4 py-2 rounded text-on-surface outline-none focus:ring-2 focus:ring-secondary/50" />
           </div>
         </div>
       </Card>
@@ -99,7 +99,6 @@ import { useToast } from '@/composables/useToast';
 import { agentApi } from '@/api/agent';
 import Card from '@/components/common/Card.vue';
 import Button from '@/components/common/Button.vue';
-import Input from '@/components/common/Input.vue';
 import Skeleton from '@/components/common/Skeleton.vue';
 
 interface AgentConfig {

@@ -36,7 +36,7 @@ const router = createRouter({
 });
 
 // 路由守卫
-router.beforeEach((to, from, next) => {
+router.beforeEach((to, _from, next) => {
   const isAuthenticated = localStorage.getItem('auth_token') !== null;
 
   if (to.meta.requiresAuth !== false && !isAuthenticated) {

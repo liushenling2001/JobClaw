@@ -6,6 +6,10 @@ export const providersApi = {
     return apiClient.get('/providers').then(res => res.data);
   },
 
+  get(name: string): Promise<Provider> {
+    return apiClient.get(`/providers/${name}`).then(res => res.data);
+  },
+
   update(name: string, provider: Partial<Provider>): Promise<void> {
     return apiClient.put(`/providers/${name}`, provider).then(res => res.data);
   }

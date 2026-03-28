@@ -37,7 +37,7 @@ export const useChatStore = defineStore('chat', {
       this.messages = [];
     },
 
-    addMessage(role: string, content: string, toolCall?: ToolCall) {
+    addMessage(role: 'user' | 'assistant' | 'system', content: string, toolCall?: ToolCall) {
       const msg = {
         id: 'msg_' + Date.now(),
         role,

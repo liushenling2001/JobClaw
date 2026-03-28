@@ -77,7 +77,8 @@ export interface CronJob {
   name: string;
   message: string;
   enabled: boolean;
-  schedule: string | number;
+  schedule?: string;
+  everySeconds?: number;
   nextRun?: number;
 }
 
@@ -93,7 +94,7 @@ export interface Skill {
 // MCP 服务器类型
 export interface MCPServer {
   name: string;
-  type: 'http' | 'stdio';
+  type: 'sse' | 'stdio';
   description: string;
   endpoint?: string;
   apiKey?: string;

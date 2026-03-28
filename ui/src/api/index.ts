@@ -30,7 +30,7 @@ apiClient.interceptors.response.use(
       window.location.href = '/login';
     } else if (error.response?.status === 403) {
       console.error('没有权限执行此操作');
-    } else if (error.response?.status >= 500) {
+    } else if (error.response?.status && error.response.status >= 500) {
       console.error('服务器错误:', error.response?.status);
     }
     return Promise.reject(error);

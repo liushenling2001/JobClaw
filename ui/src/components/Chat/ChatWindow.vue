@@ -21,7 +21,7 @@ import MessageInput from './MessageInput.vue';
 
 const chatStore = useChatStore();
 const toast = useToast();
-const { startStream, stopStream, isConnecting } = useChatStream();
+const { startStream, stopStream } = useChatStream();
 
 const handleSendMessage = async (message: string) => {
   await startStream(message);

@@ -56,10 +56,8 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import { useChatStore } from '@/stores/chat';
-import { useToast } from '@/composables/useToast';
 
 const chatStore = useChatStore();
-const toast = useToast();
 
 const inputMessage = ref('');
 

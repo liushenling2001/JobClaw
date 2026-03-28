@@ -31,6 +31,9 @@ export function useChatStream() {
       chatStore.isStreaming = true;
       chatStore.isConnected = true;
 
+      if (!response.body) {
+        throw new Error('Response body is null');
+      }
       const reader = response.body.getReader();
       const decoder = new TextDecoder('utf-8');
       let buffer = '';
@@ -131,10 +134,11 @@ export function useChatStream() {
         // 更新最后一个工具调用的结果
         const messages = chatStore.messages;
         for (let i = messages.length - 1; i >= 0; i--) {
-          if (messages[i].toolCall && messages[i].toolCall.toolId === data.toolId) {
-            messages[i].toolCall.status = data.success ? 'success' : 'error';
-            messages[i].toolCall.result = data.result;
-            messages[i].toolCall.duration = data.duration || 0;
+          const msg = messages[i];
+          if (msg.toolCall && msg.toolCall.toolId === data.toolId) {
+            msg.toolCall.status = data.success ? 'success' : 'error';
+            msg.toolCall.result = data.result;
+            msg.toolCall.duration = data.duration || 0;
             break;
           }
         }

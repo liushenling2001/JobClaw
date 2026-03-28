@@ -52,7 +52,7 @@
       <div class="space-y-4">
         <div class="flex items-center justify-between">
           <h3 class="text-lg font-bold text-on-surface font-headline">编辑文件</h3>
-          <span class="text-sm text-on-surface-variant font-mono">{{ selectedFile.name }}</span>
+          <span class="text-sm text-on-surface-variant font-mono">{{ selectedFile?.name || '' }}</span>
         </div>
 
         <div v-if="loadingFile" class="py-8 flex items-center justify-center">
@@ -121,7 +121,7 @@ const openFile = async (file: FileInfo) => {
 
   try {
     const data = await filesApi.read(file.name);
-    fileContent.value = data.content;
+    fileContent.value = data.content || '';
     showEditModal.value = true;
   } catch (e) {
     toast.error('读取文件失败：' + (e as Error).message);

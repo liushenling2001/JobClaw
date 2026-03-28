@@ -70,7 +70,7 @@
         <div v-if="selectedChannel.allowFrom && selectedChannel.allowFrom.length > 0">
           <label class="block text-sm text-on-surface-variant mb-2">允许的 IP 地址</label>
           <div class="space-y-2">
-            <div v-for="(ip, index) in selectedChannel.allowFrom" :key="index" class="flex gap-2">
+            <div v-for="(_ip, index) in selectedChannel.allowFrom" :key="index" class="flex gap-2">
               <Input v-model="selectedChannel.allowFrom[index]" type="text" placeholder="IP 地址" />
               <Button variant="ghost" @click="removeAllowedIp(index)" class="text-error">
                 <span class="material-symbols-outlined text-sm">delete</span>

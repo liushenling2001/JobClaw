@@ -1,5 +1,4 @@
 import apiClient from './index';
-import type { Message } from '@/types';
 
 export interface ChatRequest {
   message: string;

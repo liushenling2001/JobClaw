@@ -159,11 +159,11 @@ const loadStats = async () => {
   }
 };
 
-const getBarWidth = (value: number): number => {
+const getBarWidth = (value: number | undefined): number => {
   if (!stats.byDate || stats.byDate.length === 0) return 0;
   const max = Math.max(...stats.byDate.map(d => d.total || 0));
   if (max === 0) return 0;
-  return (value / max) * 100;
+  return ((value || 0) / max) * 100;
 };
 
 const initDates = () => {

@@ -69,6 +69,8 @@ const chatStore = useChatStore();
 const isSidebarOpen = computed(() => chatStore.isSidebarOpen);
 const sessions = computed(() => chatStore.sessions);
 const currentSessionKey = computed(() => chatStore.currentSessionKey);
+const isStreaming = computed(() => chatStore.isStreaming);
+const isConnected = computed(() => chatStore.isConnected);
 
 const toggleSidebar = () => {
   chatStore.toggleSidebar();

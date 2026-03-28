@@ -100,7 +100,6 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
-import { useRouter } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';
 import { useToast } from '@/composables/useToast';
 import Card from '@/components/common/Card.vue';
@@ -108,7 +107,6 @@ import Button from '@/components/common/Button.vue';
 import Input from '@/components/common/Input.vue';
 import Skeleton from '@/components/common/Skeleton.vue';
 
-const router = useRouter();
 const authStore = useAuthStore();
 const toast = useToast();
 

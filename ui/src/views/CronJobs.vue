@@ -103,7 +103,7 @@
 
         <div v-else>
           <label class="block text-sm text-on-surface-variant mb-2">间隔秒数</label>
-          <Input v-model.number="newJob.everySeconds" type="number" min="1" placeholder="60" />
+          <input v-model.number="newJob.everySeconds" type="number" min="1" placeholder="60" class="w-full bg-surface-container-high border-none text-sm px-4 py-2 rounded text-on-surface outline-none focus:ring-2 focus:ring-secondary/50" />
         </div>
 
         <div class="flex justify-end gap-2 pt-4">
