@@ -1,2 +1,15 @@
 export { default as Login } from './Login.vue';
 export { default as Dashboard } from './Dashboard.vue';
+export { default as Chat } from './Chat.vue';
+export { default as Sessions } from './Sessions.vue';
+export { default as SessionDetail } from './SessionDetail.vue';
+export { default as Channels } from './Channels.vue';
+export { default as Providers } from './Providers.vue';
+export { default as Models } from './Models.vue';
+export { default as AgentConfig } from './AgentConfig.vue';
+export { default as CronJobs } from './CronJobs.vue';
+export { default as Skills } from './Skills.vue';
+export { default as MCPServers } from './MCPServers.vue';
+export { default as WorkspaceFiles } from './WorkspaceFiles.vue';
+export { default as TokenStats } from './TokenStats.vue';
+export { default as Settings } from './Settings.vue';
