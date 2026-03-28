@@ -1,0 +1,48 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 全局样式 */
+body {
+  @apply bg-background text-on-background font-body min-h-screen;
+}
+
+/* 毛玻璃效果 */
+.glass-panel {
+  @apply bg-[rgba(23,31,54,0.4)] backdrop-blur-xl;
+}
+
+/* 扫描线叠加 */
+.scanline-overlay {
+  background: linear-gradient(to bottom, transparent 50%, rgba(83, 221, 252, 0.02) 50%);
+  background-size: 100% 4px;
+  pointer-events: none;
+}
+
+/* 终端光标 */
+.terminal-cursor {
+  display: inline-block;
+  width: 8px;
+  height: 18px;
+  background-color: #53ddfc;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
+/* 自定义滚动条 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-[rgba(17,25,46,0.5)];
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-[rgba(111,117,139,0.5)] rounded;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-[rgba(111,117,139,0.7)];
+}

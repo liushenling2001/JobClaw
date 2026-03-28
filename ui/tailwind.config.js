@@ -1,0 +1,75 @@
+/** @type {import('tailwindcss').Config} */
+export default {
+  darkMode: 'class',
+  content: ['./index.html', './src/**/*.{vue,ts}'],
+  theme: {
+    extend: {
+      colors: {
+        'surface-container-lowest': '#000000',
+        'secondary': '#53ddfc',
+        'error-dim': '#d7383b',
+        'surface-container-low': '#0c1326',
+        'surface-container-highest': '#1c253e',
+        'secondary-fixed-dim': '#48d4f3',
+        'on-primary-fixed': '#000000',
+        'on-background': '#dfe4fe',
+        'surface-bright': '#222b47',
+        'tertiary-container': '#dae6fe',
+        'background': '#070d1f',
+        'secondary-fixed': '#65e1ff',
+        'on-primary-container': '#2b006e',
+        'inverse-primary': '#6e3bd7',
+        'surface-container': '#11192e',
+        'on-secondary-fixed': '#003a45',
+        'outline-variant': '#41475b',
+        'primary-fixed': '#ae8dff',
+        'on-tertiary-fixed-variant': '#535e72',
+        'secondary-dim': '#40ceed',
+        'surface-variant': '#1c253e',
+        'on-error': '#490006',
+        'on-tertiary-fixed': '#374155',
+        'error': '#ff716c',
+        'surface-container-high': '#171f36',
+        'on-tertiary-container': '#495468',
+        'inverse-surface': '#faf8ff',
+        'surface-tint': '#ba9eff',
+        'tertiary-dim': '#ccd7ef',
+        'on-surface': '#dfe4fe',
+        'on-surface-variant': '#a5aac2',
+        'tertiary-fixed': '#dae6fe',
+        'on-tertiary': '#515c70',
+        'inverse-on-surface': '#4f5469',
+        'surface': '#070d1f',
+        'primary': '#ba9eff',
+        'outline': '#6f758b',
+        'on-error-container': '#ffa8a3',
+        'surface-dim': '#070d1f',
+        'on-secondary-fixed-variant': '#005969',
+        'on-primary-fixed-variant': '#370086',
+        'primary-dim': '#8455ef',
+        'tertiary': '#f0f3ff',
+        'primary-fixed-dim': '#a27cff',
+        'on-primary': '#39008c',
+        'tertiary-fixed-dim': '#ccd7ef',
+        'primary-container': '#ae8dff',
+        'on-secondary': '#004b58',
+        'error-container': '#9f0519',
+        'on-secondary-container': '#ecfaff',
+        'secondary-container': '#00687a'
+      },
+      fontFamily: {
+        headline: ['Space Grotesk'],
+        body: ['Inter'],
+        label: ['Inter'],
+        mono: ['JetBrains Mono']
+      },
+      borderRadius: {
+        DEFAULT: '0.125rem',
+        lg: '0.25rem',
+        xl: '0.5rem',
+        full: '0.75rem'
+      }
+    }
+  },
+  plugins: []
+}
