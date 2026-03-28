@@ -2,7 +2,7 @@
 
 **AI Agent Framework based on Spring Boot 3.3 + Java 17 + Spring AI**
 
-JobClaw 是一个轻量级、可扩展的 AI Agent 框架，基于 Spring Boot 3.3、Java 17 和 Spring AI 1.0 构建。支持多智能体协作、多通道消息接入、工具系统、技能扩展等功能，适用于构建企业级 AI 助手和自动化应用。
+JobClaw 是一个轻量级、可扩展的 AI Agent 框架，基于 Spring Boot 3.3、Java 17 和 Spring AI 1.0 构建。支持多智能体协作、多通道消息接入、工具系统、技能扩展等功能，配备现代化的 Vue 3 Web 管理界面，适用于构建企业级 AI 助手和自动化应用。
 
 ---
 
@@ -26,10 +26,44 @@ JobClaw 是一个轻量级、可扩展的 AI Agent 框架，基于 Spring Boot 3
 - **定时任务** - 基于 Cron 的任务调度
 - **心跳服务** - 健康检查和周期性任务
 
-### 🌐 管理界面
-- **Web Console** - 内置 Web 管理界面（http://localhost:18791）
-- **REST API** - 提供 `/api/status`、`/api/chat`、`/api/chat/stream` 等接口
-- **SSE 流式输出** - 支持实时消息流
+### 🌐 现代化 Web Console
+
+**技术栈：**
+- **Vite 6** - 快速开发和构建工具
+- **Vue 3.4** - Composition API + TypeScript
+- **Vue Router 4** - 页面路由管理
+- **Pinia 2** - 状态管理
+- **Tailwind CSS 3** - 赛博朋克风格设计系统
+- **Axios** - HTTP 客户端
+
+**管理页面（14 个）：**
+
+| 页面 | 路由 | 功能 |
+|------|------|------|
+| Dashboard | `/dashboard` | 系统概览和快速操作 |
+| Chat | `/chat` | AI 对话，支持 SSE 流式输出和历史会话 |
+| Sessions | `/sessions` | 历史会话列表 |
+| SessionDetail | `/sessions/:id` | 查看会话详情和消息历史 |
+| Channels | `/channels` | 通道管理和配置 |
+| Providers | `/providers` | LLM Provider 配置和 API Key 管理 |
+| Models | `/models` | 模型列表和当前模型切换 |
+| AgentConfig | `/agent` | Agent 基础配置（maxTokens, temperature 等） |
+| CronJobs | `/cron` | 定时任务管理 |
+| Skills | `/skills` | 技能浏览/创建/编辑 |
+| MCPServers | `/mcp` | MCP 服务器配置 |
+| WorkspaceFiles | `/files` | 工作空间文件管理 |
+| TokenStats | `/stats` | Token 使用统计和图表 |
+| Settings | `/settings` | 系统设置和认证管理 |
+
+**核心功能：**
+- ✅ **SSE 流式输出** - 实时显示 AI 思考和工具调用过程
+- ✅ **历史会话** - 完整的会话管理和消息查看
+- ✅ **工具调用面板** - 可视化工具调用状态和结果
+- ✅ **响应式设计** - 赛博朋克风格深色主题
+- ✅ **错误处理** - 完整的通知和错误提示系统
+- ✅ **认证登录** - 简单模式用户名/密码登录
+
+访问地址：`http://localhost:18791`
 
 ### 🔐 安全特性
 - **命令黑名单** - 防止危险命令执行
@@ -45,6 +79,7 @@ JobClaw 是一个轻量级、可扩展的 AI Agent 框架，基于 Spring Boot 3
 
 - **JDK**: 17+
 - **Maven**: 3.6+
+- **Node.js**: 18+ (前端开发)
 - **操作系统**: Linux / macOS / Windows
 
 ### 编译构建
@@ -54,11 +89,14 @@ JobClaw 是一个轻量级、可扩展的 AI Agent 框架，基于 Spring Boot 3
 git clone https://github.com/liushenling2001/JobClaw.git
 cd JobClaw
 
-# 编译打包
+# 后端编译打包
 mvn clean package -DskipTests
 
-# 构建产物
-ls -lh target/jobclaw-1.0.0.jar  # 约 61MB
+# 前端构建（开发时可选）
+cd ui
+npm install
+npm run build
+# 构建产物自动输出到 src/main/resources/static/
 ```
 
 ### 初始化配置
@@ -138,40 +176,6 @@ http://localhost:18791
 | 📋 Planner | `planner` | 规划师 | 任务分解、计划制定 |
 | 🧪 Tester | `tester` | 测试员 | 测试验证、Bug 发现 |
 
-### 使用方式
-
-**1. 自动多 Agent 模式**
-
-请求中包含以下关键词时自动启用：
-- "多智能体"、"多 agent"、"multi-agent"
-- "协作"、"协同"、"团队"、"team"
-
-示例：
-```
-请用多智能体协作模式开发一个 Java 工具类...
-用团队协作完成这个任务...
-```
-
-**2. 指定角色**
-
-使用"作为"、"扮演"、"用"等关键词指定角色：
-
-```
-作为程序员，请帮我编写一个 JSON 处理工具...
-扮演研究员，分析这个技术方案的优缺点...
-用 coder 角色开发一个 REST API...
-```
-
-**3. CLI 演示**
-
-```bash
-# 单 Agent 演示
-java -jar target/jobclaw-1.0.0.jar demo agent-basic
-
-# 多 Agent 协作演示
-java -jar target/jobclaw-1.0.0.jar demo agent-multi
-```
-
 ### 协作流程
 
 ```
@@ -197,323 +201,173 @@ Orchestrator 分析（自动识别多 Agent 需求）
 ### 完整工具列表 (13 个)
 
 #### 文件操作工具 (5 个)
-
-| 工具 | 功能 | 参数 |
-|------|------|------|
-| `read_file` | 读取任意文本文件 | `path` (必需) |
-| `write_file` | 写入/创建文件 | `path`, `content` (必需) |
-| `list_dir` | 浏览目录内容 | `path` (必需) |
-| `edit_file` | 精确文本替换 | `path`, `old_text`, `new_text` |
-| `append_file` | 追加内容到文件末尾 | `path`, `content` |
+- `read_file` - 读取任意文本文件
+- `write_file` - 写入/创建文件
+- `list_dir` - 浏览目录内容
+- `edit_file` - 精确文本替换
+- `append_file` - 追加内容到文件末尾
 
 #### 文档处理工具 (2 个)
-
-| 工具 | 功能 | 参数 |
-|------|------|------|
-| `read_word` | 读取 Word 文档 (.doc/.docx) | `path` (必需) |
-| `read_excel` | 读取 Excel 表格 (.xls/.xlsx) | `path`, `sheet_name`, `max_rows` |
+- `read_word` - 读取 Word 文档 (.doc/.docx)
+- `read_excel` - 读取 Excel 表格 (.xls/.xlsx)
 
 #### 命令执行工具 (1 个)
-
-| 工具 | 功能 | 参数 |
-|------|------|------|
-| `exec` | 执行 Shell 命令 | `command`, `timeout_seconds`, `workdir` |
+- `exec` - 执行 Shell 命令
 
 #### 网络工具 (2 个)
-
-| 工具 | 功能 | 参数 |
-|------|------|------|
-| `web_search` | 网页搜索 (Brave API) | `query`, `count` |
-| `web_fetch` | 抓取网页内容 | `url`, `extract_mode` |
+- `web_search` - 网页搜索 (Brave API)
+- `web_fetch` - 抓取网页内容
 
 #### 系统工具 (3 个)
-
-| 工具 | 功能 | 参数 |
-|------|------|------|
-| `cron` | 定时任务管理 | `action`, `message`, `at_seconds`, `every_seconds`, `cron_expr` |
-| `message` | 发送消息到 IM 通道 | `channel`, `content`, `chat_id` |
-| `query_token_usage` | 查询 Token 使用统计 | `type`, `start_date`, `end_date` |
-
-#### 多 Agent 工具 (1 个)
-
-| 工具 | 功能 | 参数 |
-|------|------|------|
-| `spawn` | 生成子 Agent | `task`, `label`, `async`, `role` |
+- `cron` - 定时任务管理
+- `message` - 发送消息到 IM 通道
+- `query_token_usage` - 查询 Token 使用统计
 
 #### MCP 工具 (1 个)
-
-| 工具 | 功能 | 参数 |
-|------|------|------|
-| `mcp` | Model Context Protocol | `action`, `server_id`, `url`, `resource_uri`, `tool_name`, `arguments` |
-
-**MCP 支持的操作：**
-- `connect` - 连接 MCP 服务器
-- `disconnect` - 断开连接
-- `list_servers` - 列出已连接的服务器
-- `list_resources` - 列出资源
-- `list_tools` - 列出工具
-- `list_prompts` - 列出提示词
-- `read_resource` - 读取资源
-- `call_tool` - 调用工具
-- `get_prompt` - 获取提示词
-
-### 工具调用示例
-
-#### 文件操作
-
-**读取文件：**
-```
-用户：读取 /home/user/config.json 的内容
-Agent → read_file(path="/home/user/config.json")
-```
-
-**编辑文件：**
-```
-用户：把 config.json 里的 debug 改为 true
-Agent → edit_file(
-  path="/home/user/config.json",
-  old_text="debug: false",
-  new_text="debug: true"
-)
-```
-
-#### 文档处理
-
-**读取 Word 文档：**
-```
-用户：读取会议记录.docx
-Agent → read_word(path="/docs/会议记录.docx")
-```
-
-**读取 Excel 表格：**
-```
-用户：查看销售数据.xlsx 的前 10 行
-Agent → read_excel(
-  path="/docs/销售数据.xlsx",
-  max_rows=10
-)
-```
-
-#### 命令执行
-
-**执行 Shell 命令：**
-```
-用户：列出当前目录下的所有文件
-Agent → exec(command="ls -la", timeout_seconds=30)
-```
-
-#### 网络工具
-
-**网页搜索：**
-```
-用户：搜索 Spring AI 的最新版本
-Agent → web_search(query="Spring AI latest version 2026", count=5)
-```
-
-**抓取网页：**
-```
-用户：获取 https://spring.io 的内容
-Agent → web_fetch(url="https://spring.io", extract_mode="markdown")
-```
-
-#### 定时任务
-
-**一次性提醒：**
-```
-用户：10 分钟后提醒我喝水
-Agent → cron(
-  action="add",
-  message="喝水休息",
-  at_seconds=600
-)
-```
-
-**周期性任务：**
-```
-用户：每 2 小时检查一次邮箱
-Agent → cron(
-  action="add",
-  message="检查邮箱",
-  every_seconds=7200
-)
-```
-
-**Cron 表达式：**
-```
-用户：每天早上 9 点提醒晨会
-Agent → cron(
-  action="add",
-  message="晨会提醒",
-  cron_expr="0 9 * * *"
-)
-```
-
-#### 消息发送
-
-**发送通知：**
-```
-用户：通知所有用户服务器维护
-Agent → message(
-  channel="feishu",
-  content="⚠️ 服务器将于今晚 23:00 进行维护，预计持续 2 小时",
-  chat_id="all_users"
-)
-```
-
-#### Token 统计
-
-**查询今日用量：**
-```
-用户：今天用了多少 Token？
-Agent → query_token_usage(type="today")
-```
-
-#### MCP 集成
-
-**连接文件系统 MCP 服务器：**
-```
-用户：连接本地文件系统 MCP
-Agent → mcp(
-  action="connect",
-  server_id="filesystem",
-  url="http://localhost:8080"
-)
-→ ✅ Connected to MCP server: filesystem
-   - URL: http://localhost:8080
-   - Name: Filesystem MCP
-   - Resources: 5 available
-   - Tools: 3 available
-```
-
-**列出可用资源：**
-```
-用户：filesystem 上有哪些资源？
-Agent → mcp(action="list_resources", server_id="filesystem")
-→ 📦 Resources on filesystem
-   - **etc-hosts**
-     - URI: file:///etc/hosts
-   - **config**
-     - URI: file:///app/config.json
-```
-
-**读取资源内容：**
-```
-用户：读取 /etc/hosts 文件
-Agent → mcp(
-  action="read_resource",
-  server_id="filesystem",
-  resource_uri="file:///etc/hosts"
-)
-→ 📄 Resource Content (file:///etc/hosts)
-   127.0.0.1       localhost
-   192.168.1.100   server.local
-```
-
-**调用远程工具：**
-```
-用户：克隆 GitHub 仓库
-Agent → mcp(
-  action="call_tool",
-  server_id="git",
-  tool_name="git_clone",
-  arguments='{"url":"https://github.com/user/repo.git"}'
-)
-→ 🛠️ Tool Result (git_clone)
-   Repository cloned successfully
-```
-
-**获取提示词模板：**
-```
-用户：获取代码审查提示词
-Agent → mcp(
-  action="get_prompt",
-  server_id="assistant",
-  prompt_name="code_review",
-  arguments='{"language":"java"}'
-)
-→ 💬 Prompt (code_review)
-   请审查以下 Java 代码，关注：
-   1. 代码规范
-   2. 潜在 bug
-   3. 性能优化
-   ...
-```
-
-**查询总用量：**
-```
-用户：总共花了多少 API 费用？
-Agent → query_token_usage(type="total")
-```
-
-**查询指定范围：**
-```
-用户：查询 3 月份的 Token 使用
-Agent → query_token_usage(
-  type="range",
-  start_date="2026-03-01",
-  end_date="2026-03-31"
-)
-```
+- `mcp` - Model Context Protocol
 
 ---
 
-## 💬 通道配置
+## 💻 前端开发
 
-### 飞书通道
+### 目录结构
 
-**飞书开放平台配置：**
-1. 访问 https://open.feishu.cn/app 创建企业自建应用
-2. 在"凭证与基础信息"中获取 App ID 和 App Secret
-3. 在"事件订阅"中选择"使用长连接接收事件"
-4. 订阅 `im.message.receive_v1` 事件
-5. 在"机器人"能力中启用机器人
-
-**config.json 配置：**
-```json
-{
-  "channels": {
-    "feishu": {
-      "enabled": true,
-      "appId": "cli_xxxxxxxxxxxxx",
-      "appSecret": "xxxxxxxxxxxxx",
-      "connectionMode": "websocket",
-      "allowFrom": ["open_id_xxx"]
-    }
-  }
-}
+```
+ui/
+├── src/
+│   ├── api/              # API 服务层
+│   │   ├── agent.ts
+│   │   ├── channels.ts
+│   │   ├── chat.ts
+│   │   ├── cron.ts
+│   │   ├── files.ts
+│   │   ├── mcp.ts
+│   │   ├── models.ts
+│   │   ├── providers.ts
+│   │   ├── sessions.ts
+│   │   ├── skills.ts
+│   │   ├── stats.ts
+│   │   └── index.ts      # Axios 配置
+│   ├── components/       # Vue 组件
+│   │   ├── common/       # 通用组件
+│   │   │   ├── Button.vue
+│   │   │   ├── Card.vue
+│   │   │   ├── Input.vue
+│   │   │   ├── Modal.vue
+│   │   │   └── Skeleton.vue
+│   │   ├── Chat/         # Chat 相关组件
+│   │   │   ├── ChatWindow.vue
+│   │   │   ├── MessageInput.vue
+│   │   │   ├── MessageList.vue
+│   │   │   └── ToolCallPanel.vue
+│   │   └── Layout/       # 布局组件
+│   │       └── AppLayout.vue
+│   ├── composables/      # 组合式函数
+│   │   ├── useChatStream.ts   # SSE 流式输出
+│   │   └── useToast.ts        # Toast 通知
+│   ├── router/           # 路由配置
+│   ├── stores/           # Pinia 状态管理
+│   │   ├── auth.ts
+│   │   ├── chat.ts
+│   │   ├── index.ts
+│   ├── types/            # TypeScript 类型定义
+│   │   └── index.ts
+│   ├── views/            # 页面组件
+│   │   ├── AgentConfig.vue
+│   │   ├── Channels.vue
+│   │   ├── Chat.vue
+│   │   ├── CronJobs.vue
+│   │   ├── Dashboard.vue
+│   │   ├── Login.vue
+│   │   ├── MCPServers.vue
+│   │   ├── Models.vue
+│   │   ├── Providers.vue
+│   │   ├── SessionDetail.vue
+│   │   ├── Sessions.vue
+│   │   ├── Settings.vue
+│   │   ├── Skills.vue
+│   │   ├── TokenStats.vue
+│   │   └── WorkspaceFiles.vue
+│   └── App.vue
+├── package.json
+├── tsconfig.json
+├── vite.config.ts
+└── tailwind.config.js
 ```
 
-### 支持的通道
+### 开发模式
 
-| 通道 | 状态 | 备注 |
-|------|------|------|
-| 飞书 (Feishu) | ✅ 官方 SDK | WebSocket 长连接 |
-| 钉钉 (DingTalk) | ✅ | Webhook |
-| QQ | ✅ | 协议接入 |
-| Telegram | ✅ | Bot API |
-| Discord | ✅ | JDA |
-| WhatsApp | ✅ | Business API |
-| MaixCam | ✅ | 本地摄像头 |
+```bash
+cd ui
+npm install
+npm run dev
+# 访问 http://localhost:5173
+# API 代理到 http://localhost:8080
+```
+
+### 构建生产版本
+
+```bash
+cd ui
+npm run build
+# 输出到 ../src/main/resources/static/
+```
+
+### 技术要点
+
+**SSE 流式输出实现：**
+```typescript
+// composables/useChatStream.ts
+const startStream = async (message: string) => {
+  const response = await fetch('/api/execute/stream', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}` },
+    body: JSON.stringify({ message, sessionKey })
+  });
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+
+  while (true) {
+    const { done, value } = await reader.read();
+    const chunk = decoder.decode(value);
+    // 解析 SSE 事件: THINK_STREAM, TOOL_CALL, FINAL_RESPONSE...
+  }
+};
+```
+
+**Pinia 状态管理：**
+```typescript
+// stores/chat.ts
+export const useChatStore = defineStore('chat', {
+  state: () => ({
+    currentSessionKey: string | null,
+    messages: Message[],
+    isStreaming: boolean,
+    isSidebarOpen: boolean
+  }),
+  actions: {
+    addMessage(role, content, toolCall?) { ... },
+    createNewSession() { ... }
+  }
+});
+```
 
 ---
 
 ## 📖 CLI 命令
 
-| 命令 | 描述 | 示例 |
-|------|------|------|
-| `onboard` | 初始化配置和工作空间 | `jobclaw onboard` |
-| `agent` | 与 Agent 交互（CLI 模式） | `jobclaw agent` |
-| `gateway` | 启动网关服务 | `jobclaw gateway` |
-| `status` | 显示系统状态 | `jobclaw status` |
-| `demo` | 运行演示 | `jobclaw demo agent-basic` |
-| `version` | 显示版本信息 | `jobclaw version` |
-| `cron` | 管理定时任务 | `jobclaw cron list` |
-| `skills` | 管理技能 | `jobclaw skills list` |
-| `mcp` | 管理 MCP 服务器 | `jobclaw mcp list` |
-
-**演示模式：**
-- `agent-basic` - 单 Agent 基础演示
-- `agent-multi` - 多 Agent 协作演示
+| 命令 | 描述 |
+|------|------|
+| `onboard` | 初始化配置和工作空间 |
+| `agent` | 与 Agent 交互（CLI 模式） |
+| `gateway` | 启动网关服务 |
+| `status` | 显示系统状态 |
+| `demo` | 运行演示 |
+| `version` | 显示版本信息 |
+| `cron` | 管理定时任务 |
+| `skills` | 管理技能 |
+| `mcp` | 管理 MCP 服务器 |
 
 ---
 
@@ -524,26 +378,12 @@ Agent → query_token_usage(
 ```json
 {
   "providers": {
-    "dashscope": {
-      "apiKey": "sk-xxx",
-      "apiBase": "https://coding.dashscope.aliyuncs.com"
-    },
-    "openai": {
-      "apiKey": "sk-xxx",
-      "apiBase": "https://api.openai.com"
-    },
-    "anthropic": {
-      "apiKey": "sk-xxx"
-    },
-    "zhipu": {
-      "apiKey": "xxx"
-    },
-    "gemini": {
-      "apiKey": "xxx"
-    },
-    "ollama": {
-      "apiBase": "http://localhost:11434"
-    }
+    "dashscope": { "apiKey": "sk-xxx", "apiBase": "https://coding.dashscope.aliyuncs.com" },
+    "openai": { "apiKey": "sk-xxx", "apiBase": "https://api.openai.com" },
+    "anthropic": { "apiKey": "sk-xxx" },
+    "zhipu": { "apiKey": "xxx" },
+    "gemini": { "apiKey": "xxx" },
+    "ollama": { "apiBase": "http://localhost:11434" }
   }
 }
 ```
@@ -580,210 +420,48 @@ JobClaw/
 │   │   ├── AgentRegistry.java      # Agent 注册表
 │   │   └── AgentOrchestrator.java  # 多 Agent 编排器
 │   ├── bus/                # 消息总线
-│   │   └── MessageBus.java         # 消息分发
 │   ├── channels/           # 通道实现
-│   │   ├── FeishuChannel.java      # 飞书（官方 SDK）
-│   │   ├── DingTalkChannel.java    # 钉钉
-│   │   ├── QQChannel.java          # QQ
-│   │   ├── TelegramChannel.java    # Telegram
-│   │   └── ...
 │   ├── cli/                # CLI 命令
-│   │   ├── AgentCommand.java       # agent 命令
-│   │   ├── GatewayCommand.java     # gateway 命令
-│   │   └── DemoCommand.java        # demo 命令
 │   ├── config/             # 配置管理
-│   │   ├── Config.java             # 主配置
-│   │   ├── JobClawConfig.java      # JobClaw 配置
-│   │   └── AgentBeansConfig.java   # Spring Bean 配置
 │   ├── cron/               # 定时任务
 │   ├── heartbeat/          # 心跳服务
 │   ├── mcp/                # MCP 集成
 │   ├── providers/          # LLM Provider
-│   │   └── DashscopeProvider.java  # 通义千问
 │   ├── security/           # 安全守卫
 │   ├── session/            # 会话管理
-│   │   └── SessionManager.java     # 会话管理
 │   ├── skills/             # 技能系统
 │   ├── tools/              # 工具系统
-│   │   ├── FileTools.java          # 文件工具
-│   │   └── JobClawToolkit.java     # 工具集合
 │   └── web/                # Web Console
-│       └── WebConsoleController.java  # REST API
+├── ui/                     # Vue 3 前端
+│   ├── src/
+│   │   ├── api/
+│   │   ├── components/
+│   │   ├── composables/
+│   │   ├── router/
+│   │   ├── stores/
+│   │   ├── types/
+│   │   └── views/
+│   ├── package.json
+│   └── vite.config.ts
 ├── src/main/resources/
-│   ├── application.yml     # Spring Boot 配置
-│   └── static/             # 静态资源（HTML/CSS/JS）
-├── pom.xml                 # Maven 依赖
-├── MIGRATION_PLAN.md       # Spring AI 迁移文档
-└── README.md               # 项目说明
+│   ├── application.yml
+│   └── static/             # 前端构建产物
+├── pom.xml
+└── README.md
 ```
 
 ---
 
 ## 🎯 使用示例
 
-### 与 Agent 对话
+### Web Console
 
-```bash
-# 启动 agent
-java -jar target/jobclaw-1.0.0.jar agent
+1. 访问 `http://localhost:18791`
+2. 登录（如果需要）
+3. 在 Chat 页面与 AI 对话
+4. 查看历史会话、配置 Provider、管理通道等
 
-# 发送消息
-> 你好，请介绍一下 JobClaw
-```
-
-## 🛠️ 可用工具
-
-JobClaw 集成了 **14 个核心工具**，分为 5 大类：
-
-### 文件操作工具（5 个）
-
-| 工具名 | 描述 | 状态 |
-|--------|------|------|
-| `read_file` | 读取任意文本文件内容 | ✅ |
-| `write_file` | 创建或覆盖写入文件 | ✅ |
-| `list_dir` | 列出目录内容 | ✅ |
-| `edit_file` | 精确替换文件中的文本（old_text 必须完全匹配） | ✅ |
-| `append_file` | 在文件末尾追加内容 | ✅ |
-
-### 文档处理工具（2 个）
-
-| 工具名 | 描述 | 支持格式 | 状态 |
-|--------|------|----------|------|
-| `read_word` | 读取 Word 文档内容 | .doc, .docx | ✅ |
-| `read_excel` | 读取 Excel 工作簿内容 | .xls, .xlsx | ✅ |
-
-### 命令执行工具（1 个）
-
-| 工具名 | 描述 | 状态 |
-|--------|------|------|
-| `exec` | 执行 Shell 命令并返回输出<br>- 跨平台支持（Windows/Linux/macOS）<br>- 超时控制（默认 60 秒）<br>- 输出截断（最大 10000 字符）<br>- ⚠️ 安全警告：需配合权限控制使用 | ✅ |
-
-### 网络工具（2 个）
-
-| 工具名 | 描述 | 状态 |
-|--------|------|------|
-| `web_search` | 使用 Brave Search API 搜索网络<br>- 需要配置 `BRAVE_API_KEY` 环境变量<br>- 可配置结果数量（1-10） | ✅ |
-| `web_fetch` | 抓取网页并提取可读内容<br>- HTML 转文本（移除 script/style）<br>- JSON 内容支持<br>- URL 验证（仅 http/https） | ✅ |
-
-### 系统工具（4 个）
-
-| 工具名 | 描述 | 状态 |
-|--------|------|------|
-| `cron` | 定时任务管理<br>- 支持一次性提醒（at_seconds）<br>- 支持周期性任务（every_seconds）<br>- 支持复杂调度（cron_expr）<br>- 操作：add, list, remove, enable, disable | ⏳ 占位符 |
-| `message` | 发送消息到指定通道<br>- 支持所有消息平台（feishu, telegram, whatsapp 等）<br>- 通道和 chat_id 定位 | ⏳ 占位符 |
-| `spawn` | 生成子 Agent 处理任务<br>- 同步模式：等待结果并返回<br>- 异步模式：后台运行，完成后通知 | ⏳ 占位符 |
-| `query_token_usage` | 查询 Token 使用统计<br>- 按日期范围查询<br>- 按模型分组统计<br>- 按日期分组统计 | ⏳ 占位符 |
-
-**图例**：
-- ✅ 已实现并可用
-- ⏳ 占位符（待服务集成后完全可用）
-
----
-
-### 工具使用示例
-
-#### 文件操作
-
-```bash
-# 读取文件
-read_file(path="/home/user/config.json")
-
-# 写入文件
-write_file(path="/tmp/test.txt", content="Hello World")
-
-# 精确编辑文件（old_text 必须完全匹配）
-edit_file(path="config.json", 
-          old_text='"port": 8080', 
-          new_text='"port": 9090')
-
-# 追加内容到文件末尾
-append_file(path="log.txt", content="2024-01-01 12:00:00 - App started\n")
-
-# 列出目录内容
-list_dir(path="/home/user")
-```
-
-#### 文档处理
-
-```bash
-# 读取 Word 文档
-read_word(path="/home/user/report.docx")
-
-# 读取 Excel 工作簿
-read_excel(path="/home/user/data.xlsx", sheet="Sheet1")
-```
-
-#### 命令执行
-
-```bash
-# 执行 Git 命令
-exec(command="git status")
-
-# 执行 Maven 构建（带超时）
-exec(command="mvn clean package", workingDir="/home/user/JobClaw", timeout=120)
-```
-
-#### 网络搜索
-
-```bash
-# 搜索 AI 新闻
-web_search(query="AI news 2024", count=5)
-
-# 搜索 Spring AI 教程
-web_search(query="Spring AI tutorial", count=10)
-```
-
-#### 网页抓取
-
-```bash
-# 抓取网页内容
-web_fetch(url="https://example.com")
-
-# 抓取 JSON API
-web_fetch(url="https://api.example.com/data.json", maxChars=10000)
-```
-
-#### 定时任务
-
-```bash
-# 10 分钟后提醒
-cron(action="add", message="喝水休息", at_seconds=600)
-
-# 每小时提醒
-cron(action="add", message="检查系统状态", every_seconds=3600)
-
-# 每天上午 9 点提醒（Cron 表达式）
-cron(action="add", message="晨会提醒", cron_expr="0 9 * * *")
-
-# 列出所有任务
-cron(action="list")
-
-# 删除任务
-cron(action="remove", job_id="job_1234567890")
-```
-
----
-
-### 使用工具
-
-```
-用户：读取 /home/user/test.txt 的内容
-Agent: [使用 read_file 工具读取文件并返回内容]
-```
-
-### 多 Agent 协作
-
-```
-用户：请用多智能体协作模式开发一个 Java 工具类，用于读取和写入 JSON 文件
-
-系统：
-1️⃣ Planner 分析任务并分解步骤
-2️⃣ Coder 编写代码 + Researcher 调研方案
-3️⃣ Reviewer 审查代码质量
-4️⃣ Writer 汇总输出完整结果
-```
-
-### Web API 调用
+### API 调用
 
 ```bash
 # 查看状态
@@ -804,7 +482,7 @@ curl http://localhost:18791/api/chat/stream \
 
 ## 🔄 版本历史
 
-### v1.0.0 - Spring AI 迁移 + 多智能体支持 (2026-03-23)
+### v1.0.0 - Spring AI 迁移 + 多智能体 + Vue 3 前端 (2026-03-28)
 
 **框架迁移:**
 - ✅ 从 AgentScope 迁移到 Spring AI 1.0.0-SNAPSHOT
@@ -817,29 +495,23 @@ curl http://localhost:18791/api/chat/stream \
 - ✅ 新增 AgentRegistry（Agent 注册表）
 - ✅ 新增 AgentRole（7 种预置角色）
 - ✅ 支持自动多 Agent 协作
-- ✅ 支持角色指定（"作为程序员..."）
-- ✅ 4 步协作流程（规划→执行→审查→汇总）
+- ✅ 支持角色指定
 
-**通道升级:**
-- ✅ 飞书通道使用官方 SDK（lark-oapi-sdk v2.5.3）
-- ✅ 移除自定义 OkHttp 实现
-- ✅ 简化 WebSocket 连接和事件处理
-
-**性能优化:**
-- ✅ 修复工具调用循环问题
-- ✅ 优化系统提示词
-- ✅ 添加 maxTokens 限制
-
-**详细说明:** [MIGRATION_PLAN.md](MIGRATION_PLAN.md)
+**前端重构:**
+- ✅ 从单文件 HTML 重构为 Vue 3 + TypeScript 架构
+- ✅ 使用 Vite 6 + Vue 3.4 + Pinia + Vue Router 4
+- ✅ 14 个管理页面完整实现
+- ✅ SSE 流式输出和历史会话管理
+- ✅ 赛博朋克风格设计系统
 
 ---
 
 ## 🔐 安全
 
-- **命令黑名单** - 防止危险命令执行
-- **工作空间隔离** - 限制文件访问范围
-- **安全守卫层** - 多层安全防护
-- **通道权限校验** - 支持白名单控制
+- 命令黑名单
+- 工作空间隔离
+- 安全守卫层
+- 通道权限校验
 
 ---
 
@@ -854,6 +526,7 @@ MIT License
 - **Spring Boot 团队** - Spring Boot 3.3 框架
 - **Spring AI 团队** - Spring AI 1.0 框架
 - **飞书开放平台** - 飞书官方 SDK (lark-oapi-sdk)
+- **Vue 团队** - Vue 3 框架
 - **各 LLM Provider** - DashScope、OpenAI、Anthropic、智谱 AI、Gemini、Ollama
 
 ---
