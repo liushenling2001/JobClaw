@@ -19,13 +19,13 @@ public class HeartbeatService {
     private static final Logger logger = LoggerFactory.getLogger(HeartbeatService.class);
 
     private final ScheduledExecutorService scheduler;
-    private final String memoryPath;
+    private String memoryPath;
     private final long intervalSeconds;
     private Consumer<String> onHeartbeat;
     private volatile boolean running;
 
     public HeartbeatService() {
-        this(Paths.get(System.getProperty("user.home"), ".jobclaw", "workspace", "memory").toString(), 300);
+        this(Paths.get(System.getProperty("user.home"), ".jobclaw", "workspace", "memory").toString(), 1800);
     }
 
     public HeartbeatService(String memoryPath, long intervalSeconds) {
@@ -37,6 +37,13 @@ public class HeartbeatService {
             return t;
         });
         this.running = false;
+    }
+
+    /**
+     * 动态设置内存路径（用于 Spring 注入后配置）
+     */
+    public void setMemoryPath(String memoryPath) {
+        this.memoryPath = memoryPath;
     }
 
     public void setOnHeartbeat(Consumer<String> handler) {
