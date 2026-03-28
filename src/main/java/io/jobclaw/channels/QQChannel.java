@@ -59,11 +59,16 @@ public class QQChannel extends BaseChannel {
     }
 
     @Override
+    public boolean isConfigured() {
+        return config.getAppId() != null && !config.getAppId().isEmpty() &&
+               config.getAppSecret() != null && !config.getAppSecret().isEmpty();
+    }
+
+    @Override
     public void start() {
         logger.info("Starting QQ channel...");
 
-        if (config.getAppId() == null || config.getAppId().isEmpty() ||
-            config.getAppSecret() == null || config.getAppSecret().isEmpty()) {
+        if (!isConfigured()) {
             throw new ChannelException("QQ App ID or App Secret is empty");
         }
 

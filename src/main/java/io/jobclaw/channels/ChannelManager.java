@@ -65,8 +65,16 @@ public class ChannelManager {
         // Start all registered channels
         for (Channel channel : channels.values()) {
             try {
+                // Skip channels that are not properly configured
+                if (!shouldStart(channel)) {
+                    logger.debug("Channel {} not configured, skipping registration", channel.getName());
+                    continue;
+                }
                 channel.start();
                 logger.info("Started channel: {}", channel.getName());
+            } catch (ChannelException e) {
+                // ChannelException 表示配置问题，静默跳过不打印错误
+                logger.debug("Channel {} not started: {}", channel.getName(), e.getMessage());
             } catch (Exception e) {
                 logger.error("Failed to start channel: {}", channel.getName(), e);
             }
@@ -76,6 +84,13 @@ public class ChannelManager {
         dispatcherExecutor.scheduleAtFixedRate(this::dispatchOutbound, 0, 100, TimeUnit.MILLISECONDS);
 
         logger.info("All channels started");
+    }
+
+    /**
+     * Check if a channel should be started based on its configuration
+     */
+    private boolean shouldStart(Channel channel) {
+        return channel.isConfigured();
     }
 
     public void stopAll() {

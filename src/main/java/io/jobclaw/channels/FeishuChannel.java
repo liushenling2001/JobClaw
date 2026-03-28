@@ -76,11 +76,16 @@ public class FeishuChannel extends BaseChannel {
     }
 
     @Override
+    public boolean isConfigured() {
+        return config.getAppId() != null && !config.getAppId().isEmpty() &&
+               config.getAppSecret() != null && !config.getAppSecret().isEmpty();
+    }
+
+    @Override
     public void start() {
         logger.info("正在启动飞书通道...");
 
-        if (config.getAppId() == null || config.getAppId().isEmpty() ||
-            config.getAppSecret() == null || config.getAppSecret().isEmpty()) {
+        if (!isConfigured()) {
             throw new ChannelException("飞书 App ID 或 App Secret 为空");
         }
 

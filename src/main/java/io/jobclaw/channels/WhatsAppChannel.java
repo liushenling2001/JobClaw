@@ -51,10 +51,15 @@ public class WhatsAppChannel extends BaseChannel {
     }
 
     @Override
+    public boolean isConfigured() {
+        return config.getBridgeUrl() != null && !config.getBridgeUrl().isEmpty();
+    }
+
+    @Override
     public void start() {
         logger.info("Starting WhatsApp channel, bridge URL: {}", config.getBridgeUrl());
 
-        if (config.getBridgeUrl() == null || config.getBridgeUrl().isEmpty()) {
+        if (!isConfigured()) {
             throw new ChannelException("WhatsApp Bridge URL is empty");
         }
 

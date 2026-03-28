@@ -87,15 +87,17 @@ public class DingTalkChannel extends BaseChannel {
     }
 
     @Override
+    public boolean isConfigured() {
+        return config.getClientId() != null && !config.getClientId().isEmpty() &&
+               config.getClientSecret() != null && !config.getClientSecret().isEmpty();
+    }
+
+    @Override
     public void start() {
         logger.info("Starting DingTalk channel...");
 
-        if (config.getClientId() == null || config.getClientId().isEmpty()) {
-            throw new ChannelException("DingTalk Client ID is empty");
-        }
-
-        if (config.getClientSecret() == null || config.getClientSecret().isEmpty()) {
-            throw new ChannelException("DingTalk Client Secret is empty");
+        if (!isConfigured()) {
+            throw new ChannelException("DingTalk Client ID or Client Secret is empty");
         }
 
         running = true;

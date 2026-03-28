@@ -16,4 +16,8 @@ public interface Channel {
     boolean isAllowed(String senderId);
 
     boolean isConnected();
+
+    default boolean isConfigured() {
+        return true;
+    }
 }
