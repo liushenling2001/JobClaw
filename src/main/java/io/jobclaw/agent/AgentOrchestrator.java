@@ -7,6 +7,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.function.Consumer;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -67,8 +68,8 @@ public class AgentOrchestrator {
     }
 
     /**
-     * 处理用户请求
-     * 
+     * 处理用户请求（不带回调，兼容原有调用）
+     *
      * @param sessionKey 会话密钥
      * @param userContent 用户输入
      * @return Agent 响应
@@ -80,7 +81,7 @@ public class AgentOrchestrator {
         // 如果 sessionKey 包含 "spawn-" 或 "subagent-" 前缀，说明是子 Agent 调用
         // 强制使用单 Agent 模式，避免无限递归
         boolean isSubAgent = sessionKey.startsWith("spawn-") || sessionKey.startsWith("subagent-");
-        
+
         if (isSubAgent) {
             logger.debug("Sub-agent detected, forcing single-agent mode to prevent recursion");
             // 子 Agent 默认使用 ASSISTANT 角色
@@ -104,6 +105,39 @@ public class AgentOrchestrator {
         // Agent 可通过 spawn 工具自主决定是否需要子 Agent 协作
         logger.info("Single-agent mode (Agent can use spawn tool if needed)");
         return handleSingleAgentDefault(sessionKey, userContent);
+    }
+
+    /**
+     * 处理用户请求（带执行过程回调，用于 SSE 流式输出）
+     *
+     * @param sessionKey 会话密钥
+     * @param userContent 用户输入
+     * @param eventCallback 执行事件回调
+     * @return Agent 响应
+     */
+    public String process(String sessionKey, String userContent, Consumer<ExecutionEvent> eventCallback) {
+        logger.info("Orchestrator processing request with callback for session {}", sessionKey);
+
+        boolean isSubAgent = sessionKey.startsWith("spawn-") || sessionKey.startsWith("subagent-");
+
+        if (isSubAgent) {
+            logger.debug("Sub-agent detected, forcing single-agent mode to prevent recursion");
+            return handleSingleAgentDefault(sessionKey, userContent, eventCallback);
+        }
+
+        if (isTeamModeRequest(userContent)) {
+            logger.info("Team mode detected");
+            return handleTeamMode(sessionKey, userContent, eventCallback);
+        }
+
+        AgentRole specifiedRole = extractSpecifiedRole(userContent);
+        if (specifiedRole != null) {
+            logger.info("Specified role detected: {}", specifiedRole.getDisplayName());
+            return handleSingleAgentWithRole(sessionKey, userContent, specifiedRole, eventCallback);
+        }
+
+        logger.info("Single-agent mode (Agent can use spawn tool if needed)");
+        return handleSingleAgentDefault(sessionKey, userContent, eventCallback);
     }
 
     /**
@@ -136,34 +170,70 @@ public class AgentOrchestrator {
     }
 
     /**
-     * 处理单 Agent 请求（默认模式）
+     * 处理单 Agent 请求（默认模式，不带回调）
      */
     private String handleSingleAgentDefault(String sessionKey, String userContent) {
+        return handleSingleAgentDefault(sessionKey, userContent, null);
+    }
+
+    /**
+     * 处理单 Agent 请求（默认模式，带回调）
+     */
+    private String handleSingleAgentDefault(String sessionKey, String userContent, Consumer<ExecutionEvent> eventCallback) {
         try {
             AgentLoop agent = agentRegistry.getOrCreateAgent(AgentRole.ASSISTANT, sessionKey);
+            if (eventCallback != null) {
+                return agent.process(sessionKey, userContent, eventCallback);
+            }
             return agent.process(sessionKey, userContent);
         } catch (Exception e) {
             logger.error("Error in single-agent mode", e);
+            if (eventCallback != null) {
+                eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.ERROR,
+                    "Error: " + e.getMessage()));
+            }
             return "Error: " + e.getMessage();
         }
     }
 
     /**
-     * 处理单 Agent 请求（指定角色）
+     * 处理单 Agent 请求（指定角色，不带回调）
      */
     private String handleSingleAgentWithRole(String sessionKey, String userContent, AgentRole role) {
+        return handleSingleAgentWithRole(sessionKey, userContent, role, null);
+    }
+
+    /**
+     * 处理单 Agent 请求（指定角色，带回调）
+     */
+    private String handleSingleAgentWithRole(String sessionKey, String userContent, AgentRole role,
+                                             Consumer<ExecutionEvent> eventCallback) {
         try {
             AgentLoop agent = agentRegistry.getOrCreateAgent(role, sessionKey);
+            if (eventCallback != null) {
+                return agent.process(sessionKey, userContent, role, eventCallback);
+            }
             return agent.process(sessionKey, userContent, role);
         } catch (Exception e) {
             logger.error("Error in single-agent mode with role", e);
+            if (eventCallback != null) {
+                eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.ERROR,
+                    "Error: " + e.getMessage()));
+            }
             return "Error: " + e.getMessage();
         }
     }
 
     /**
-     * 处理团队模式请求
-     * 
+     * 处理团队模式请求（不带回调）
+     */
+    private String handleTeamMode(String sessionKey, String userContent) {
+        return handleTeamMode(sessionKey, userContent, null);
+    }
+
+    /**
+     * 处理团队模式请求（带回调）
+     *
      * 流程：
      * 1. 创建 Agent 团队
      * 2. 主智能体分析任务
@@ -171,12 +241,16 @@ public class AgentOrchestrator {
      * 4. 分配任务给子智能体
      * 5. 汇总结果
      */
-    private String handleTeamMode(String sessionKey, String userContent) {
+    private String handleTeamMode(String sessionKey, String userContent, Consumer<ExecutionEvent> eventCallback) {
         try {
             StringBuilder result = new StringBuilder();
             result.append("## 🤖 Agent 团队模式\n\n");
 
             // Step 1: 创建团队
+            if (eventCallback != null) {
+                eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.CUSTOM,
+                    "正在创建 Agent 团队..."));
+            }
             logger.info("Step 1: Creating agent team");
             AgentDefinition masterDef = AgentDefinition.fromRole(AgentRole.PLANNER);
             AgentTeam team = teamManager.createTeam("临时团队", masterDef, sessionKey);
@@ -186,6 +260,10 @@ public class AgentOrchestrator {
             result.append("**主智能体**: ").append(team.getMasterAgent().getDisplayName()).append("\n\n");
 
             // Step 2: 主智能体分析任务并决定需要的子智能体
+            if (eventCallback != null) {
+                eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.CUSTOM,
+                    "主智能体正在分析任务..."));
+            }
             logger.info("Step 2: Master agent analyzing task");
             result.append("### 2️⃣ 任务分析\n\n");
 
@@ -195,6 +273,10 @@ public class AgentOrchestrator {
             result.append(analysis).append("\n\n");
 
             // Step 3: 动态创建子智能体
+            if (eventCallback != null) {
+                eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.CUSTOM,
+                    "正在创建子智能体..."));
+            }
             logger.info("Step 3: Creating sub-agents dynamically");
             result.append("### 3️⃣ 子智能体创建\n\n");
 
@@ -213,6 +295,10 @@ public class AgentOrchestrator {
             result.append("\n");
 
             // Step 4: 分配任务给子智能体
+            if (eventCallback != null) {
+                eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.CUSTOM,
+                    "正在分配任务给子智能体..."));
+            }
             logger.info("Step 4: Assigning tasks to sub-agents");
             result.append("### 4️⃣ 任务执行\n\n");
 
@@ -220,34 +306,46 @@ public class AgentOrchestrator {
                 AgentLoop agent = agentRegistry.getOrCreateAgent(subAgent, sessionKey);
                 String taskContent = userContent + "\n\n请从你的专业角度完成这个任务。";
                 String subResult = agent.processWithDefinition(sessionKey, taskContent, subAgent);
-                
+
                 result.append("**").append(subAgent.getDisplayName()).append("**:\n")
                       .append(subResult).append("\n\n");
-                
+
                 // 添加到共享记忆
                 team.addToSharedMemory(subAgent.getDisplayName() + ": " + subResult.substring(0, Math.min(200, subResult.length())));
             }
 
             // Step 5: 汇总结果
+            if (eventCallback != null) {
+                eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.CUSTOM,
+                    "正在汇总结果..."));
+            }
             logger.info("Step 5: Summarizing results");
             result.append("### 5️⃣ 最终总结\n\n");
 
             AgentLoop summarizer = agentRegistry.getOrCreateAgent(AgentRole.WRITER, sessionKey);
-            String summaryContent = "请综合以下所有子智能体的工作成果，提供一个清晰、完整的最终答案：\n\n" + 
+            String summaryContent = "请综合以下所有子智能体的工作成果，提供一个清晰、完整的最终答案：\n\n" +
                 team.getSharedMemory().stream().map(m -> "- " + m).reduce((a, b) -> a + "\n" + b).orElse("");
-            String summary = summarizer.processWithDefinition(sessionKey, summaryContent, 
+            String summary = summarizer.processWithDefinition(sessionKey, summaryContent,
                 AgentDefinition.fromRole(AgentRole.WRITER));
             result.append(summary);
 
             // 保存团队信息到共享记忆
             team.addToSharedMemory("最终总结：" + summary.substring(0, Math.min(200, summary.length())));
 
-            logger.info("Team mode completed: {} ({} sub-agents)", 
+            if (eventCallback != null) {
+                eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.FINAL_RESPONSE,
+                    "团队模式完成"));
+            }
+            logger.info("Team mode completed: {} ({} sub-agents)",
                 team.getTeamName(), team.getSubAgentCount());
             return result.toString();
 
         } catch (Exception e) {
             logger.error("Error in team mode", e);
+            if (eventCallback != null) {
+                eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.ERROR,
+                    "Error: " + e.getMessage()));
+            }
             return "Error: " + e.getMessage();
         }
     }

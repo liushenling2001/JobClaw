@@ -18,8 +18,11 @@ import reactor.core.publisher.Flux;
 
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 
 /**
@@ -47,6 +50,12 @@ public class AgentLoop {
 
     // 无工具调用的专用 ChatClient（用于摘要生成）
     private final ChatClient simpleChatClient;
+
+    // 工具调用期间的 THINK_STREAM 缓冲区（按 sessionKey 分组）
+    private final Map<String, Queue<String>> thinkStreamBuffer;
+
+    // 工具执行状态跟踪（独立的布尔状态，精确跟踪每个 session 是否在工具执行中）
+    private final Map<String, Boolean> toolExecutingState;
 
     public AgentLoop(Config config, SessionManager sessionManager, FileTools fileTools) {
         this(config, sessionManager, fileTools, null, null);
@@ -120,6 +129,10 @@ public class AgentLoop {
                 memoryStore,
                 memoryEvolver
         );
+        
+        // 初始化 THINK_STREAM 缓冲区
+        this.thinkStreamBuffer = new ConcurrentHashMap<>();
+        this.toolExecutingState = new ConcurrentHashMap<>();
 
         logger.info("AgentLoop initialized with Spring AI OpenAI Compatible (model: {})", this.model);
     }
@@ -210,7 +223,8 @@ public class AgentLoop {
                     buildSystemPromptWithDefinition(definition) : buildSystemPrompt(sessionKey, userContent);
 
             // 创建工具回调（支持工具过滤）
-            ToolCallback[] tools = filterToolsByDefinition(definition);
+            ToolCallback[] rawTools = filterToolsByDefinition(definition);
+            ToolCallback[] tools = wrapToolCallbacks(rawTools, sessionKey, eventCallback);
 
             // 调用 ChatClient（带工具）- 使用配置中的 maxTokens 和 temperature
             OpenAiChatOptions options = OpenAiChatOptions.builder()
@@ -234,13 +248,16 @@ public class AgentLoop {
             contentStream.toStream().forEach(content -> {
                 if (content != null && !content.isEmpty()) {
                     fullResponse.append(content);
-                    // 实时推送 LLM 返回的真实内容
                     if (eventCallback != null) {
-                        eventCallback.accept(new ExecutionEvent(
-                                sessionKey,
-                                ExecutionEvent.EventType.THINK_STREAM,
-                                content  // 这是 LLM 实时返回的内容片段
-                        ));
+                        if (isToolExecuting(sessionKey)) {
+                            bufferThinkStream(sessionKey, content);
+                        } else {
+                            eventCallback.accept(new ExecutionEvent(
+                                    sessionKey,
+                                    ExecutionEvent.EventType.THINK_STREAM,
+                                    content
+                            ));
+                        }
                     }
                 }
             });
@@ -394,6 +411,161 @@ public class AgentLoop {
     }
 
     /**
+     * 包装 ToolCallback，在执行时发布 TOOL_START、TOOL_OUTPUT、TOOL_ERROR 事件。
+     *
+     * @param rawCallbacks  原始 ToolCallback 数组
+     * @param sessionKey    当前会话 key
+     * @param eventCallback 事件回调（可为 null）
+     * @return 包装后的 ToolCallback 数组
+     */
+    private ToolCallback[] wrapToolCallbacks(ToolCallback[] rawCallbacks,
+                                             String sessionKey,
+                                             Consumer<ExecutionEvent> eventCallback) {
+        if (eventCallback == null || rawCallbacks == null) {
+            return rawCallbacks;
+        }
+
+        logger.info("工具事件追踪功能：包装 {} 个工具回调以支持事件追踪", rawCallbacks.length);
+
+        // 包装每个 ToolCallback，使其在执行时发布事件
+        return java.util.Arrays.stream(rawCallbacks)
+                .map(callback -> wrapSingleCallback(callback, sessionKey, eventCallback))
+                .toArray(ToolCallback[]::new);
+    }
+
+    /**
+     * 包装单个 ToolCallback，在工具执行时发布事件
+     *
+     * @param callback 原始 ToolCallback
+     * @param sessionKey 会话 key
+     * @param eventCallback 事件回调
+     * @return 包装后的 ToolCallback
+     */
+    private ToolCallback wrapSingleCallback(ToolCallback callback,
+                                            String sessionKey,
+                                            Consumer<ExecutionEvent> eventCallback) {
+        return new ToolCallback() {
+            @Override
+            public org.springframework.ai.tool.definition.ToolDefinition getToolDefinition() {
+                return callback.getToolDefinition();
+            }
+
+            @Override
+            public String call(String request) {
+                String toolName = getToolDefinition().name();
+                String toolId = toolName + "_" + System.currentTimeMillis();
+
+                // 构建 metadata（使用 Map.of 节省内存）
+                Map<String, Object> startMetadata = Map.of(
+                    "toolName", toolName,
+                    "toolId", toolId
+                );
+
+                // 标记工具执行中，THINK_STREAM 需要缓冲
+                setToolExecuting(sessionKey, true);
+
+                // 发布 TOOL_START 事件（包含 metadata）
+                eventCallback.accept(new ExecutionEvent(
+                    sessionKey,
+                    ExecutionEvent.EventType.TOOL_START,
+                    "正在调用工具：" + toolName ,
+                    startMetadata
+                ));
+
+                try {
+                    // 调用原始工具
+                    String response = callback.call(request);
+
+                    // 构建 metadata（使用 Map.of 节省内存）
+                    Map<String, Object> endMetadata = Map.of(
+                        "toolName", toolName,
+                        "toolId", toolId
+                    );
+                    
+                    // 发布 TOOL_END 事件（包含 metadata）
+                    eventCallback.accept(new ExecutionEvent(
+                        sessionKey,
+                        ExecutionEvent.EventType.TOOL_END,
+                        "工具调用完成：" + toolName,
+                        endMetadata
+                    ));
+                    
+                    // 限制工具返回结果的长度
+                    String resultData = truncateOutput(response, toolName);
+                    
+                    // 发布 TOOL_OUTPUT 事件（显示工具返回结果，包含 metadata）
+                    eventCallback.accept(new ExecutionEvent(
+                        sessionKey,
+                        ExecutionEvent.EventType.TOOL_OUTPUT,
+                        resultData,
+                        endMetadata  // 使用相同的 metadata
+                    ));
+                    
+                    // 工具调用完成，标记为非执行中
+                    setToolExecuting(sessionKey, false);
+                    
+                    // 刷新缓冲的 THINK_STREAM
+                    flushThinkStreamBuffer(sessionKey, eventCallback);
+                    
+                    return response;
+                    
+                } catch (Exception e) {
+                    // 构建 error metadata（使用 Map.of 节省内存）
+                    Map<String, Object> errorMetadata = Map.of(
+                        "toolName", toolName,
+                        "toolId", toolId
+                    );
+
+                    // 发布 TOOL_ERROR 事件
+                    eventCallback.accept(new ExecutionEvent(
+                        sessionKey,
+                        ExecutionEvent.EventType.TOOL_ERROR,
+                        "工具执行失败：" + toolName + " - " + e.getMessage(),
+                        errorMetadata
+                    ));
+
+                    // 工具调用失败，标记为非执行中
+                    setToolExecuting(sessionKey, false);
+
+                    // 清空缓冲（不再需要）
+                    clearThinkStreamBuffer(sessionKey);
+
+                    throw e;
+                }
+            }
+            
+            /**
+             * 截断工具输出结果，避免超长反馈
+             *
+             * @param output 原始输出
+             * @param toolName 工具名称
+             * @return 截断后的输出（带提示信息）
+             */
+            private String truncateOutput(String output, String toolName) {
+                if (output == null) {
+                    return "无返回数据";
+                }
+                
+                int maxLength = config.getAgent().getMaxToolOutputLength();
+                
+                if (output.length() <= maxLength) {
+                    return output;
+                }
+                
+                // 截断并添加提示信息
+                String truncated = output.substring(0, maxLength);
+                String truncateNotice = "\n\n[... 返回结果已截断，共 " + output.length() + 
+                                       " 字符，显示前 " + maxLength + " 字符 ...]";
+                
+                logger.info("工具 {} 输出超长 ({} 字符)，已截断至 {} 字符", 
+                           toolName, output.length(), maxLength);
+                
+                return truncated + truncateNotice;
+            }
+        };
+    }
+
+    /**
      * 根据 Agent 定义过滤工具
      *
      * @param definition Agent 定义
@@ -423,7 +595,59 @@ public class AgentLoop {
     public String getStatus() {
         return "Spring AI initialized (model: " + config.getAgent().getModel() + ")";
     }
+    
+    /**
+     * 缓冲 THINK_STREAM 事件（工具执行期间）
+     */
+    private void bufferThinkStream(String sessionKey, String content) {
+        thinkStreamBuffer.computeIfAbsent(sessionKey, k -> new LinkedList<>()).offer(content);
+    }
+    
+    /**
+     * 刷新缓冲的 THINK_STREAM 事件
+     */
+    private void flushThinkStreamBuffer(String sessionKey, Consumer<ExecutionEvent> eventCallback) {
+        Queue<String> buffer = thinkStreamBuffer.get(sessionKey);
+        if (buffer != null && !buffer.isEmpty()) {
+            logger.debug("Flushing {} buffered THINK_STREAM events for session: {}", buffer.size(), sessionKey);
+            String content;
+            while ((content = buffer.poll()) != null) {
+                eventCallback.accept(new ExecutionEvent(
+                        sessionKey,
+                        ExecutionEvent.EventType.THINK_STREAM,
+                        content
+                ));
+            }
+        }
+    }
+    
+    /**
+     * 清空 THINK_STREAM 缓冲区
+     */
+    private void clearThinkStreamBuffer(String sessionKey) {
+        thinkStreamBuffer.remove(sessionKey);
+    }
+    
+    /**
+     * 检查是否正在执行工具
+     */
+    private boolean isToolExecuting(String sessionKey) {
+        return toolExecutingState.getOrDefault(sessionKey, false);
+    }
 
+    /**
+     * 设置工具执行状态
+     */
+    private void setToolExecuting(String sessionKey, boolean executing) {
+        if (executing) {
+            toolExecutingState.put(sessionKey, true);
+            thinkStreamBuffer.computeIfAbsent(sessionKey, k -> new LinkedList<>());
+        } else {
+            toolExecutingState.put(sessionKey, false);
+            toolExecutingState.remove(sessionKey);
+        }
+    }
+    
     /**
      * 调用 LLM 生成响应（用于摘要生成，不带工具调用）。
      *

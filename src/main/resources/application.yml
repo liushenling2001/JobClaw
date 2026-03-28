@@ -20,6 +20,8 @@ server:
 jobclaw:
   config-path: ~/.jobclaw/config.json
   workspace-path: ~/.jobclaw/workspace
+  # 工具返回结果最大长度（字符数），默认 10000，避免超长输出
+  max-tool-output-length: 10000
 
 # Logging
 logging:

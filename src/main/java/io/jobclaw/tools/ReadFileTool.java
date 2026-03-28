@@ -1,12 +1,21 @@
 package io.jobclaw.tools;
 
+import org.springframework.stereotype.Component;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.Map;
 
+@Component
 public class ReadFileTool implements Tool {
+
+    private final PathResolver pathResolver;
+
+    public ReadFileTool(PathResolver pathResolver) {
+        this.pathResolver = pathResolver;
+    }
 
     @Override
     public String getName() {
@@ -27,7 +36,7 @@ public class ReadFileTool implements Tool {
 
         Map<String, Object> pathProp = new HashMap<>();
         pathProp.put("type", "string");
-        pathProp.put("description", "The path of the file to read");
+        pathProp.put("description", "The path of the file to read (relative to workspace or absolute)");
         properties.put("path", pathProp);
 
         params.put("properties", properties);
@@ -46,7 +55,9 @@ public class ReadFileTool implements Tool {
         }
 
         try {
-            String content = Files.readString(Paths.get(path));
+            // 使用 PathResolver 解析路径
+            String resolvedPath = pathResolver.resolve(path);
+            String content = Files.readString(Paths.get(resolvedPath));
             return content;
         } catch (IOException e) {
             return "Error reading file: " + e.getMessage();

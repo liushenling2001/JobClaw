@@ -1,5 +1,7 @@
 package io.jobclaw.tools;
 
+import org.springframework.stereotype.Component;
+
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -7,7 +9,14 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+@Component
 public class ListDirTool implements Tool {
+
+    private final PathResolver pathResolver;
+
+    public ListDirTool(PathResolver pathResolver) {
+        this.pathResolver = pathResolver;
+    }
 
     @Override
     public String getName() {
@@ -28,7 +37,7 @@ public class ListDirTool implements Tool {
 
         Map<String, Object> pathProp = new HashMap<>();
         pathProp.put("type", "string");
-        pathProp.put("description", "The path of the directory to list");
+        pathProp.put("description", "The path of the directory to list (relative to workspace or absolute)");
         properties.put("path", pathProp);
 
         params.put("properties", properties);
@@ -47,8 +56,10 @@ public class ListDirTool implements Tool {
         }
 
         try {
+            // 使用 PathResolver 解析路径
+            String resolvedPath = pathResolver.resolve(path);
             List<String> entries = new ArrayList<>();
-            Files.list(Paths.get(path)).forEach(p -> {
+            Files.list(Paths.get(resolvedPath)).forEach(p -> {
                 String type = Files.isDirectory(p) ? "[DIR]  " : "[FILE] ";
                 entries.add(type + p.getFileName());
             });

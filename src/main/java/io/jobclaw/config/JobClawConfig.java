@@ -47,11 +47,11 @@ public class JobClawConfig {
 
     @Bean
     @ConditionalOnMissingBean
-    public ToolRegistry toolRegistry(SecurityGuard securityGuard) {
+    public ToolRegistry toolRegistry(SecurityGuard securityGuard, PathResolver pathResolver) {
         ToolRegistry registry = new ToolRegistry();
-        registry.register(new ReadFileTool());
-        registry.register(new WriteFileTool());
-        registry.register(new ListDirTool());
+        registry.register(new ReadFileTool(pathResolver));
+        registry.register(new WriteFileTool(pathResolver));
+        registry.register(new ListDirTool(pathResolver));
         return registry;
     }
 

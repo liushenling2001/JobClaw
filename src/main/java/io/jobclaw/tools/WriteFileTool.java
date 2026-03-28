@@ -1,11 +1,20 @@
 package io.jobclaw.tools;
 
+import org.springframework.stereotype.Component;
+
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.Map;
 
+@Component
 public class WriteFileTool implements Tool {
+
+    private final PathResolver pathResolver;
+
+    public WriteFileTool(PathResolver pathResolver) {
+        this.pathResolver = pathResolver;
+    }
 
     @Override
     public String getName() {
@@ -26,7 +35,7 @@ public class WriteFileTool implements Tool {
 
         Map<String, Object> pathProp = new HashMap<>();
         pathProp.put("type", "string");
-        pathProp.put("description", "The path of the file to write");
+        pathProp.put("description", "The path of the file to write (relative to workspace or absolute)");
         properties.put("path", pathProp);
 
         Map<String, Object> contentProp = new HashMap<>();
@@ -55,8 +64,10 @@ public class WriteFileTool implements Tool {
         }
 
         try {
-            Files.createDirectories(Paths.get(path).getParent());
-            Files.writeString(Paths.get(path), content);
+            // 使用 PathResolver 解析路径
+            String resolvedPath = pathResolver.resolve(path);
+            Files.createDirectories(Paths.get(resolvedPath).getParent());
+            Files.writeString(Paths.get(resolvedPath), content);
             return "Successfully wrote to " + path;
         } catch (Exception e) {
             return "Error writing file: " + e.getMessage();

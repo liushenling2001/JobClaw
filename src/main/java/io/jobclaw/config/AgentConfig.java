@@ -19,6 +19,7 @@ public class AgentConfig {
     private boolean feedbackEnabled;
     private boolean promptOptimizationEnabled;
     private boolean collaborationEnabled;
+    private int maxToolOutputLength;
     private List<String> commandBlacklist;
 
     public AgentConfig() {
@@ -33,6 +34,7 @@ public class AgentConfig {
         this.feedbackEnabled = false;
         this.promptOptimizationEnabled = false;
         this.collaborationEnabled = true;
+        this.maxToolOutputLength = 10000; // 默认限制工具返回 10000 字符
         this.commandBlacklist = new ArrayList<>();
     }
 
@@ -122,6 +124,14 @@ public class AgentConfig {
 
     public void setCollaborationEnabled(boolean collaborationEnabled) {
         this.collaborationEnabled = collaborationEnabled;
+    }
+
+    public int getMaxToolOutputLength() {
+        return maxToolOutputLength;
+    }
+
+    public void setMaxToolOutputLength(int maxToolOutputLength) {
+        this.maxToolOutputLength = maxToolOutputLength;
     }
 
     public List<String> getCommandBlacklist() {

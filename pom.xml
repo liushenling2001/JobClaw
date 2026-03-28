@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.3.0</version>
+        <version>3.4.0</version>
         <relativePath/>
     </parent>
 
@@ -34,7 +34,7 @@
         <cron-utils.version>9.2.1</cron-utils.version>
         <dotenv.version>3.0.0</dotenv.version>
         <jline.version>3.25.0</jline.version>
-        <spring-ai.version>1.0.0-SNAPSHOT</spring-ai.version>
+        <spring-ai.version>1.1.0</spring-ai.version>
         <poi.version>5.2.5</poi.version>
         <commons-io.version>2.15.1</commons-io.version>
     </properties>

@@ -22,6 +22,8 @@ public class ExecutionEvent {
         TOOL_END,
         /** 工具输出 */
         TOOL_OUTPUT,
+        /** 工具执行错误 */
+        TOOL_ERROR,
         /** 错误事件 */
         ERROR,
         /** 最终响应 */
