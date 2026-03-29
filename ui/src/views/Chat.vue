@@ -59,7 +59,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { useChatStore } from '@/stores/chat';
 import { sessionsApi } from '@/api/sessions';
 import ChatWindow from '@/components/Chat/ChatWindow.vue';
@@ -72,15 +72,28 @@ const currentSessionKey = computed(() => chatStore.currentSessionKey);
 const isStreaming = computed(() => chatStore.isStreaming);
 const isConnected = computed(() => chatStore.isConnected);
 
+const isLoadingSession = ref(false);
+
 const toggleSidebar = () => {
   chatStore.toggleSidebar();
 };
 
-const selectSession = (session: any) => {
+const selectSession = async (session: any) => {
+  if (isLoadingSession.value) return;
+  isLoadingSession.value = true;
+
   chatStore.currentSessionKey = session.key;
-  // 从 localStorage 加载消息
-  const messages = sessionsApi.getMessages(session.key);
-  chatStore.messages = messages;
+
+  try {
+    // 从后端 API 加载消息
+    const messages = await sessionsApi.getMessages(session.key);
+    chatStore.messages = messages;
+  } catch (e) {
+    console.error('Failed to load session messages:', e);
+    chatStore.messages = [];
+  } finally {
+    isLoadingSession.value = false;
+  }
 };
 
 const formatRelativeTime = (timestamp: string) => {
@@ -98,13 +111,31 @@ const formatRelativeTime = (timestamp: string) => {
 onMounted(async () => {
   try {
     const sessionList = await sessionsApi.list();
-    chatStore.sessions = sessionList.map((s: any) => ({
+
+    // 按更新时间排序，最新的在前面
+    const sortedSessions = sessionList.sort((a: any, b: any) =>
+      new Date(b.updated).getTime() - new Date(a.updated).getTime()
+    );
+
+    chatStore.sessions = sortedSessions.map((s: any) => ({
       key: s.key,
       title: `会话 ${s.key.slice(-8)}`,
       preview: `${s.message_count} 条消息`,
       lastUpdated: s.updated,
       messageCount: s.message_count
     }));
+
+    // 如果有会话，自动选择最近的会话
+    if (sortedSessions.length > 0) {
+      const latestSession = sortedSessions[0];
+      await selectSession({
+        key: latestSession.key,
+        title: `会话 ${latestSession.key.slice(-8)}`,
+        preview: `${latestSession.message_count} 条消息`,
+        lastUpdated: latestSession.updated,
+        messageCount: latestSession.message_count
+      });
+    }
   } catch (e) {
     console.error('Failed to load sessions:', e);
   }

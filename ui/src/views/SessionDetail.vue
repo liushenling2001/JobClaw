@@ -137,8 +137,8 @@ const loadSession = async () => {
   }
 };
 
-const loadMessages = () => {
-  messages.value = sessionsApi.getMessages(decodeURIComponent(sessionKey.value));
+const loadMessages = async () => {
+  messages.value = await sessionsApi.getMessages(decodeURIComponent(sessionKey.value));
 };
 
 const deleteSession = async () => {
