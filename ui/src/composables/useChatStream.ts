@@ -45,25 +45,50 @@ export function useChatStream() {
       const reader = response.body.getReader();
       const decoder = new TextDecoder('utf-8');
       let buffer = '';
+      let currentEvent: string | null = null;
+      let dataBuffer: string[] = [];  // 累积多行 data，跨 chunk 保持状态
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) {
+          // 处理最后可能剩余的数据
+          if (dataBuffer.length > 0) {
+            const dataStr = dataBuffer.join('\n');
+            try {
+              const data = JSON.parse(dataStr);
+              handleStreamData(data, currentEvent);
+            } catch (e) {
+              console.error('JSON parse error on done:', e, dataStr);
+            }
+          }
           chatStore.isStreaming = false;
           chatStore.isConnected = false;
           break;
         }
 
-        const chunk = decoder.decode(value, { stream: false });
+        // stream: true 正确处理跨 chunk 的多字节字符（如 emoji）
+        const chunk = decoder.decode(value, { stream: true });
         buffer += chunk;
 
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
 
-        let currentEvent: string | null = null;
-
         for (const line of lines) {
-          if (!line.trim() || line.trim().startsWith(':')) continue;
+          if (!line.trim() || line.trim().startsWith(':')) {
+            // 空行或注释行，表示事件结束，处理累积的 data
+            if (dataBuffer.length > 0) {
+              const dataStr = dataBuffer.join('\n');
+              dataBuffer = [];
+              try {
+                const data = JSON.parse(dataStr);
+                handleStreamData(data, currentEvent);
+              } catch (e) {
+                console.error('JSON parse error:', e, dataStr);
+              }
+              currentEvent = null;
+            }
+            continue;
+          }
 
           if (line.startsWith('event:')) {
             currentEvent = line.slice(6).trim();
@@ -71,14 +96,9 @@ export function useChatStream() {
           }
 
           if (line.startsWith('data:')) {
-            const dataStr = line.slice(5).trim();
-            try {
-              const data = JSON.parse(dataStr);
-              handleStreamData(data, currentEvent);
-            } catch (e) {
-              console.error('JSON parse error:', e, dataStr);
-            }
-            currentEvent = null;
+            // 累积 data 行（SSE 规范：连续的 data 行用换行符连接）
+            dataBuffer.push(line.slice(5));
+            continue;
           }
         }
       }
