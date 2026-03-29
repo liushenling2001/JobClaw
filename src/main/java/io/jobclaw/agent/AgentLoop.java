@@ -233,12 +233,18 @@ public class AgentLoop {
                     .temperature(config.getAgent().getTemperature())
                     .build();
 
+            // 使用 ContextBuilder 构建完整消息列表（包含历史对话）
+            List<io.jobclaw.providers.Message> messages = contextBuilder.buildMessages(sessionKey, userContent);
+
+            // 构建用户提示词（包含历史对话）
+            String userPrompt = buildUserPromptWithHistory(messages, userContent);
+
             // 使用流式响应获取 LLM 回复
             StringBuilder fullResponse = new StringBuilder();
 
             Flux<String> contentStream = chatClient.prompt()
                     .system(systemPrompt)
-                    .user(userContent)
+                    .user(userPrompt)
                     .toolCallbacks(tools)
                     .options(options)
                     .stream()
@@ -334,6 +340,61 @@ public class AgentLoop {
      */
     private String buildSystemPrompt(String sessionKey, String currentMessage) {
         return contextBuilder.buildSystemPrompt(sessionKey, currentMessage);
+    }
+
+    /**
+     * 构建用户提示词（包含历史对话）
+     *
+     * @param messages 完整消息列表（包含历史对话和当前消息）
+     * @param currentContent 当前用户消息内容
+     * @return 包含历史对话的用户提示词
+     */
+    private String buildUserPromptWithHistory(List<io.jobclaw.providers.Message> messages, String currentContent) {
+        if (messages == null || messages.isEmpty()) {
+            return currentContent;
+        }
+
+        StringBuilder historyBuffer = new StringBuilder();
+        int historyCount = 0;
+
+        // 遍历消息列表，构建历史对话
+        // 排除 system 消息和最后一条当前用户消息（已在 messages 末尾）
+        for (int i = 0; i < messages.size(); i++) {
+            io.jobclaw.providers.Message msg = messages.get(i);
+            String role = msg.getRole();
+            String content = msg.getContent();
+
+            // 跳过 system 消息（已在 system prompt 中）
+            if ("system".equals(role)) {
+                continue;
+            }
+
+            // 跳过最后一条消息（即当前用户消息，会单独添加）
+            if (i == messages.size() - 1) {
+                break;
+            }
+
+            historyCount++;
+            if ("user".equals(role)) {
+                historyBuffer.append("User: ").append(content).append("\n\n");
+            } else if ("assistant".equals(role)) {
+                historyBuffer.append("Assistant: ").append(content).append("\n\n");
+            } else if ("tool".equals(role)) {
+                historyBuffer.append("[Tool Result: ").append(content).append("]\n\n");
+            }
+        }
+
+        // 构建最终用户提示词
+        if (historyBuffer.length() == 0) {
+            // 没有历史对话，直接返回当前消息
+            return currentContent;
+        } else {
+            // 有历史对话，添加分隔符和当前消息
+            historyBuffer.append("---\n\n");
+            historyBuffer.append("Current Request: ").append(currentContent);
+            logger.debug("Added {} historical messages to prompt for session", historyCount);
+            return historyBuffer.toString();
+        }
     }
 
     /**

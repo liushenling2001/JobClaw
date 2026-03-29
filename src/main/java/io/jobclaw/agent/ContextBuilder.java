@@ -108,16 +108,95 @@ public class ContextBuilder {
 
         messages.add(Message.system(systemPrompt));
 
-        // 添加历史记录
+        // 添加历史记录（带 token 预算控制）
         List<Message> history = sessionManager.getHistory(sessionKey);
         if (history != null && !history.isEmpty()) {
-            messages.addAll(sanitizeHistory(new ArrayList<>(history)));
+            List<Message> sanitizedHistory = sanitizeHistory(new ArrayList<>(history));
+            List<Message> filteredHistory = filterHistoryByTokenBudget(sanitizedHistory);
+            messages.addAll(filteredHistory);
         }
 
         // 添加当前用户消息
         messages.add(Message.user(userContent));
 
         return messages;
+    }
+
+    /**
+     * 根据 token 预算过滤历史消息，避免超出上下文窗口。
+     *
+     * 策略：
+     * - 保留最近的消息，直到达到 token 预算
+     * - 优先保留 user 和 assistant 消息
+     * - 如果单条消息超过预算则跳过
+     *
+     * @param history 原始历史消息列表
+     * @return 过滤后的历史消息列表
+     */
+    private List<Message> filterHistoryByTokenBudget(List<Message> history) {
+        if (history.isEmpty()) {
+            return history;
+        }
+
+        // 计算历史消息的 token 预算（上下文窗口的 30% 用于历史对话）
+        int historyTokenBudget = contextWindow * 30 / 100;
+        int maxMessageTokens = contextWindow / 4; // 单条消息不超过 1/4 上下文窗口
+
+        List<Message> filtered = new ArrayList<>();
+        int usedTokens = 0;
+
+        // 从后向前遍历（保留最近的 messages）
+        for (int i = history.size() - 1; i >= 0; i--) {
+            Message msg = history.get(i);
+            int msgTokens = estimateToken(msg.getContent());
+
+            // 跳过超过单条限制的消息
+            if (msgTokens > maxMessageTokens) {
+                logger.debug("Skipped history message: tokens={}, exceeds limit={}",
+                        msgTokens, maxMessageTokens);
+                continue;
+            }
+
+            // 如果添加此消息会超出预算，停止
+            if (usedTokens + msgTokens > historyTokenBudget) {
+                logger.debug("History token budget reached: used={}, budget={}, remaining messages={}",
+                        usedTokens, historyTokenBudget, i);
+                break;
+            }
+
+            filtered.add(msg);
+            usedTokens += msgTokens;
+        }
+
+        // 反转列表（恢复原始顺序）
+        Collections.reverse(filtered);
+
+        logger.info("Filtered history: original={}, filtered={}, tokens={}",
+                history.size(), filtered.size(), usedTokens);
+
+        return filtered;
+    }
+
+    /**
+     * 估算单个消息的 Token 数。
+     *
+     * @param content 消息内容
+     * @return 估算的 Token 数
+     */
+    private int estimateToken(String content) {
+        if (content == null || content.isEmpty()) {
+            return 0;
+        }
+        int chineseChars = 0;
+        int englishChars = 0;
+        for (char c : content.toCharArray()) {
+            if (c >= '\u4e00' && c <= '\u9fff') {
+                chineseChars++;
+            } else {
+                englishChars++;
+            }
+        }
+        return chineseChars + englishChars / 4;
     }
 
     /**
