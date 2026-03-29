@@ -22,6 +22,22 @@ public class AgentConfig {
     private int maxToolOutputLength;
     private List<String> commandBlacklist;
 
+    // ==================== 上下文管理配置 ====================
+    /** 上下文窗口大小（token 数），默认 128K */
+    private int contextWindow;
+    /** 触发摘要的消息数量阈值 */
+    private int summarizeMessageThreshold;
+    /** 触发摘要的 Token 比例（百分比） */
+    private int summarizeTokenPercentage;
+    /** 摘要后保留的最近消息数 */
+    private int recentMessagesToKeep;
+    /** 记忆 token 预算占上下文窗口的百分比 */
+    private int memoryTokenBudgetPercentage;
+    /** 记忆最小 token 预算 */
+    private int memoryMinTokenBudget;
+    /** 记忆最大 token 预算 */
+    private int memoryMaxTokenBudget;
+
     public AgentConfig() {
         this.workspace = "~/.jobclaw/workspace";
         this.model = "qwen3.5-plus";
@@ -36,6 +52,14 @@ public class AgentConfig {
         this.collaborationEnabled = true;
         this.maxToolOutputLength = 10000; // 默认限制工具返回 10000 字符
         this.commandBlacklist = new ArrayList<>();
+        // 上下文管理默认值（参考 TinyClaw）
+        this.contextWindow = 128_000;
+        this.summarizeMessageThreshold = 200;
+        this.summarizeTokenPercentage = 90;
+        this.recentMessagesToKeep = 40;
+        this.memoryTokenBudgetPercentage = 20;
+        this.memoryMinTokenBudget = 1024;
+        this.memoryMaxTokenBudget = 16384;
     }
 
     public String getWorkspace() {
@@ -140,5 +164,62 @@ public class AgentConfig {
 
     public void setCommandBlacklist(List<String> commandBlacklist) {
         this.commandBlacklist = commandBlacklist;
+    }
+
+    // ==================== 上下文管理配置 getter/setter ====================
+    public int getContextWindow() {
+        return contextWindow;
+    }
+
+    public void setContextWindow(int contextWindow) {
+        this.contextWindow = contextWindow;
+    }
+
+    public int getSummarizeMessageThreshold() {
+        return summarizeMessageThreshold;
+    }
+
+    public void setSummarizeMessageThreshold(int summarizeMessageThreshold) {
+        this.summarizeMessageThreshold = summarizeMessageThreshold;
+    }
+
+    public int getSummarizeTokenPercentage() {
+        return summarizeTokenPercentage;
+    }
+
+    public void setSummarizeTokenPercentage(int summarizeTokenPercentage) {
+        this.summarizeTokenPercentage = summarizeTokenPercentage;
+    }
+
+    public int getRecentMessagesToKeep() {
+        return recentMessagesToKeep;
+    }
+
+    public void setRecentMessagesToKeep(int recentMessagesToKeep) {
+        this.recentMessagesToKeep = recentMessagesToKeep;
+    }
+
+    public int getMemoryTokenBudgetPercentage() {
+        return memoryTokenBudgetPercentage;
+    }
+
+    public void setMemoryTokenBudgetPercentage(int memoryTokenBudgetPercentage) {
+        this.memoryTokenBudgetPercentage = memoryTokenBudgetPercentage;
+    }
+
+    public int getMemoryMinTokenBudget() {
+        return memoryMinTokenBudget;
+    }
+
+    public void setMemoryMinTokenBudget(int memoryMinTokenBudget) {
+        this.memoryMinTokenBudget = memoryMinTokenBudget;
+    }
+
+    public int getMemoryMaxTokenBudget() {
+        return memoryMaxTokenBudget;
+    }
+
+    public void setMemoryMaxTokenBudget(int memoryMaxTokenBudget) {
+        this.memoryMaxTokenBudget = memoryMaxTokenBudget;
     }
 }

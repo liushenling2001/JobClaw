@@ -199,6 +199,15 @@ public class Config {
         config.getAgent().setMaxTokens(16384);
         config.getAgent().setTemperature(0.7);
         config.getAgent().setMaxToolIterations(20);
+        config.getAgent().setMaxToolOutputLength(10000);
+        // 上下文管理默认值（参考 TinyClaw）
+        config.getAgent().setContextWindow(128_000);
+        config.getAgent().setSummarizeMessageThreshold(200);
+        config.getAgent().setSummarizeTokenPercentage(90);
+        config.getAgent().setRecentMessagesToKeep(40);
+        config.getAgent().setMemoryTokenBudgetPercentage(20);
+        config.getAgent().setMemoryMinTokenBudget(1024);
+        config.getAgent().setMemoryMaxTokenBudget(16384);
     }
 
     private static void setGatewayDefaults(Config config) {

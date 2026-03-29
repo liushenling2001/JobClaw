@@ -88,19 +88,10 @@ public class SkillsTools {
             return "Error: skill '" + name + "' not found";
         }
 
-        // Extract builtin skill to filesystem if needed
-        String basePath = skillsService.getLoader().extractBuiltinSkillToFileSystem(name);
-        if (basePath == null) {
-            // Try to find in workspace
-            java.nio.file.Path workspaceSkill = java.nio.file.Paths.get(workspace, "skills", name);
-            if (java.nio.file.Files.exists(workspaceSkill)) {
-                basePath = workspaceSkill.toAbsolutePath().toString();
-            } else {
-                basePath = "classpath:skills/" + name;
-            }
-        }
+        // Find skill location and get base-path
+        String basePath = findSkillBasePath(name);
 
-        // Return formatted result
+        // Return formatted result with base-path for script execution
         StringBuilder sb = new StringBuilder();
         sb.append("<skill-invocation>\n");
         sb.append("<name>").append(name).append("</name>\n");
@@ -108,8 +99,31 @@ public class SkillsTools {
         sb.append("</skill-invocation>\n\n");
         sb.append("# Skill: ").append(name).append("\n\n");
         sb.append(content);
+        sb.append("\n\n---\n\n");
+        sb.append("**提示**: 如果技能指令中包含脚本执行，请使用上述 base-path 作为脚本的工作目录。\n");
+        sb.append("例如：`run_command(command='python3 ").append(basePath).append("/script.py arg1')`");
 
         return sb.toString();
+    }
+
+    /**
+     * Find skill base-path for script execution
+     */
+    private String findSkillBasePath(String skillName) {
+        // Try workspace skills first
+        java.nio.file.Path workspaceSkill = java.nio.file.Paths.get(workspace, "skills", skillName);
+        if (java.nio.file.Files.exists(workspaceSkill)) {
+            return workspaceSkill.toAbsolutePath().toString();
+        }
+
+        // Try to extract builtin skill to filesystem
+        String extractedPath = skillsService.getLoader().extractBuiltinSkillToFileSystem(skillName);
+        if (extractedPath != null) {
+            return extractedPath;
+        }
+
+        // Fallback: return classpath reference (may not work for script execution)
+        return "classpath:skills/" + skillName;
     }
 
     /**

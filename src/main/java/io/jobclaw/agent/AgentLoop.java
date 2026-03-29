@@ -5,7 +5,6 @@ import io.jobclaw.agent.evolution.MemoryStore;
 import io.jobclaw.config.Config;
 import io.jobclaw.session.Session;
 import io.jobclaw.session.SessionManager;
-import io.jobclaw.tools.FileTools;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
@@ -14,6 +13,7 @@ import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.openai.api.OpenAiApi;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
+import org.springframework.beans.factory.ObjectProvider;
 import reactor.core.publisher.Flux;
 
 import java.time.Instant;
@@ -41,8 +41,8 @@ public class AgentLoop {
     private final Config config;
     private final SessionManager sessionManager;
     private final ChatClient chatClient;
-    private final FileTools fileTools;
     private final String model;
+    private final ToolCallback[] allToolCallbacks;
 
     // 新增组件
     private final ContextBuilder contextBuilder;
@@ -57,18 +57,20 @@ public class AgentLoop {
     // 工具执行状态跟踪（独立的布尔状态，精确跟踪每个 session 是否在工具执行中）
     private final Map<String, Boolean> toolExecutingState;
 
-    public AgentLoop(Config config, SessionManager sessionManager, FileTools fileTools) {
-        this(config, sessionManager, fileTools, null, null);
+    public AgentLoop(Config config, SessionManager sessionManager,
+                     ToolCallback[] allToolCallbacks) {
+        this(config, sessionManager, allToolCallbacks, null, null);
     }
 
     /**
      * 构造 AgentLoop，初始化所有组件。
      */
-    public AgentLoop(Config config, SessionManager sessionManager, FileTools fileTools,
+    public AgentLoop(Config config, SessionManager sessionManager,
+                     ToolCallback[] allToolCallbacks,
                      ChatClient chatClient, String model) {
         this.config = config;
         this.sessionManager = sessionManager;
-        this.fileTools = fileTools;
+        this.allToolCallbacks = allToolCallbacks;
 
         // 从配置获取 API Key、模型和 API 地址
         String apiKey = config.getProviders().getDashscope().getApiKey();
@@ -108,12 +110,12 @@ public class AgentLoop {
                 .build();
         this.simpleChatClient = ChatClient.builder(simpleChatModel).build();
 
-        // 初始化 ContextBuilder
-        this.contextBuilder = new ContextBuilder(config, sessionManager,
-                new io.jobclaw.tools.ToolRegistry());
+        // 初始化 ContextBuilder（需要 SkillsService）
+        io.jobclaw.skills.SkillsService skillsService = null;
+        this.contextBuilder = new ContextBuilder(config, sessionManager, skillsService);
 
         // 设置上下文窗口
-        this.contextBuilder.setContextWindow(config.getAgent().getMaxTokens());
+        this.contextBuilder.setContextWindow(config.getAgent().getContextWindow());
 
         // 获取记忆存储
         MemoryStore memoryStore = contextBuilder.getMemoryStore();
@@ -121,20 +123,23 @@ public class AgentLoop {
         // 初始化记忆进化引擎
         MemoryEvolver memoryEvolver = new MemoryEvolver(memoryStore, this, this.model);
 
-        // 初始化会话摘要器
+        // 初始化会话摘要器（传入 AgentConfig）
         this.sessionSummarizer = new SessionSummarizer(
                 sessionManager,
                 this,
-                config.getAgent().getMaxTokens(),
+                config.getAgent(),
                 memoryStore,
                 memoryEvolver
         );
-        
+
         // 初始化 THINK_STREAM 缓冲区
         this.thinkStreamBuffer = new ConcurrentHashMap<>();
         this.toolExecutingState = new ConcurrentHashMap<>();
 
-        logger.info("AgentLoop initialized with Spring AI OpenAI Compatible (model: {})", this.model);
+        logger.info("AgentLoop initialized with {} tools from Spring context", this.allToolCallbacks.length);
+        for (ToolCallback callback : this.allToolCallbacks) {
+            logger.debug("  - Tool: {}", callback.getToolDefinition().name());
+        }
     }
 
     /**
@@ -633,19 +638,13 @@ public class AgentLoop {
      * @return 过滤后的工具数组
      */
     private ToolCallback[] filterToolsByDefinition(AgentDefinition definition) {
-        // 获取所有工具
-        ToolCallback[] allTools = MethodToolCallbackProvider.builder()
-                .toolObjects(fileTools)
-                .build()
-                .getToolCallbacks();
-
         // 如果没有定义或没有限制，返回所有工具
         if (definition == null || definition.getAllowedTools() == null || definition.getAllowedTools().isEmpty()) {
-            return allTools;
+            return allToolCallbacks;
         }
 
         // 过滤工具
-        return java.util.Arrays.stream(allTools)
+        return java.util.Arrays.stream(allToolCallbacks)
                 .filter(tool -> definition.isToolAllowed(tool.getToolDefinition().name()))
                 .toArray(ToolCallback[]::new);
     }

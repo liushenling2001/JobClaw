@@ -7,7 +7,7 @@ import io.jobclaw.providers.LLMProvider;
 import io.jobclaw.providers.Message;
 import io.jobclaw.providers.ToolDefinition;
 import io.jobclaw.session.SessionManager;
-import io.jobclaw.tools.ToolRegistry;
+import io.jobclaw.skills.SkillsService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -25,7 +25,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * 上下文构建器，用于构建 Agent 运行所需的完整上下文。
  *
  * 核心职责：
- * - 构建系统提示词：包含身份信息、工具说明、技能摘要、记忆上下文
+ * - 构建系统提示词：包含身份信息、引导文件、技能摘要、记忆上下文
  * - 加载引导文件：从工作空间加载 AGENTS.md、SOUL.md 等自定义配置
  * - 集成记忆系统：将长期记忆和每日笔记添加到上下文
  * - 管理会话上下文：整合会话摘要和历史对话
@@ -33,7 +33,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * 上下文层次结构：
  * 1. 身份信息：Agent 名称、当前时间、运行环境、工作空间路径
  * 2. 引导文件：用户自定义的行为指导和身份定义
- * 3. 工具说明：已注册工具的功能描述和使用方法
+ * 3. 技能摘要：已安装技能的简要说明和位置信息
  * 4. 记忆上下文：长期记忆和近期对话摘要
  * 5. 会话信息：当前会话状态和摘要
  */
@@ -50,21 +50,22 @@ public class ContextBuilder {
 
     private final Config config;
     private final SessionManager sessionManager;
-    private final ToolRegistry toolRegistry;
     private final MemoryStore memoryStore;
+    private final SkillsService skillsService;
 
     private final Map<String, String> fileContentCache;
     private final String workspace;
 
     /** 上下文窗口大小，用于计算记忆 token 预算 */
-    private int contextWindow = AgentConstants.DEFAULT_MAX_TOKENS;
+    private int contextWindow;
 
-    public ContextBuilder(Config config, SessionManager sessionManager, ToolRegistry toolRegistry) {
+    public ContextBuilder(Config config, SessionManager sessionManager, SkillsService skillsService) {
         this.config = config;
         this.sessionManager = sessionManager;
-        this.toolRegistry = toolRegistry;
+        this.skillsService = skillsService;
         this.fileContentCache = new ConcurrentHashMap<>();
         this.workspace = ConfigLoader.expandHome(config.getAgent().getWorkspace());
+        this.contextWindow = config.getAgent().getContextWindow();
 
         // 初始化记忆存储
         this.memoryStore = new MemoryStore(this.workspace);
@@ -225,8 +226,8 @@ public class ContextBuilder {
         // 2. 引导文件
         addSectionIfNotBlank(parts, loadBootstrapFiles());
 
-        // 3. 工具部分
-        addSectionIfNotBlank(parts, buildToolsSection());
+        // 3. 技能摘要部分
+        addSectionIfNotBlank(parts, buildSkillsSection());
 
         // 4. 记忆上下文（带 token 预算控制和相关性检索）
         int memoryBudget = calculateMemoryTokenBudget();
@@ -253,9 +254,101 @@ public class ContextBuilder {
      * @return 记忆 token 预算
      */
     private int calculateMemoryTokenBudget() {
-        int budget = contextWindow * AgentConstants.MEMORY_TOKEN_BUDGET_PERCENTAGE / 100;
-        return Math.max(AgentConstants.MEMORY_MIN_TOKEN_BUDGET,
-                Math.min(AgentConstants.MEMORY_MAX_TOKEN_BUDGET, budget));
+        int budget = contextWindow * config.getAgent().getMemoryTokenBudgetPercentage() / 100;
+        return Math.max(config.getAgent().getMemoryMinTokenBudget(),
+                Math.min(config.getAgent().getMemoryMaxTokenBudget(), budget));
+    }
+
+    /**
+     * 构建技能摘要部分。
+     *
+     * 生成已安装技能的简要说明，采用渐进式披露策略：
+     * - 只显示技能名称、描述和位置
+     * - 完整内容需要使用 skills 工具调用
+     * - 引导 AI 自主学习：安装社区技能、创建新技能、迭代优化已有技能
+     *
+     * @return 技能摘要字符串（即使没有技能也返回自主学习引导）
+     */
+    private String buildSkillsSection() {
+        if (skillsService == null) {
+            return "";
+        }
+
+        String skillsSummary = skillsService.buildSkillsSummary();
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("# Skills\n\n");
+
+        // 已安装技能摘要
+        if (skillsSummary != null && !skillsSummary.trim().isEmpty()) {
+            sb.append("## 已安装技能\n\n");
+            sb.append("以下技能扩展了你的能力。");
+            sb.append("使用 `skills(action='invoke', name='技能名')` 调用技能，获取完整内容和 base-path（可用于执行技能目录下的脚本）。\n\n");
+            sb.append(skillsSummary);
+            sb.append("\n\n");
+        }
+
+        // AI 自主学习技能的引导
+        appendSkillSelfLearningGuide(sb);
+
+        return sb.toString();
+    }
+
+    /**
+     * 追加技能自主学习引导。
+     */
+    private void appendSkillSelfLearningGuide(StringBuilder sb) {
+        String skillsPath = Paths.get(workspace).toAbsolutePath() + "/skills/";
+
+        sb.append("""
+                ## 技能自主学习
+
+                你有能力使用 `skills` 工具**自主学习和管理技能**。
+                这意味着你不局限于预安装的技能——你可以随着时间增长你的能力。
+
+                ### 何时学习新技能
+
+                - 当你遇到现有技能无法覆盖的任务时，先**搜索 GitHub** 上是否有现成的技能可以安装。
+                - 当用户提到社区技能或包含有用技能的 GitHub 仓库时，直接**安装它**。
+                - 如果搜索不到合适的技能，考虑**创建新技能**来处理它。
+                - 当你发现自己重复执行类似的多步操作时，**将模式提取为可复用的技能**。
+                - 当现有技能可以根据新经验改进时，**编辑它**使其更好。
+
+                ### 如何管理技能
+
+                使用 `skills` 工具执行以下操作：
+                - `skills(action='list')` — 查看所有已安装技能
+                - `skills(action='invoke', name='...')` — **调用技能并获取其基础路径**（用于带脚本的技能）
+                - `skills(action='search', query='...')` — **从可信技能市场搜索可用的技能**（按功能描述搜索）
+                - `skills(action='install', repo='owner/repo')` — 从 GitHub 安装指定技能
+                - `skills(action='create', name='...', content='...', skill_description='...')` — 根据经验创建新技能
+                - `skills(action='edit', name='...', content='...')` — 改进现有技能
+                - `skills(action='remove', name='...')` — 删除不再需要的技能
+
+                ### 调用带脚本的技能
+
+                当技能包含可执行脚本（如 Python 文件）时，使用 `invoke` 而非 `show`：
+                1. 调用 `skills(action='invoke', name='技能名')` 获取技能的基础路径和指令
+                2. 响应中包含指向技能目录的 `<base-path>`
+                3. 使用基础路径执行脚本，例如：`run_command(command='python3 {base-path}/script.py 参数 1')`
+
+                带脚本技能的示例工作流：
+                ```
+                1. skills(action='invoke', name='pptx')  → 获取基础路径：/path/to/skills/pptx/
+                2. run_command(command='python3 /path/to/skills/pptx/create_pptx.py output.pptx')
+                ```
+
+                ### 创建可学习技能
+
+                创建技能时，将其编写为带有 YAML frontmatter 的 **Markdown 指令手册**。好的技能应包含：
+                1. 清晰描述技能的功能
+                2. 逐步执行的指令
+                3. （可选）在哪里找到和安装依赖或相关社区技能
+                4. 何时以及如何使用该技能的示例
+
+                """);
+
+        sb.append("你创建的技能保存在 `").append(skillsPath).append("`，将在未来的对话中自动可用。\n");
     }
 
     /**
@@ -297,25 +390,6 @@ public class ContextBuilder {
         sb.append("1. **始终使用工具** - 当你需要执行操作（安排提醒、发送消息、执行命令等）时，你必须调用适当的工具。不要只是说你会做或假装做。\n\n");
         sb.append("2. **乐于助人和准确** - 使用工具时，简要说明你在做什么。\n\n");
         sb.append("3. **记忆** - 记住某些内容时，写入工作空间的记忆文件。\n");
-
-        return sb.toString();
-    }
-
-    /**
-     * 构建系统提示词的工具部分。
-     *
-     * @return 工具部分字符串，无工具时返回空字符串
-     */
-    private String buildToolsSection() {
-        if (toolRegistry == null || toolRegistry.getSummaries().isEmpty()) {
-            return "";
-        }
-
-        StringBuilder sb = new StringBuilder();
-        sb.append("## 可用工具\n\n");
-        sb.append("**重要**: 你必须使用工具来执行操作。不要假装执行命令或安排任务。\n\n");
-        sb.append("你可以访问以下工具:\n\n");
-        sb.append(toolRegistry.getSummaries());
 
         return sb.toString();
     }

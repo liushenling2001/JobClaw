@@ -2,6 +2,7 @@ package io.jobclaw.agent;
 
 import io.jobclaw.agent.evolution.MemoryEvolver;
 import io.jobclaw.agent.evolution.MemoryStore;
+import io.jobclaw.config.AgentConfig;
 import io.jobclaw.providers.Message;
 import io.jobclaw.session.Session;
 import io.jobclaw.session.SessionManager;
@@ -21,11 +22,11 @@ import java.util.concurrent.ConcurrentHashMap;
  * - 保留最近消息，删除已摘要的历史
  *
  * 触发条件：
- * - 消息数量超过阈值（SUMMARIZE_MESSAGE_THRESHOLD）
- * - Token 数量超过上下文窗口的一定比例（SUMMARIZE_TOKEN_PERCENTAGE）
+ * - 消息数量超过阈值（从 AgentConfig 读取）
+ * - Token 数量超过上下文窗口的一定比例（从 AgentConfig 读取）
  *
  * 摘要策略：
- * 1. 保留最近的 N 条消息（RECENT_MESSAGES_TO_KEEP）
+ * 1. 保留最近的 N 条消息（从 AgentConfig 读取）
  * 2. 对较早的消息生成摘要
  * 3. 如果消息量大，采用分批摘要策略
  * 4. 合并多个批次的摘要为最终摘要
@@ -54,7 +55,8 @@ public class SessionSummarizer {
     private static final String OPTION_TEMPERATURE = "temperature";
 
     private final SessionManager sessions;
-    private final AgentLoop agentLoop;  // 用于调用 LLM 生成摘要
+    private final AgentLoop agentLoop;
+    private final AgentConfig agentConfig;
     private final int contextWindow;
     private final Set<String> summarizing;
     private final MemoryStore memoryStore;
@@ -65,16 +67,17 @@ public class SessionSummarizer {
      *
      * @param sessions      会话管理器
      * @param agentLoop     Agent 循环（用于调用 LLM）
-     * @param contextWindow 上下文窗口大小
+     * @param agentConfig   Agent 配置（包含摘要相关参数）
      * @param memoryStore   记忆存储（用于摘要完成后写入每日笔记）
      * @param memoryEvolver 记忆进化引擎（用于从摘要中提炼结构化记忆）
      */
     public SessionSummarizer(SessionManager sessions, AgentLoop agentLoop,
-                             int contextWindow, MemoryStore memoryStore,
+                             AgentConfig agentConfig, MemoryStore memoryStore,
                              MemoryEvolver memoryEvolver) {
         this.sessions = sessions;
         this.agentLoop = agentLoop;
-        this.contextWindow = contextWindow;
+        this.agentConfig = agentConfig;
+        this.contextWindow = agentConfig.getContextWindow();
         this.memoryStore = memoryStore;
         this.memoryEvolver = memoryEvolver;
         this.summarizing = ConcurrentHashMap.newKeySet();
@@ -105,9 +108,9 @@ public class SessionSummarizer {
      */
     private boolean shouldSummarize(List<Message> history) {
         int tokenEstimate = estimateTokens(history);
-        int threshold = contextWindow * AgentConstants.SUMMARIZE_TOKEN_PERCENTAGE / 100;
+        int threshold = contextWindow * agentConfig.getSummarizeTokenPercentage() / 100;
 
-        return history.size() > AgentConstants.SUMMARIZE_MESSAGE_THRESHOLD || tokenEstimate > threshold;
+        return history.size() > agentConfig.getSummarizeMessageThreshold() || tokenEstimate > threshold;
     }
 
     /**
@@ -143,7 +146,7 @@ public class SessionSummarizer {
     private void summarize(String sessionKey) {
         List<Message> history = sessions.getHistory(sessionKey);
 
-        if (history.size() <= AgentConstants.RECENT_MESSAGES_TO_KEEP) {
+        if (history.size() <= agentConfig.getRecentMessagesToKeep()) {
             return;
         }
 
@@ -170,7 +173,7 @@ public class SessionSummarizer {
      */
     private List<Message> extractMessagesToSummarize(List<Message> history) {
         return new ArrayList<>(
-                history.subList(0, history.size() - AgentConstants.RECENT_MESSAGES_TO_KEEP)
+                history.subList(0, history.size() - agentConfig.getRecentMessagesToKeep())
         );
     }
 
@@ -230,7 +233,7 @@ public class SessionSummarizer {
      * @return 生成的摘要
      */
     private String generateSummary(List<Message> validMessages, String existingSummary) {
-        if (validMessages.size() > AgentConstants.BATCH_SUMMARIZE_THRESHOLD) {
+        if (validMessages.size() > agentConfig.getSummarizeMessageThreshold() / 10) {
             return generateBatchSummary(validMessages, existingSummary);
         } else {
             return summarizeBatch(validMessages, existingSummary);
@@ -354,7 +357,7 @@ public class SessionSummarizer {
      */
     private Map<String, Object> createSummaryOptions() {
         Map<String, Object> options = new HashMap<>();
-        options.put(OPTION_MAX_TOKENS, AgentConstants.SUMMARY_MAX_TOKENS);
+        options.put(OPTION_MAX_TOKENS, agentConfig.getMaxTokens());
         options.put(OPTION_TEMPERATURE, AgentConstants.SUMMARY_TEMPERATURE);
         return options;
     }
@@ -371,7 +374,7 @@ public class SessionSummarizer {
                              int originalSize, int validSize) {
         try {
             sessions.setSummary(sessionKey, summary);
-            sessions.truncateHistory(sessionKey, AgentConstants.RECENT_MESSAGES_TO_KEEP);
+            sessions.truncateHistory(sessionKey, agentConfig.getRecentMessagesToKeep());
             Session session = sessions.getOrCreate(sessionKey);
             sessions.save(session);
         } catch (Exception e) {

@@ -9,6 +9,7 @@ import io.jobclaw.providers.HTTPProvider;
 import io.jobclaw.providers.LLMProvider;
 import io.jobclaw.security.SecurityGuard;
 import io.jobclaw.session.SessionManager;
+import io.jobclaw.skills.SkillsService;
 import io.jobclaw.tools.*;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
@@ -37,9 +38,15 @@ public class JobClawConfig {
 
     @Bean
     @ConditionalOnMissingBean
+    public PathResolver pathResolver(Config config) {
+        return new PathResolver(config);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
     public SecurityGuard securityGuard(Config config) {
         return new SecurityGuard(
-                config.getWorkspacePath(),
+                config.getAgent().getWorkspace(),
                 config.getAgent().isRestrictToWorkspace(),
                 config.getAgent().getCommandBlacklist()
         );
@@ -57,8 +64,8 @@ public class JobClawConfig {
 
     @Bean
     @ConditionalOnMissingBean
-    public ContextBuilder contextBuilder(Config config, SessionManager sessionManager, ToolRegistry toolRegistry) {
-        return new ContextBuilder(config, sessionManager, toolRegistry);
+    public ContextBuilder contextBuilder(Config config, SessionManager sessionManager, SkillsService skillsService) {
+        return new ContextBuilder(config, sessionManager, skillsService);
     }
 
     @Bean

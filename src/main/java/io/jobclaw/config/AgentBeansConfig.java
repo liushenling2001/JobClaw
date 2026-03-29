@@ -8,8 +8,12 @@ import io.jobclaw.mcp.MCPService;
 import io.jobclaw.providers.HTTPProvider;
 import io.jobclaw.providers.LLMProvider;
 import io.jobclaw.session.SessionManager;
+import io.jobclaw.skills.SkillsLoader;
+import io.jobclaw.skills.SkillsService;
 import io.jobclaw.stats.TokenUsageService;
 import io.jobclaw.tools.*;
+import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.tool.method.MethodToolCallbackProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -39,6 +43,20 @@ public class AgentBeansConfig {
     @ConditionalOnMissingBean
     public ToolRegistry toolRegistry() {
         return new ToolRegistry();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public SkillsLoader skillsLoader(Config config) {
+        return new SkillsLoader(config.getWorkspacePath(), null, null);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public SkillsService skillsService(Config config, ToolsConfig toolsConfig, SkillsLoader skillsLoader) {
+        SkillsService service = new SkillsService(config, toolsConfig);
+        service.init();
+        return service;
     }
 
     @Bean
@@ -109,9 +127,33 @@ public class AgentBeansConfig {
     }
 
     @Bean
+    public ToolCallback[] allToolCallbacks(
+            FileTools fileTools,
+            RunCommandTool runCommandTool,
+            SkillsTools skillsTools,
+            MessageTool messageTool,
+            CronTool cronTool,
+            MCPTool mcpTool,
+            TokenUsageTool tokenUsageTool,
+            WebSearchTool webSearchTool,
+            WebFetchTool webFetchTool,
+            ExecTool execTool) {
+
+        // 注意：不包含 SpawnTool，因为它依赖 AgentOrchestrator，会形成循环依赖
+        // 如果需要 SpawnTool，需要重构 AgentOrchestrator 或使用 @Lazy 注入
+
+        return MethodToolCallbackProvider.builder()
+                .toolObjects(fileTools, runCommandTool, skillsTools, messageTool, cronTool,
+                            mcpTool, tokenUsageTool, webSearchTool, webFetchTool, execTool)
+                .build()
+                .getToolCallbacks();
+    }
+
+    @Bean
     @ConditionalOnMissingBean
-    public AgentLoop agentLoop(Config config, SessionManager sessionManager, FileTools fileTools) {
-        return new AgentLoop(config, sessionManager, fileTools);
+    public AgentLoop agentLoop(Config config, SessionManager sessionManager,
+                               ToolCallback[] allToolCallbacks) {
+        return new AgentLoop(config, sessionManager, allToolCallbacks);
     }
 
     // Tool beans with dependencies

@@ -12,14 +12,18 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * Shell 命令执行工具
- * 
+ *
  * 允许 AI Agent 执行系统命令，支持跨平台（Windows/Linux/macOS）
- * 
+ *
  * 核心功能：
  * - 执行 Shell 命令并捕获输出
- * - 支持自定义工作目录
+ * - 支持自定义工作目录（base-path）
  * - 超时控制
  * - 安全警告
+ *
+ * 典型用例：
+ * - 执行技能脚本：run_command(command='python3 {base-path}/script.py arg1')
+ * - 运行系统命令：run_command(command='ls -la', workingDir='/path/to/dir')
  */
 @Component
 public class RunCommandTool {
@@ -28,10 +32,10 @@ public class RunCommandTool {
     private static final long DEFAULT_TIMEOUT_SECONDS = 60;     // 默认超时时间（秒）
     private static final long THREAD_JOIN_TIMEOUT_MS = 1000;    // 线程等待超时（毫秒）
 
-    @Tool(name = "run_command", description = "Execute a shell command and return output. WARNING: Use with caution!")
+    @Tool(name = "run_command", description = "Execute a shell command and return output. Use this tool when you need to: 1) Run system commands, 2) Execute scripts (Python, Bash, etc.), 3) Invoke skill scripts (use base-path from skills invoke operation). IMPORTANT: For skill scripts, use the base-path returned by skills(action='invoke') as workingDir or in command path.")
     public String execute(
-        @ToolParam(description = "The shell command to execute") String command,
-        @ToolParam(description = "Working directory (optional, defaults to current directory)") String workingDir,
+        @ToolParam(description = "The shell command to execute. For skill scripts, include the full path: e.g., 'python3 {base-path}/script.py arg1'") String command,
+        @ToolParam(description = "Working directory (optional, defaults to current directory). Use the base-path from skills invoke for skill scripts") String workingDir,
         @ToolParam(description = "Timeout in seconds (optional, default: 60)") Integer timeout
     ) {
         if (command == null || command.isEmpty()) {
