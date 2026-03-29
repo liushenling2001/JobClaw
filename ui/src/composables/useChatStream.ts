@@ -9,6 +9,16 @@ export function useChatStream() {
   const isConnecting = ref(false);
 
   const startStream = async (message: string) => {
+    // 清理上一轮流式输出残留的工具消息
+    const messages = chatStore.messages;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg.toolCall && msg.toolCall.status === 'running') {
+        // 移除未完成的工具消息
+        messages.splice(i, 1);
+      }
+    }
+
     abortController.value = new AbortController();
     isConnecting.value = true;
 
