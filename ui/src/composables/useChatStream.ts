@@ -93,6 +93,7 @@ export function useChatStream() {
     switch (type) {
       case 'THINK_START':
       case 'think_start':
+        // 创建思考中的工具消息（默认收起）
         chatStore.addMessage('assistant', '', {
           toolId: 'think',
           toolName: '思考',
@@ -113,12 +114,24 @@ export function useChatStream() {
 
       case 'THINK_END':
       case 'think_end':
-        // 思考结束，更新状态
+        // 思考结束，将思考工具标记为完成
+        {
+          const messages = chatStore.messages;
+          for (let i = messages.length - 1; i >= 0; i--) {
+            const msg = messages[i];
+            if (msg.toolCall && msg.toolCall.toolId === 'think' && msg.toolCall.status === 'running') {
+              msg.toolCall.status = 'success';
+              msg.toolCall.duration = data.metadata?.duration || 0;
+              break;
+            }
+          }
+        }
         break;
 
       case 'TOOL_START':
       case 'tool_start': {
         const toolName = data.metadata?.toolName || '工具';
+        // 工具调用插入到当前消息之前（通过添加到消息列表末尾）
         chatStore.addMessage('assistant', '', {
           toolId: data.metadata?.toolId || 'tool_' + Date.now(),
           toolName: toolName,
@@ -126,26 +139,26 @@ export function useChatStream() {
           duration: 0,
           result: null,
           parameters: data.content || '',
-          _expanded: true
+          _expanded: false  // 默认收起，点击展开
         });
         break;
       }
 
       case 'TOOL_END':
       case 'tool_end':
-        // 工具调用结束，更新状态
+        // 工具调用结束，状态在 TOOL_OUTPUT 时更新
         break;
 
       case 'TOOL_OUTPUT':
       case 'tool_output': {
-        // 更新最后一个工具调用的结果
+        // 更新最后一个运行中工具的结果
         const messages = chatStore.messages;
         for (let i = messages.length - 1; i >= 0; i--) {
           const msg = messages[i];
           if (msg.toolCall && msg.toolCall.status === 'running') {
             msg.toolCall.status = 'success';
             msg.toolCall.result = data.content;
-            msg.toolCall.duration = 0;
+            msg.toolCall.duration = data.metadata?.duration || 0;
             break;
           }
         }
@@ -161,6 +174,7 @@ export function useChatStream() {
           if (msg.toolCall && msg.toolCall.status === 'running') {
             msg.toolCall.status = 'error';
             msg.toolCall.result = '错误：' + data.content;
+            msg.toolCall.duration = data.metadata?.duration || 0;
             break;
           }
         }
@@ -169,10 +183,8 @@ export function useChatStream() {
 
       case 'FINAL_RESPONSE':
       case 'final_response':
-        // 只在有内容时添加最终响应
-        if (data.content && data.content.trim()) {
-          chatStore.addMessage('assistant', data.content);
-        }
+        // 不再添加新消息，因为 THINK_STREAM 已经累积了完整响应
+        // 只标记流式输出结束
         chatStore.isStreaming = false;
         break;
 
