@@ -9,14 +9,12 @@ export function useChatStream() {
   const isConnecting = ref(false);
 
   const startStream = async (message: string) => {
-    // 清理上一轮流式输出残留的工具消息
-    const messages = chatStore.messages;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const msg = messages[i];
-      if (msg.toolCall && msg.toolCall.status === 'running') {
-        // 移除未完成的工具消息
-        messages.splice(i, 1);
-      }
+    // 清理上一轮流式输出残留的运行中工具消息
+    chatStore.cleanupRunningToolMessages();
+    
+    // 结束之前的流式会话（如果还在进行中）
+    if (chatStore.isStreaming) {
+      chatStore.endStreamingSession();
     }
 
     abortController.value = new AbortController();
@@ -38,8 +36,8 @@ export function useChatStream() {
       }
 
       isConnecting.value = false;
-      chatStore.isStreaming = true;
-      chatStore.isConnected = true;
+      // 开始新的流式会话
+      chatStore.startStreamingSession();
 
       if (!response.body) {
         throw new Error('Response body is null');
@@ -86,8 +84,7 @@ export function useChatStream() {
       }
     } catch (error) {
       isConnecting.value = false;
-      chatStore.isStreaming = false;
-      chatStore.isConnected = false;
+      chatStore.endStreamingSession();
 
       if ((error as Error).name === 'AbortError') {
         console.log('Stream aborted');
@@ -103,22 +100,16 @@ export function useChatStream() {
     switch (type) {
       case 'THINK_START':
       case 'think_start':
-        // 创建思考中的工具消息（默认收起）
-        chatStore.addMessage('assistant', '', {
-          toolId: 'think',
-          toolName: '思考',
-          status: 'running',
-          duration: 0,
-          result: null,
-          parameters: '',
-          _expanded: false
-        });
+        // 开始流式会话（如果还没有开始）
+        if (!chatStore.currentAssistantMessageId) {
+          chatStore.startStreamingSession();
+        }
         break;
 
       case 'THINK_STREAM':
       case 'think_stream':
         if (data.content) {
-          chatStore.appendToLastAssistantMessage(data.content);
+          chatStore.appendToCurrentAssistantMessage(data.content);
         }
         break;
 
@@ -141,8 +132,8 @@ export function useChatStream() {
       case 'TOOL_START':
       case 'tool_start': {
         const toolName = data.metadata?.toolName || '工具';
-        // 工具调用插入到当前消息之前（通过添加到消息列表末尾）
-        chatStore.addMessage('assistant', '', {
+        // 工具调用插入到当前流式消息之前
+        chatStore.insertBeforeCurrentAssistantMessage({
           toolId: data.metadata?.toolId || 'tool_' + Date.now(),
           toolName: toolName,
           status: 'running',
@@ -193,15 +184,14 @@ export function useChatStream() {
 
       case 'FINAL_RESPONSE':
       case 'final_response':
-        // 不再添加新消息，因为 THINK_STREAM 已经累积了完整响应
-        // 只标记流式输出结束
-        chatStore.isStreaming = false;
+        // 结束流式会话
+        chatStore.endStreamingSession();
         break;
 
       case 'ERROR':
       case 'error':
         toast.error(data.message || '发生错误');
-        chatStore.isStreaming = false;
+        chatStore.endStreamingSession();
         break;
 
       default:
