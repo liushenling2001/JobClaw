@@ -88,18 +88,18 @@ export function useChatStream() {
   };
 
   const handleStreamData = (data: any, eventType: string | null) => {
-    const type = eventType || data.type;
+    const type = eventType || (data.type as string);
 
     switch (type) {
       case 'THINK_START':
       case 'think_start':
         chatStore.addMessage('assistant', '', {
-          toolId: data.toolId || 'think',
+          toolId: 'think',
           toolName: '思考',
           status: 'running',
           duration: 0,
           result: null,
-          parameters: data.parameters || '',
+          parameters: '',
           _expanded: false
         });
         break;
@@ -116,37 +116,61 @@ export function useChatStream() {
         // 思考结束，更新状态
         break;
 
-      case 'TOOL_CALL':
-      case 'tool_call':
+      case 'TOOL_START':
+      case 'tool_start': {
+        const toolName = data.metadata?.toolName || '工具';
         chatStore.addMessage('assistant', '', {
-          toolId: data.toolId,
-          toolName: data.toolName,
+          toolId: data.metadata?.toolId || 'tool_' + Date.now(),
+          toolName: toolName,
           status: 'running',
           duration: 0,
           result: null,
-          parameters: data.parameters || '',
+          parameters: data.content || '',
           _expanded: true
         });
         break;
+      }
 
-      case 'TOOL_RESULT':
-      case 'tool_result':
+      case 'TOOL_END':
+      case 'tool_end':
+        // 工具调用结束，更新状态
+        break;
+
+      case 'TOOL_OUTPUT':
+      case 'tool_output': {
         // 更新最后一个工具调用的结果
         const messages = chatStore.messages;
         for (let i = messages.length - 1; i >= 0; i--) {
           const msg = messages[i];
-          if (msg.toolCall && msg.toolCall.toolId === data.toolId) {
-            msg.toolCall.status = data.success ? 'success' : 'error';
-            msg.toolCall.result = data.result;
-            msg.toolCall.duration = data.duration || 0;
+          if (msg.toolCall && msg.toolCall.status === 'running') {
+            msg.toolCall.status = 'success';
+            msg.toolCall.result = data.content;
+            msg.toolCall.duration = 0;
             break;
           }
         }
         break;
+      }
+
+      case 'TOOL_ERROR':
+      case 'tool_error': {
+        // 更新工具调用为错误状态
+        const messages = chatStore.messages;
+        for (let i = messages.length - 1; i >= 0; i--) {
+          const msg = messages[i];
+          if (msg.toolCall && msg.toolCall.status === 'running') {
+            msg.toolCall.status = 'error';
+            msg.toolCall.result = '错误：' + data.content;
+            break;
+          }
+        }
+        break;
+      }
 
       case 'FINAL_RESPONSE':
       case 'final_response':
-        if (data.content) {
+        // 只在有内容时添加最终响应
+        if (data.content && data.content.trim()) {
           chatStore.addMessage('assistant', data.content);
         }
         chatStore.isStreaming = false;
@@ -159,7 +183,8 @@ export function useChatStream() {
         break;
 
       default:
-        console.log('Unknown event type:', type, data);
+        // 忽略未知事件类型
+        break;
     }
   };
 
