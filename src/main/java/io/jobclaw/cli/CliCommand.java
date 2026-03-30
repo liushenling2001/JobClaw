@@ -1,20 +1,16 @@
 package io.jobclaw.cli;
 
-import io.jobclaw.JobClawApplication;
 import io.jobclaw.SpringContext;
 import io.jobclaw.agent.AgentLoop;
 import io.jobclaw.bus.MessageBus;
 import io.jobclaw.config.Config;
 import io.jobclaw.config.ConfigLoader;
 import io.jobclaw.providers.LLMProvider;
-import io.jobclaw.security.SecurityGuard;
 import io.jobclaw.session.SessionManager;
 import io.jobclaw.tools.ToolRegistry;
 
 import java.io.File;
 import java.nio.file.Paths;
-import java.util.HashMap;
-import java.util.Map;
 
 /**
  * CLI command base class

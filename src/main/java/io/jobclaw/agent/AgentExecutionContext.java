@@ -6,108 +6,86 @@ import org.slf4j.LoggerFactory;
 import java.util.function.Consumer;
 
 /**
- * Agent 执行上下文 - 使用 ThreadLocal 存储当前请求的 sessionKey 和 eventCallback
- *
- * 解决工具（如 SpawnTool、CollaborateTool）无法获取当前 sessionKey 的问题：
- * - AgentLoop 在处理请求时设置当前线程的上下文
- * - 工具执行时可以获取 sessionKey 和 eventCallback
- * - 支持嵌套调用（子 Agent 调用 spawn 等）
- *
- * 使用方式：
- * <pre>{@code
- * // 设置上下文
- * AgentExecutionContext.setCurrentContext(sessionKey, eventCallback);
- *
- * // 获取 sessionKey
- * String sessionKey = AgentExecutionContext.getCurrentSessionKey();
- *
- * // 清理
- * AgentExecutionContext.clear();
- * }</pre>
+ * Thread-local execution context shared between AgentLoop and tool callbacks.
  */
 public class AgentExecutionContext {
 
     private static final Logger logger = LoggerFactory.getLogger(AgentExecutionContext.class);
 
-    /**
-     * 存储当前线程的 sessionKey
-     */
-    private static final ThreadLocal<String> currentSessionKey = new ThreadLocal<>();
+    public record ExecutionScope(
+            String sessionKey,
+            Consumer<ExecutionEvent> eventCallback,
+            String runId,
+            String parentRunId,
+            String agentId,
+            String agentName
+    ) {
+    }
 
-    /**
-     * 存储当前线程的 eventCallback
-     */
-    private static final ThreadLocal<Consumer<ExecutionEvent>> currentEventCallback = new ThreadLocal<>();
+    private static final ThreadLocal<ExecutionScope> currentScope = new ThreadLocal<>();
 
-    /**
-     * 设置当前线程的执行上下文
-     *
-     * @param sessionKey 会话键
-     * @param callback 事件回调（可为 null）
-     */
+    private AgentExecutionContext() {
+    }
+
     public static void setCurrentContext(String sessionKey, Consumer<ExecutionEvent> callback) {
-        if (sessionKey != null) {
-            currentSessionKey.set(sessionKey);
-            if (callback != null) {
-                currentEventCallback.set(callback);
-            }
-            logger.debug("Set agent execution context for session: {}", sessionKey);
+        if (sessionKey == null) {
+            return;
         }
+        setCurrentContext(new ExecutionScope(sessionKey, callback, null, null, null, null));
     }
 
-    /**
-     * 获取当前线程的 sessionKey
-     *
-     * @return sessionKey（可能为 null）
-     */
+    public static void setCurrentContext(ExecutionScope scope) {
+        if (scope == null || scope.sessionKey() == null) {
+            return;
+        }
+        currentScope.set(scope);
+        logger.debug("Set execution context for session {} run {}", scope.sessionKey(), scope.runId());
+    }
+
+    public static ExecutionScope getCurrentScope() {
+        return currentScope.get();
+    }
+
     public static String getCurrentSessionKey() {
-        return currentSessionKey.get();
+        ExecutionScope scope = currentScope.get();
+        return scope != null ? scope.sessionKey() : null;
     }
 
-    /**
-     * 获取当前线程的 eventCallback
-     *
-     * @return eventCallback（可能为 null）
-     */
     public static Consumer<ExecutionEvent> getCurrentEventCallback() {
-        return currentEventCallback.get();
+        ExecutionScope scope = currentScope.get();
+        return scope != null ? scope.eventCallback() : null;
     }
 
-    /**
-     * 清理当前线程的上下文
-     */
-    public static void clear() {
-        currentSessionKey.remove();
-        currentEventCallback.remove();
-        logger.debug("Cleared agent execution context");
+    public static String getCurrentRunId() {
+        ExecutionScope scope = currentScope.get();
+        return scope != null ? scope.runId() : null;
     }
 
-    /**
-     * 检查是否有可用的上下文
-     *
-     * @return 是否有 sessionKey
-     */
+    public static String getCurrentParentRunId() {
+        ExecutionScope scope = currentScope.get();
+        return scope != null ? scope.parentRunId() : null;
+    }
+
     public static boolean hasContext() {
-        return currentSessionKey.get() != null;
+        return currentScope.get() != null;
     }
 
-    /**
-     * 发布事件（便捷方法）
-     *
-     * @param event 执行事件
-     * @return 是否成功发布
-     */
+    public static void clear() {
+        currentScope.remove();
+        logger.debug("Cleared execution context");
+    }
+
     public static boolean publishEvent(ExecutionEvent event) {
-        Consumer<ExecutionEvent> callback = currentEventCallback.get();
-        if (callback != null) {
-            try {
-                callback.accept(event);
-                return true;
-            } catch (Exception e) {
-                logger.warn("Failed to publish event: {}", e.getMessage());
-                return false;
-            }
+        Consumer<ExecutionEvent> callback = getCurrentEventCallback();
+        if (callback == null) {
+            return false;
         }
-        return false;
+        try {
+            callback.accept(event);
+            return true;
+        } catch (Exception e) {
+            logger.warn("Failed to publish event: {}", e.getMessage());
+            return false;
+        }
     }
 }

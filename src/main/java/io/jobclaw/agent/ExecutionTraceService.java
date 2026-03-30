@@ -6,6 +6,8 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.*;
 
@@ -143,6 +145,38 @@ public class ExecutionTraceService {
         return eventHistory.getOrDefault(sessionId, new ConcurrentLinkedQueue<>());
     }
 
+    public List<ExecutionEvent> getHistoryByRun(String sessionId, String runId, int limit) {
+        if (runId == null || runId.isBlank()) {
+            return List.of();
+        }
+        List<ExecutionEvent> filtered = getHistory(sessionId).stream()
+                .filter(event -> runId.equals(event.getRunId()))
+                .toList();
+        int normalizedLimit = normalizeLimit(limit);
+        if (filtered.size() <= normalizedLimit) {
+            return filtered;
+        }
+        return filtered.subList(filtered.size() - normalizedLimit, filtered.size());
+    }
+
+    public List<ExecutionEvent> getHistoryByBoard(String sessionId, String boardId, int limit) {
+        if (boardId == null || boardId.isBlank()) {
+            return List.of();
+        }
+        List<ExecutionEvent> filtered = new ArrayList<>();
+        for (ExecutionEvent event : getHistory(sessionId)) {
+            Object value = event.getMetadata().get("boardId");
+            if (boardId.equals(value)) {
+                filtered.add(event);
+            }
+        }
+        int normalizedLimit = normalizeLimit(limit);
+        if (filtered.size() <= normalizedLimit) {
+            return filtered;
+        }
+        return filtered.subList(filtered.size() - normalizedLimit, filtered.size());
+    }
+
     /**
      * 清除 session 的跟踪数据
      *
@@ -163,6 +197,10 @@ public class ExecutionTraceService {
     public int getSubscriberCount(String sessionId) {
         ConcurrentHashMap<String, SseEmitter> emitters = sessionEmitters.get(sessionId);
         return emitters != null ? emitters.size() : 0;
+    }
+
+    private int normalizeLimit(int limit) {
+        return limit <= 0 ? Integer.MAX_VALUE : limit;
     }
 
     /**

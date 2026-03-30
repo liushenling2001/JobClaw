@@ -1,6 +1,5 @@
 package io.jobclaw.config;
 
-import io.jobclaw.agent.AgentLoop;
 import io.jobclaw.agent.ContextBuilder;
 import io.jobclaw.bus.MessageBus;
 import io.jobclaw.conversation.ConversationStore;

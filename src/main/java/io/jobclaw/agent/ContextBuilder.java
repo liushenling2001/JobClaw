@@ -206,6 +206,15 @@ public class ContextBuilder {
         sb.append("1. Use tools when you need to perform actions.\n");
         sb.append("2. Be concise and accurate.\n");
         sb.append("3. Persist durable memory to workspace memory files when appropriate.\n");
+        sb.append("4. To create a reusable specialized agent, use `agent_catalog` to persist the definition.\n");
+        sb.append("5. To run an existing persistent agent, use `spawn(agent='agent-name', task='...')`.\n");
+        sb.append("6. Do not invent a parallel agent execution flow when `spawn` already fits the task.\n");
+        sb.append("\n");
+        sb.append("## Persistent Agents\n\n");
+        sb.append("- Use `agent_catalog(action='create', ...)` to create a reusable agent.\n");
+        sb.append("- Use `agent_catalog(action='list')` or `agent_catalog(action='get', name='...')` to inspect saved agents.\n");
+        sb.append("- Use `spawn(agent='saved-agent-name', task='...')` to execute a saved agent.\n");
+        sb.append("- Use `spawn(role='coder', task='...')` only for built-in role agents.\n");
         return sb.toString();
     }
 

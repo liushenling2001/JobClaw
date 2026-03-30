@@ -2,6 +2,7 @@ package io.jobclaw.agent;
 
 import io.jobclaw.agent.evolution.MemoryEvolver;
 import io.jobclaw.agent.evolution.MemoryStore;
+import io.jobclaw.agent.runtime.AgentRunIds;
 import io.jobclaw.context.ContextAssembler;
 import io.jobclaw.context.ContextAssemblyOptions;
 import io.jobclaw.context.ContextAssemblyPolicy;
@@ -21,8 +22,6 @@ import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.openai.api.OpenAiApi;
 import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.method.MethodToolCallbackProvider;
-import org.springframework.beans.factory.ObjectProvider;
 import reactor.core.publisher.Flux;
 
 import java.time.Instant;
@@ -235,7 +234,14 @@ public class AgentLoop {
     public String processWithDefinition(String sessionKey, String userContent, AgentDefinition definition,
                                         Consumer<ExecutionEvent> eventCallback) {
         // 设置执行上下文（供 SpawnTool/CollaborateTool 获取 sessionKey）
-        AgentExecutionContext.setCurrentContext(sessionKey, eventCallback);
+        AgentExecutionContext.ExecutionScope previousScope = AgentExecutionContext.getCurrentScope();
+        AgentExecutionContext.ExecutionScope scope = createExecutionScope(
+                sessionKey,
+                definition,
+                eventCallback,
+                previousScope
+        );
+        AgentExecutionContext.setCurrentContext(scope);
 
         try {
             Session session = sessionManager.getOrCreate(sessionKey);
@@ -251,7 +257,7 @@ public class AgentLoop {
 
             // 使用 ContextBuilder 构建系统提示（支持 Agent 定义）
             String systemPrompt = definition != null ?
-                    buildSystemPromptWithDefinition(definition) : buildSystemPrompt(sessionKey, userContent);
+                    buildSystemPromptWithDefinition(sessionKey, userContent, definition) : buildSystemPrompt(sessionKey, userContent);
 
             // 创建工具回调（支持工具过滤）
             ToolCallback[] rawTools = filterToolsByDefinition(definition);
@@ -332,7 +338,11 @@ public class AgentLoop {
             return "Error: " + e.getMessage() + " (check network/API key)";
         } finally {
             // 清理执行上下文
-            AgentExecutionContext.clear();
+            if (previousScope != null) {
+                AgentExecutionContext.setCurrentContext(previousScope);
+            } else {
+                AgentExecutionContext.clear();
+            }
         }
     }
 
@@ -428,7 +438,8 @@ public class AgentLoop {
      * @return 系统提示
      */
     private String buildSystemPromptWithRole(AgentRole role) {
-        return buildSystemPromptWithDefinition(role != null ? AgentDefinition.fromRole(role) : null);
+        return buildSystemPromptWithDefinition("role:default", null,
+                role != null ? AgentDefinition.fromRole(role) : null);
     }
 
     /**
@@ -437,54 +448,53 @@ public class AgentLoop {
      * @param definition Agent 定义（null 表示默认配置）
      * @return 系统提示
      */
-    private String buildSystemPromptWithDefinition(AgentDefinition definition) {
-        StringBuilder sb = new StringBuilder();
-
-        if (definition != null) {
-            sb.append("# JobClaw Agent - ").append(definition.getDisplayName()).append("\n\n");
-            sb.append(definition.getSystemPrompt()).append("\n\n");
-        } else {
-            sb.append("# JobClaw Agent\n\n");
-            sb.append("You are a helpful AI assistant powered by JobClaw framework.\n\n");
+    private String buildSystemPromptWithDefinition(String sessionKey,
+                                                   String currentMessage,
+                                                   AgentDefinition definition) {
+        String basePrompt = buildSystemPrompt(sessionKey, currentMessage);
+        if (definition == null) {
+            return basePrompt;
         }
 
-        sb.append("## Tools Available\n");
-        sb.append("- **read_file**: Read the contents of a file (path: required)\n");
-        sb.append("- **write_file**: Write content to a file (path: required, content: required)\n");
-        sb.append("- **list_dir**: List the contents of a directory (path: required)\n");
-        sb.append("\n\n");
+        StringBuilder sb = new StringBuilder(basePrompt);
+        sb.append("\n\n---\n\n");
+        sb.append("# Agent Overlay\n\n");
+        sb.append("This execution is running as a specialized agent.\n\n");
+        sb.append("## Agent Identity\n");
+        sb.append("- Name: ").append(definition.getDisplayName()).append("\n");
+        sb.append("- Code: ").append(definition.getCode()).append("\n\n");
 
-        if (definition != null && definition.getAllowedTools() != null && !definition.getAllowedTools().isEmpty()) {
+        if (definition.getDescription() != null && !definition.getDescription().isBlank()) {
+            sb.append("## Agent Description\n");
+            sb.append(definition.getDescription()).append("\n\n");
+        }
+
+        if (definition.getSystemPrompt() != null && !definition.getSystemPrompt().isBlank()) {
+            sb.append("## Agent Instructions\n");
+            sb.append(definition.getSystemPrompt()).append("\n\n");
+        }
+
+        if (definition.getAllowedTools() != null && !definition.getAllowedTools().isEmpty()) {
             sb.append("## Tool Restrictions\n");
-            sb.append("You are only allowed to use the following tools: ");
+            sb.append("You are only allowed to use: ");
             sb.append(String.join(", ", definition.getAllowedTools()));
             sb.append("\n\n");
+        } else {
+            sb.append("## Tool Restrictions\n");
+            sb.append("No agent-specific tool override is set. Reuse the main assistant toolset.\n\n");
         }
 
-        if (definition != null && definition.getAllowedSkills() != null && !definition.getAllowedSkills().isEmpty()) {
+        if (definition.getAllowedSkills() != null && !definition.getAllowedSkills().isEmpty()) {
             sb.append("## Skill Restrictions\n");
-            sb.append("You are only allowed to use the following skills: ");
+            sb.append("You are only allowed to use: ");
             sb.append(String.join(", ", definition.getAllowedSkills()));
             sb.append("\n\n");
         }
 
-        sb.append("## Important Rules\n");
-        sb.append("1. **Think before acting**: Only use tools when necessary. If you can answer from your knowledge, do so directly.\n");
-        sb.append("2. **Avoid loops**: After using a tool 2-3 times, synthesize the information and provide a final answer.\n");
-        sb.append("3. **Be concise**: Don't call the same tool repeatedly with the same parameters.\n");
-        sb.append("4. **Know when to stop**: Once you have enough information to answer the question, stop calling tools and respond directly.\n");
-        sb.append("5. **Final answer required**: Always end with a clear, direct response to the user's question.\n");
-        sb.append("\n\n");
-
-        sb.append("## Response Format\n");
-        sb.append("- Use tools strategically to gather information\n");
-        sb.append("- After gathering information, provide a comprehensive answer in the user's language\n");
-        sb.append("- Do not mention tool usage in your final response unless specifically asked\n");
-        sb.append("\n\n");
-
-        sb.append("## Current Session\n");
-        sb.append("Time: ").append(Instant.now()).append("\n");
-
+        sb.append("## Execution Rules\n");
+        sb.append("1. Reuse the main assistant runtime policy, memory policy, and context rules unless the agent overlay narrows them.\n");
+        sb.append("2. If this is a built-in role agent or a persistent saved agent, prefer following the overlay rather than inventing a third temporary execution pattern.\n");
+        sb.append("3. When no specific saved agent is requested, sub-agent execution should default to the main assistant configuration plus the selected role overlay.\n");
         return sb.toString();
     }
 
@@ -742,6 +752,39 @@ public class AgentLoop {
      * @param options 选项（max_tokens, temperature 等）
      * @return LLM 响应
      */
+    private AgentExecutionContext.ExecutionScope createExecutionScope(String sessionKey,
+                                                                      AgentDefinition definition,
+                                                                      Consumer<ExecutionEvent> eventCallback,
+                                                                      AgentExecutionContext.ExecutionScope previousScope) {
+        String agentId = definition != null ? definition.getCode() : "assistant";
+        String agentName = definition != null ? definition.getDisplayName() : "Assistant";
+        Consumer<ExecutionEvent> effectiveCallback = eventCallback != null
+                ? eventCallback
+                : previousScope != null ? previousScope.eventCallback() : null;
+
+        if (previousScope != null && sessionKey.equals(previousScope.sessionKey()) && previousScope.runId() != null) {
+            return new AgentExecutionContext.ExecutionScope(
+                    sessionKey,
+                    effectiveCallback,
+                    previousScope.runId(),
+                    previousScope.parentRunId(),
+                    agentId,
+                    agentName
+            );
+        }
+
+        String runId = previousScope != null ? AgentRunIds.newChildRunId() : AgentRunIds.newTopLevelRunId();
+        String parentRunId = previousScope != null ? previousScope.runId() : null;
+        return new AgentExecutionContext.ExecutionScope(
+                sessionKey,
+                effectiveCallback,
+                runId,
+                parentRunId,
+                agentId,
+                agentName
+        );
+    }
+
     public String callLLM(String prompt, Map<String, Object> options) {
         try {
             OpenAiChatOptions.Builder optionsBuilder = OpenAiChatOptions.builder();

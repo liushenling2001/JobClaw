@@ -5,6 +5,8 @@ import io.jobclaw.agent.AgentOrchestrator;
 import io.jobclaw.agent.AgentRole;
 import io.jobclaw.agent.ExecutionEvent;
 import io.jobclaw.agent.ExecutionTraceService;
+import io.jobclaw.agent.catalog.AgentCatalogService;
+import io.jobclaw.agent.runtime.AgentRunIds;
 import io.jobclaw.bus.MessageBus;
 import io.jobclaw.bus.OutboundMessage;
 import org.springframework.ai.tool.annotation.Tool;
@@ -12,177 +14,247 @@ import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
+
 /**
- * 子 Agent 生成工具
- *
- * 直接调用后端已实现的 AgentOrchestrator 多智能体协作系统
- *
- * 支持两种模式：
- * - 同步模式（默认）：等待子 Agent 完成并返回结果。主 Agent 通过工具返回值感知执行结果。
- * - 异步模式（async=true）：后台运行，完成后通知。
- *
- * SSE 流式输出：
- * - 主 Agent 的思考流会显示 "spawn 工具正在执行..."
- * - 子 Agent 执行过程不会推送到前端 SSE（前端只订阅主 session）
- * - 同步模式：工具返回值包含子 Agent 的完整结果
- * - 异步模式：完成后通过 ExecutionTraceService 推送 SSE 通知 + MessageBus 发送到外部通道
- *
- * 注意：使用 @Lazy 注入 AgentOrchestrator 避免循环依赖
+ * Spawn a child agent from the current agent execution.
  */
 @Component
 public class SpawnTool {
 
     private final AgentOrchestrator orchestrator;
+    private final AgentCatalogService agentCatalogService;
     private final MessageBus messageBus;
     private final ExecutionTraceService executionTraceService;
 
     public SpawnTool(@Lazy AgentOrchestrator orchestrator,
+                     AgentCatalogService agentCatalogService,
                      MessageBus messageBus,
                      ExecutionTraceService executionTraceService) {
         this.orchestrator = orchestrator;
+        this.agentCatalogService = agentCatalogService;
         this.messageBus = messageBus;
         this.executionTraceService = executionTraceService;
     }
 
-    @Tool(name = "spawn", description = "Spawn a sub-agent to handle a task. This tool delegates tasks to the backend multi-agent collaboration system (AgentOrchestrator). Default: synchronous execution (wait for result). Set async=true for background execution (fire-and-forget). Use for delegating complex tasks, parallel processing, or specialized agent roles.")
+    @Tool(name = "spawn", description = "Spawn a sub-agent to handle a task. Use role for built-in roles. Use agent for persistent agents created through agent_catalog. Default is synchronous. Set async=true to run in the background and stream progress updates back to the parent session.")
     public String spawn(
-        @ToolParam(description = "Task for the sub-agent to complete") String task,
-        @ToolParam(description = "Optional label for the task (for display)") String label,
-        @ToolParam(description = "Execute asynchronously. Default: false (synchronous). Set true for background execution (fire-and-forget).") Boolean async,
-        @ToolParam(description = "Specify a role for the sub-agent (optional). Available roles: assistant, coder, researcher, writer, reviewer, planner, tester. If not specified, the orchestrator will auto-detect the appropriate mode.") String role
+            @ToolParam(description = "Task for the sub-agent to complete") String task,
+            @ToolParam(description = "Optional label for the task") String label,
+            @ToolParam(description = "Execute asynchronously. Default false.") Boolean async,
+            @ToolParam(description = "Optional role for the sub-agent") String role,
+            @ToolParam(description = "Optional persistent agent name or alias. If provided, spawn will resolve the saved agent definition and run it.") String agent
     ) {
         if (task == null || task.isEmpty()) {
             return "Error: task parameter is required";
         }
 
-        // 从 AgentExecutionContext 获取父 sessionKey
-        String parentSessionKey = AgentExecutionContext.getCurrentSessionKey();
-        if (parentSessionKey == null) {
-            parentSessionKey = "web:default";
-        }
+        AgentExecutionContext.ExecutionScope parentScope = AgentExecutionContext.getCurrentScope();
+        String parentSessionKey = parentScope != null && parentScope.sessionKey() != null
+                ? parentScope.sessionKey()
+                : "web:default";
+        String parentRunId = parentScope != null ? parentScope.runId() : null;
 
         boolean isAsync = async != null && async;
-        String taskLabel = (label != null && !label.isEmpty()) ? label : "Unnamed Task";
-
-        // Build session key for sub-agent
+        String taskLabel = label != null && !label.isEmpty() ? label : "Unnamed Task";
         String childSessionKey = "spawn-" + System.currentTimeMillis();
+        String childRunId = AgentRunIds.newChildRunId();
 
         if (isAsync) {
-            // Async mode: spawn in background thread
-            return spawnAsync(task, taskLabel, role, childSessionKey, parentSessionKey);
-        } else {
-            // Sync mode: wait for result
-            return spawnSync(task, taskLabel, role, childSessionKey);
+            return spawnAsync(task, taskLabel, role, agent, childSessionKey, childRunId, parentSessionKey, parentRunId);
         }
+        return spawnSync(task, taskLabel, role, agent, childSessionKey);
     }
 
-    /**
-     * Synchronous spawn - wait for result
-     * 结果直接返回给主 Agent（作为工具返回值）
-     */
-    private String spawnSync(String task, String label, String role, String sessionKey) {
+    private String spawnSync(String task, String label, String role, String agent, String sessionKey) {
         try {
-            // If role is specified, use single-agent mode with that role
+            if (agent != null && !agent.isBlank()) {
+                var definition = agentCatalogService.resolveDefinition(agent.trim());
+                if (definition.isEmpty()) {
+                    return "Error spawning sub-agent: agent not found - " + agent.trim();
+                }
+                return "Spawned sub-agent: **" + definition.get().getDisplayName() + "**\n\n" +
+                        "**Task**: " + label + "\n\n" +
+                        "**Result**:\n" +
+                        orchestrator.processWithDefinition(sessionKey, task, definition.get());
+            }
             if (role != null && !role.isEmpty()) {
                 AgentRole agentRole = AgentRole.fromCode(role.toLowerCase());
                 if (agentRole != null) {
-                    return "🤖 Spawned sub-agent with role: **" + agentRole.getDisplayName() + "**\n\n" +
-                           "**Task**: " + label + "\n\n" +
-                           "**Result**:\n" +
-                           orchestrator.processWithRole(sessionKey, task, agentRole);
+                    return "Spawned sub-agent with role: **" + agentRole.getDisplayName() + "**\n\n" +
+                            "**Task**: " + label + "\n\n" +
+                            "**Result**:\n" +
+                            orchestrator.processWithRole(sessionKey, task, agentRole);
                 }
             }
 
-            // Otherwise, let orchestrator auto-detect the mode
             String enhancedTask = "[Sub-agent Task: " + label + "] " + task;
-
             String result = orchestrator.process(sessionKey, enhancedTask);
 
-            return "🤖 Sub-agent completed task: **" + label + "**\n\n" +
-                   "**Task**: " + task + "\n\n" +
-                   "**Result**:\n" +
-                   result;
+            return "Sub-agent completed task: **" + label + "**\n\n" +
+                    "**Task**: " + task + "\n\n" +
+                    "**Result**:\n" +
+                    result;
 
         } catch (Exception e) {
             return "Error spawning sub-agent: " + e.getMessage();
         }
     }
 
-    /**
-     * Asynchronous spawn - fire and forget
-     * 子 Agent 在后台执行，完成后：
-     * 1. 通过 ExecutionTraceService 推送 SSE 通知到父 session（Web 前端）
-     * 2. 通过 MessageBus 发送到外部通道（Telegram/Discord 等）
-     */
-    private String spawnAsync(String task, String label, String role, String childSessionKey, String parentSessionKey) {
-        // Spawn in background thread
+    private String spawnAsync(String task,
+                              String label,
+                              String role,
+                              String agent,
+                              String childSessionKey,
+                              String childRunId,
+                              String parentSessionKey,
+                              String parentRunId) {
+        var resolvedDefinition = agent != null && !agent.isBlank()
+                ? agentCatalogService.resolveDefinition(agent.trim())
+                : java.util.Optional.<io.jobclaw.agent.AgentDefinition>empty();
+        String agentId = resolvedDefinition.map(io.jobclaw.agent.AgentDefinition::getCode)
+                .orElse(role != null && !role.isEmpty() ? role.toLowerCase() : "assistant");
+        String agentName = resolvedDefinition.map(io.jobclaw.agent.AgentDefinition::getDisplayName)
+                .orElse(resolveAgentName(role));
+
+        executionTraceService.publish(new ExecutionEvent(
+                parentSessionKey,
+                ExecutionEvent.EventType.CUSTOM,
+                "Background task started: " + label,
+                Map.of(
+                        "asyncTaskLabel", label,
+                        "asyncTaskStatus", "running",
+                        "childSessionKey", childSessionKey
+                ),
+                childRunId,
+                parentRunId,
+                agentId,
+                agentName
+        ));
+
         Thread workerThread = new Thread(() -> {
+            AgentExecutionContext.ExecutionScope childScope = new AgentExecutionContext.ExecutionScope(
+                    childSessionKey,
+                    event -> executionTraceService.publish(remapEvent(
+                            event,
+                            parentSessionKey,
+                            childRunId,
+                            parentRunId,
+                            agentId,
+                            agentName,
+                            label
+                    )),
+                    childRunId,
+                    parentRunId,
+                    agentId,
+                    agentName
+            );
+            AgentExecutionContext.setCurrentContext(childScope);
             try {
                 String result;
-                if (role != null && !role.isEmpty()) {
+                if (resolvedDefinition.isPresent()) {
+                    result = orchestrator.processWithDefinition(childSessionKey, task, resolvedDefinition.get(),
+                            event -> executionTraceService.publish(remapEvent(
+                                    event, parentSessionKey, childRunId, parentRunId, agentId, agentName, label)));
+                } else if (role != null && !role.isEmpty()) {
                     AgentRole agentRole = AgentRole.fromCode(role.toLowerCase());
                     if (agentRole != null) {
-                        result = orchestrator.processWithRole(childSessionKey, task, agentRole);
+                        result = orchestrator.processWithRole(
+                                childSessionKey,
+                                task,
+                                agentRole,
+                                event -> executionTraceService.publish(remapEvent(
+                                        event, parentSessionKey, childRunId, parentRunId, agentId, agentName, label))
+                        );
                     } else {
-                        result = orchestrator.process(childSessionKey, task);
+                        result = orchestrator.process(childSessionKey, task,
+                                event -> executionTraceService.publish(remapEvent(
+                                        event, parentSessionKey, childRunId, parentRunId, agentId, agentName, label)));
                     }
                 } else {
-                    result = orchestrator.process(childSessionKey, task);
+                    result = orchestrator.process(childSessionKey, task,
+                            event -> executionTraceService.publish(remapEvent(
+                                    event, parentSessionKey, childRunId, parentRunId, agentId, agentName, label)));
                 }
 
-                String notificationContent = "✅ 异步任务完成: **" + label + "**\n\n" + result;
-
-                // 1. 通过 ExecutionTraceService 推送 SSE 到 Web 前端
+                String notificationContent = "Async task completed: **" + label + "**\n\n" + result;
                 ExecutionEvent notification = new ExecutionEvent(
-                    parentSessionKey,
-                    ExecutionEvent.EventType.CUSTOM,
-                    notificationContent,
-                    java.util.Map.of("asyncTaskLabel", label, "asyncTaskStatus", "completed")
+                        parentSessionKey,
+                        ExecutionEvent.EventType.CUSTOM,
+                        notificationContent,
+                        Map.of("asyncTaskLabel", label, "asyncTaskStatus", "completed"),
+                        childRunId,
+                        parentRunId,
+                        agentId,
+                        agentName
                 );
                 executionTraceService.publish(notification);
 
-                // 2. 通过 MessageBus 发送到外部通道
-                OutboundMessage outbound = new OutboundMessage(
-                    "web",
-                    parentSessionKey,
-                    notificationContent
-                );
+                OutboundMessage outbound = new OutboundMessage("web", parentSessionKey, notificationContent);
                 messageBus.publishOutbound(outbound);
-
-                System.out.println("[SpawnTool] Async task '" + label + "' completed");
-
             } catch (Exception e) {
-                System.err.println("[SpawnTool] Async task '" + label + "' failed: " + e.getMessage());
-
-                String errorContent = "❌ 异步任务失败: **" + label + "**\n\n错误: " + e.getMessage();
-
-                // 1. SSE 通知
+                String errorContent = "Async task failed: **" + label + "**\n\nError: " + e.getMessage();
                 ExecutionEvent notification = new ExecutionEvent(
-                    parentSessionKey,
-                    ExecutionEvent.EventType.ERROR,
-                    errorContent,
-                    java.util.Map.of("asyncTaskLabel", label, "asyncTaskStatus", "failed")
+                        parentSessionKey,
+                        ExecutionEvent.EventType.ERROR,
+                        errorContent,
+                        Map.of("asyncTaskLabel", label, "asyncTaskStatus", "failed"),
+                        childRunId,
+                        parentRunId,
+                        agentId,
+                        agentName
                 );
                 executionTraceService.publish(notification);
 
-                // 2. MessageBus 通知
-                OutboundMessage outbound = new OutboundMessage(
-                    "web",
-                    parentSessionKey,
-                    errorContent
-                );
+                OutboundMessage outbound = new OutboundMessage("web", parentSessionKey, errorContent);
                 messageBus.publishOutbound(outbound);
+            } finally {
+                AgentExecutionContext.clear();
             }
         }, "spawn-async-" + label);
 
         workerThread.setDaemon(true);
         workerThread.start();
 
-        return "✅ Spawned background sub-agent for task: **" + label + "**\n\n" +
-               "**Task**: " + task + "\n" +
-               "**Mode**: Asynchronous (fire-and-forget)\n" +
-               "**Status**: Running in background\n\n" +
-               "The sub-agent will complete the task independently. " +
-               "You will be notified via SSE when complete.";
+        return "Spawned background sub-agent for task: **" + label + "**\n\n" +
+                "**Task**: " + task + "\n" +
+                "**Mode**: Asynchronous\n" +
+                "**Run ID**: " + childRunId + "\n" +
+                "**Status**: Running in background";
+    }
+
+    private ExecutionEvent remapEvent(ExecutionEvent childEvent,
+                                      String parentSessionKey,
+                                      String childRunId,
+                                      String parentRunId,
+                                      String agentId,
+                                      String agentName,
+                                      String label) {
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        if (childEvent.getMetadata() != null) {
+            metadata.putAll(childEvent.getMetadata());
+        }
+        metadata.put("asyncTaskLabel", label);
+        metadata.put("childSessionId", childEvent.getSessionId());
+
+        return new ExecutionEvent(
+                parentSessionKey,
+                childEvent.getType(),
+                childEvent.getContent(),
+                metadata,
+                childRunId,
+                parentRunId,
+                agentId,
+                agentName
+        );
+    }
+
+    private String resolveAgentName(String role) {
+        if (role == null || role.isBlank()) {
+            return "Assistant";
+        }
+        AgentRole agentRole = AgentRole.fromCode(role.toLowerCase());
+        return agentRole != null ? agentRole.getDisplayName() : role;
     }
 }
