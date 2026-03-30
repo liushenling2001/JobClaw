@@ -40,6 +40,17 @@ export interface Channel {
   enabled: boolean;
   token?: string;
   allowFrom?: string[];
+  bridgeUrl?: string;
+  appId?: string;
+  appSecret?: string;
+  encryptKey?: string;
+  verificationToken?: string;
+  connectionMode?: string;
+  clientId?: string;
+  clientSecret?: string;
+  webhook?: string;
+  host?: string;
+  port?: number;
 }
 
 // Provider 类型

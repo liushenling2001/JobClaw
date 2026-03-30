@@ -7,7 +7,7 @@ import java.util.Map;
 
 /**
  * Agent 定义 - 支持动态创建 Agent 角色
- * 
+ *
  * 相比 enum 方式的 AgentRole，AgentDefinition 支持：
  * - 运行时动态创建
  * - 自定义工具集
@@ -15,12 +15,24 @@ import java.util.Map;
  * - 专属配置（模型、温度等）
  * - 专属记忆（独立会话历史）
  * - 灵活配置
+ *
+ * <p>推荐使用链式 Builder API 构建：
+ * <pre>{@code
+ * AgentDefinition def = AgentDefinition.builder()
+ *         .code("architect")
+ *         .displayName("架构师")
+ *         .systemPrompt("你是一名资深架构师...")
+ *         .allowedTool("read_file")
+ *         .allowedTool("write_file")
+ *         .build();
+ * }</pre>
  */
 public class AgentDefinition {
 
     private final String code;
     private final String displayName;
     private final String systemPrompt;
+    private final String description;
     private final List<String> allowedTools;
     private final List<String> allowedSkills;
     private final AgentConfig config;
@@ -87,7 +99,7 @@ public class AgentDefinition {
 
     /**
      * 创建 Agent 定义（默认配置）
-     * 
+     *
      * @param code 角色代码（唯一标识）
      * @param displayName 显示名称
      * @param systemPrompt 系统提示词
@@ -96,25 +108,42 @@ public class AgentDefinition {
      */
     public AgentDefinition(String code, String displayName, String systemPrompt,
                           List<String> allowedTools, List<String> allowedSkills) {
-        this(code, displayName, systemPrompt, allowedTools, allowedSkills, null);
+        this(code, displayName, systemPrompt, null, allowedTools, allowedSkills, null);
+    }
+
+    /**
+     * 创建 Agent 定义（带描述）
+     *
+     * @param code 角色代码（唯一标识）
+     * @param displayName 显示名称
+     * @param systemPrompt 系统提示词
+     * @param description 角色描述
+     * @param allowedTools 允许使用的工具列表（null 表示不限制）
+     * @param allowedSkills 允许使用的技能列表（null 表示不限制）
+     */
+    public AgentDefinition(String code, String displayName, String systemPrompt, String description,
+                          List<String> allowedTools, List<String> allowedSkills) {
+        this(code, displayName, systemPrompt, description, allowedTools, allowedSkills, null);
     }
 
     /**
      * 创建 Agent 定义（带专属配置）
-     * 
+     *
      * @param code 角色代码（唯一标识）
      * @param displayName 显示名称
      * @param systemPrompt 系统提示词
+     * @param description 角色描述
      * @param allowedTools 允许使用的工具列表（null 表示不限制）
      * @param allowedSkills 允许使用的技能列表（null 表示不限制）
      * @param config Agent 专属配置（null 表示使用全局配置）
      */
-    public AgentDefinition(String code, String displayName, String systemPrompt,
+    public AgentDefinition(String code, String displayName, String systemPrompt, String description,
                           List<String> allowedTools, List<String> allowedSkills,
                           AgentConfig config) {
         this.code = code;
         this.displayName = displayName;
         this.systemPrompt = systemPrompt;
+        this.description = description;
         this.allowedTools = allowedTools != null ? new ArrayList<>(allowedTools) : null;
         this.allowedSkills = allowedSkills != null ? new ArrayList<>(allowedSkills) : null;
         this.config = config;
@@ -134,6 +163,29 @@ public class AgentDefinition {
         );
     }
 
+    /**
+     * 快捷工厂方法：创建简单的 Agent 定义
+     *
+     * @param name 角色名称（同时作为 code 和 displayName）
+     * @param systemPrompt 系统提示词
+     * @return Agent 定义
+     */
+    public static AgentDefinition of(String name, String systemPrompt) {
+        return new AgentDefinition(name, name, systemPrompt, null, null, null);
+    }
+
+    /**
+     * 快捷工厂方法：创建带工具限制的 Agent 定义
+     *
+     * @param name 角色名称
+     * @param systemPrompt 系统提示词
+     * @param allowedTools 允许使用的工具
+     * @return Agent 定义
+     */
+    public static AgentDefinition of(String name, String systemPrompt, List<String> allowedTools) {
+        return new AgentDefinition(name, name, systemPrompt, null, allowedTools, null);
+    }
+
     public String getCode() {
         return code;
     }
@@ -144,6 +196,10 @@ public class AgentDefinition {
 
     public String getSystemPrompt() {
         return systemPrompt;
+    }
+
+    public String getDescription() {
+        return description;
     }
 
     public List<String> getAllowedTools() {
@@ -183,6 +239,13 @@ public class AgentDefinition {
     }
 
     /**
+     * 检查是否有工具限制
+     */
+    public boolean hasToolRestrictions() {
+        return allowedTools != null && !allowedTools.isEmpty();
+    }
+
+    /**
      * 添加元数据
      */
     public void putMetadata(String key, Object value) {
@@ -196,10 +259,14 @@ public class AgentDefinition {
         return new Builder();
     }
 
+    /**
+     * 链式构建器
+     */
     public static class Builder {
         private String code;
         private String displayName;
         private String systemPrompt;
+        private String description;
         private List<String> allowedTools;
         private List<String> allowedSkills;
         private AgentConfig config;
@@ -219,8 +286,24 @@ public class AgentDefinition {
             return this;
         }
 
+        public Builder description(String description) {
+            this.description = description;
+            return this;
+        }
+
         public Builder allowedTools(List<String> allowedTools) {
             this.allowedTools = allowedTools;
+            return this;
+        }
+
+        /**
+         * 添加单个允许的工具（链式调用）
+         */
+        public Builder allowedTool(String toolName) {
+            if (this.allowedTools == null) {
+                this.allowedTools = new ArrayList<>();
+            }
+            this.allowedTools.add(toolName);
             return this;
         }
 
@@ -229,13 +312,46 @@ public class AgentDefinition {
             return this;
         }
 
+        /**
+         * 添加单个允许的技能（链式调用）
+         */
+        public Builder allowedSkill(String skillName) {
+            if (this.allowedSkills == null) {
+                this.allowedSkills = new ArrayList<>();
+            }
+            this.allowedSkills.add(skillName);
+            return this;
+        }
+
         public Builder config(AgentConfig config) {
             this.config = config;
             return this;
         }
 
+        /**
+         * 设置模型（便捷方法）
+         */
+        public Builder model(String model) {
+            if (this.config == null) {
+                this.config = new AgentConfig();
+            }
+            this.config.setModel(model);
+            return this;
+        }
+
+        /**
+         * 设置温度（便捷方法）
+         */
+        public Builder temperature(double temperature) {
+            if (this.config == null) {
+                this.config = new AgentConfig();
+            }
+            this.config.setTemperature(temperature);
+            return this;
+        }
+
         public AgentDefinition build() {
-            return new AgentDefinition(code, displayName, systemPrompt, allowedTools, allowedSkills, config);
+            return new AgentDefinition(code, displayName, systemPrompt, description, allowedTools, allowedSkills, config);
         }
     }
 

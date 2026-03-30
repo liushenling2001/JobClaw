@@ -211,6 +211,9 @@ public class AgentLoop {
      */
     public String processWithDefinition(String sessionKey, String userContent, AgentDefinition definition,
                                         Consumer<ExecutionEvent> eventCallback) {
+        // 设置执行上下文（供 SpawnTool/CollaborateTool 获取 sessionKey）
+        AgentExecutionContext.setCurrentContext(sessionKey, eventCallback);
+
         try {
             Session session = sessionManager.getOrCreate(sessionKey);
 
@@ -306,6 +309,9 @@ public class AgentLoop {
                         "Error: " + e.getMessage()));
             }
             return "Error: " + e.getMessage() + " (check network/API key)";
+        } finally {
+            // 清理执行上下文
+            AgentExecutionContext.clear();
         }
     }
 

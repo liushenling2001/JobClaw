@@ -115,9 +115,17 @@ export function useChatStream() {
   };
 
   const handleStreamData = (data: any, eventType: string | null) => {
-    const type = eventType || (data.type as string);
+    const normalizedEventType = eventType?.trim().toLowerCase() || null;
+    const type = normalizedEventType === 'execution-event' || normalizedEventType === 'history-event'
+      ? (data.type as string)
+      : (eventType || (data.type as string));
 
     switch (type) {
+      case 'connected':
+      case 'subscribed':
+        chatStore.isConnected = true;
+        break;
+
       case 'THINK_START':
       case 'think_start':
         // 开始流式会话（如果还没有开始）
@@ -212,6 +220,20 @@ export function useChatStream() {
       case 'error':
         toast.error(data.message || '发生错误');
         chatStore.endStreamingSession();
+        break;
+
+      case 'CUSTOM':
+      case 'custom':
+        // 自定义事件（如异步任务完成通知）
+        // 显示为系统消息或 toast 通知
+        if (data.metadata?.asyncTaskStatus === 'completed') {
+          toast.success(data.content || '异步任务完成');
+        } else if (data.metadata?.asyncTaskStatus === 'failed') {
+          toast.error(data.content || '异步任务失败');
+        } else {
+          // 其他自定义消息，追加到当前消息
+          chatStore.appendToCurrentAssistantMessage('\n\n' + data.content);
+        }
         break;
 
       default:

@@ -137,14 +137,16 @@ public class AgentBeansConfig {
             TokenUsageTool tokenUsageTool,
             WebSearchTool webSearchTool,
             WebFetchTool webFetchTool,
-            ExecTool execTool) {
+            ExecTool execTool,
+            SpawnTool spawnTool,
+            CollaborateTool collaborateTool) {
 
-        // 注意：不包含 SpawnTool，因为它依赖 AgentOrchestrator，会形成循环依赖
-        // 如果需要 SpawnTool，需要重构 AgentOrchestrator 或使用 @Lazy 注入
+        // SpawnTool, CollaborateTool 使用 @Lazy 注入 AgentOrchestrator，避免循环依赖
 
         return MethodToolCallbackProvider.builder()
                 .toolObjects(fileTools, runCommandTool, skillsTools, messageTool, cronTool,
-                            mcpTool, tokenUsageTool, webSearchTool, webFetchTool, execTool)
+                            mcpTool, tokenUsageTool, webSearchTool, webFetchTool, execTool,
+                            spawnTool, collaborateTool)
                 .build()
                 .getToolCallbacks();
     }

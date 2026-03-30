@@ -1,6 +1,6 @@
 <template>
   <div class="p-8">
-    <h1 class="text-2xl font-bold text-on-surface font-headline mb-6">LLM 提供商</h1>
+    <h1 class="text-2xl font-bold text-on-surface font-headline mb-6">LLM Provider</h1>
 
     <Card class="p-6">
       <div v-if="loading" class="flex items-center justify-center py-12">
@@ -47,7 +47,6 @@
       </div>
     </Card>
 
-    <!-- 配置模态框 -->
     <Modal v-if="selectedProvider" :model-value="!!selectedProvider" @update:model-value="closeModal">
       <div class="space-y-4">
         <h3 class="text-lg font-bold text-on-surface font-headline capitalize">{{ selectedProvider.name }} 配置</h3>
@@ -80,18 +79,12 @@
 import { ref, onMounted } from 'vue';
 import { useToast } from '@/composables/useToast';
 import { providersApi } from '@/api/providers';
+import type { Provider } from '@/types';
 import Card from '@/components/common/Card.vue';
 import Button from '@/components/common/Button.vue';
 import Input from '@/components/common/Input.vue';
 import Modal from '@/components/common/Modal.vue';
 import Skeleton from '@/components/common/Skeleton.vue';
-
-interface Provider {
-  name: string;
-  apiBase: string;
-  apiKey: string;
-  authorized: boolean;
-}
 
 const toast = useToast();
 const providers = ref<Provider[]>([]);
@@ -104,7 +97,7 @@ const loadProviders = async () => {
   try {
     providers.value = await providersApi.list();
   } catch (e) {
-    toast.error('加载提供商列表失败：' + (e as Error).message);
+    toast.error('加载 Provider 列表失败: ' + (e as Error).message);
   } finally {
     loading.value = false;
   }
@@ -114,7 +107,7 @@ const viewDetail = async (name: string) => {
   try {
     selectedProvider.value = await providersApi.get(name);
   } catch (e) {
-    toast.error('加载提供商配置失败：' + (e as Error).message);
+    toast.error('加载 Provider 配置失败: ' + (e as Error).message);
   }
 };
 
@@ -135,7 +128,7 @@ const saveConfig = async () => {
     closeModal();
     await loadProviders();
   } catch (e) {
-    toast.error('保存失败：' + (e as Error).message);
+    toast.error('保存失败: ' + (e as Error).message);
   } finally {
     saving.value = false;
   }

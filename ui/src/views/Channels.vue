@@ -57,28 +57,53 @@
       </div>
     </Card>
 
-    <!-- 配置模态框 -->
     <Modal v-if="selectedChannel" :model-value="!!selectedChannel" @update:model-value="closeModal">
-      <div class="space-y-4">
+      <div class="space-y-4 max-h-[75vh] overflow-y-auto pr-1">
         <h3 class="text-lg font-bold text-on-surface font-headline capitalize">{{ selectedChannel.name }} 配置</h3>
 
         <div>
-          <label class="block text-sm text-on-surface-variant mb-2">Token</label>
-          <Input v-model="selectedChannel.token" type="password" placeholder="输入 API Token" />
+          <label class="block text-sm text-on-surface-variant mb-2">启用状态</label>
+          <label class="flex items-center gap-2 cursor-pointer text-sm text-on-surface">
+            <input
+              v-model="selectedChannel.enabled"
+              type="checkbox"
+              class="w-4 h-4 rounded border-outline-variant bg-surface-container-high text-secondary focus:ring-secondary"
+            />
+            <span>启用该通道</span>
+          </label>
         </div>
 
-        <div v-if="selectedChannel.allowFrom && selectedChannel.allowFrom.length > 0">
-          <label class="block text-sm text-on-surface-variant mb-2">允许的 IP 地址</label>
+        <div v-for="field in editableFields" :key="field.key">
+          <label class="block text-sm text-on-surface-variant mb-2">{{ field.label }}</label>
+
+          <select
+            v-if="field.type === 'select'"
+            v-model="selectedChannel[field.key]"
+            class="bg-surface-container-high border-none text-sm px-4 py-2 rounded text-on-surface outline-none focus:ring-1 focus:ring-secondary/50 w-full"
+          >
+            <option v-for="option in field.options || []" :key="option" :value="option">{{ option }}</option>
+          </select>
+
+          <Input
+            v-else
+            v-model="selectedChannel[field.key]"
+            :type="field.type === 'number' ? 'number' : field.secret ? 'password' : 'text'"
+            :placeholder="field.placeholder"
+          />
+        </div>
+
+        <div>
+          <label class="block text-sm text-on-surface-variant mb-2">允许来源</label>
           <div class="space-y-2">
-            <div v-for="(_ip, index) in selectedChannel.allowFrom" :key="index" class="flex gap-2">
-              <Input v-model="selectedChannel.allowFrom[index]" type="text" placeholder="IP 地址" />
+            <div v-for="(_value, index) in (selectedChannel.allowFrom || [])" :key="index" class="flex gap-2">
+              <Input v-model="selectedChannel.allowFrom[index]" type="text" placeholder="输入 userId / chatId / IP" />
               <Button variant="ghost" @click="removeAllowedIp(index)" class="text-error">
                 <span class="material-symbols-outlined text-sm">delete</span>
               </Button>
             </div>
             <Button variant="ghost" @click="addAllowedIp" class="text-secondary">
               <span class="material-symbols-outlined text-sm">add</span>
-              <span>添加 IP</span>
+              <span>添加</span>
             </Button>
           </div>
         </div>
@@ -95,34 +120,79 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { computed, ref, onMounted } from 'vue';
 import { useToast } from '@/composables/useToast';
 import { channelsApi } from '@/api/channels';
+import type { Channel } from '@/types';
 import Card from '@/components/common/Card.vue';
 import Button from '@/components/common/Button.vue';
 import Input from '@/components/common/Input.vue';
 import Modal from '@/components/common/Modal.vue';
 import Skeleton from '@/components/common/Skeleton.vue';
 
-interface Channel {
-  name: string;
-  enabled: boolean;
-  token?: string;
-  allowFrom?: string[];
-}
+type EditableChannel = Omit<Channel, 'allowFrom'> & {
+  allowFrom: string[];
+} & Record<string, any>;
+
+type FieldDef = {
+  key: keyof EditableChannel;
+  label: string;
+  placeholder?: string;
+  secret?: boolean;
+  type?: 'text' | 'number' | 'select';
+  options?: string[];
+};
 
 const toast = useToast();
 const channels = ref<Channel[]>([]);
 const loading = ref(true);
-const selectedChannel = ref<Channel | null>(null);
+const selectedChannel = ref<EditableChannel | null>(null);
 const saving = ref(false);
+
+const channelFieldMap: Record<string, FieldDef[]> = {
+  telegram: [
+    { key: 'token', label: 'Bot Token', secret: true, placeholder: '输入 Telegram Bot Token' }
+  ],
+  discord: [
+    { key: 'token', label: 'Bot Token', secret: true, placeholder: '输入 Discord Bot Token' }
+  ],
+  whatsapp: [
+    { key: 'bridgeUrl', label: 'Bridge URL', placeholder: 'http://localhost:3001' }
+  ],
+  feishu: [
+    { key: 'appId', label: 'App ID', secret: true, placeholder: '输入 App ID' },
+    { key: 'appSecret', label: 'App Secret', secret: true, placeholder: '输入 App Secret' },
+    { key: 'encryptKey', label: 'Encrypt Key', secret: true, placeholder: '输入 Encrypt Key' },
+    { key: 'verificationToken', label: 'Verification Token', secret: true, placeholder: '输入 Verification Token' },
+    { key: 'connectionMode', label: 'Connection Mode', type: 'select', options: ['websocket', 'webhook'] }
+  ],
+  dingtalk: [
+    { key: 'clientId', label: 'Client ID', secret: true, placeholder: '输入 Client ID' },
+    { key: 'clientSecret', label: 'Client Secret', secret: true, placeholder: '输入 Client Secret' },
+    { key: 'webhook', label: 'Webhook', secret: true, placeholder: '输入 Webhook' },
+    { key: 'connectionMode', label: 'Connection Mode', type: 'select', options: ['stream', 'webhook'] }
+  ],
+  qq: [
+    { key: 'appId', label: 'App ID', secret: true, placeholder: '输入 App ID' },
+    { key: 'appSecret', label: 'App Secret', secret: true, placeholder: '输入 App Secret' }
+  ],
+  maixcam: [
+    { key: 'host', label: 'Host', placeholder: '0.0.0.0' },
+    { key: 'port', label: 'Port', type: 'number', placeholder: '18790' }
+  ]
+};
+
+const editableFields = computed(() => {
+  if (!selectedChannel.value) return [];
+  return channelFieldMap[selectedChannel.value.name] || [];
+});
 
 const loadChannels = async () => {
   loading.value = true;
   try {
     channels.value = await channelsApi.list();
   } catch (e) {
-    toast.error('加载通道列表失败：' + (e as Error).message);
+    toast.error('加载通道列表失败: ' + (e as Error).message);
   } finally {
     loading.value = false;
   }
@@ -143,9 +213,13 @@ const getChannelIcon = (name: string): string => {
 
 const viewDetail = async (name: string) => {
   try {
-    selectedChannel.value = await channelsApi.get(name);
+    const detail = await channelsApi.get(name);
+    selectedChannel.value = {
+      ...detail,
+      allowFrom: Array.isArray(detail.allowFrom) ? [...detail.allowFrom] : []
+    };
   } catch (e) {
-    toast.error('加载通道配置失败：' + (e as Error).message);
+    toast.error('加载通道配置失败: ' + (e as Error).message);
   }
 };
 
@@ -154,18 +228,15 @@ const closeModal = () => {
 };
 
 const addAllowedIp = () => {
-  if (selectedChannel.value) {
-    if (!selectedChannel.value.allowFrom) {
-      selectedChannel.value.allowFrom = [];
-    }
-    selectedChannel.value.allowFrom.push('');
+  if (!selectedChannel.value) return;
+  if (!Array.isArray(selectedChannel.value.allowFrom)) {
+    selectedChannel.value.allowFrom = [];
   }
+  selectedChannel.value.allowFrom.push('');
 };
 
 const removeAllowedIp = (index: number) => {
-  if (selectedChannel.value?.allowFrom) {
-    selectedChannel.value.allowFrom.splice(index, 1);
-  }
+  selectedChannel.value?.allowFrom?.splice(index, 1);
 };
 
 const toggleChannel = async (name: string, event: Event) => {
@@ -175,8 +246,7 @@ const toggleChannel = async (name: string, event: Event) => {
     toast.success(`通道已${enabled ? '启用' : '禁用'}`);
     await loadChannels();
   } catch (e) {
-    toast.error('操作失败：' + (e as Error).message);
-    // 恢复状态
+    toast.error('操作失败: ' + (e as Error).message);
     await loadChannels();
   }
 };
@@ -186,16 +256,31 @@ const saveConfig = async () => {
 
   saving.value = true;
   try {
-    await channelsApi.update(selectedChannel.value.name, {
+    const payload: Partial<Channel> = {
       enabled: selectedChannel.value.enabled,
+      allowFrom: (selectedChannel.value.allowFrom || []).filter(Boolean),
       token: selectedChannel.value.token,
-      allowFrom: selectedChannel.value.allowFrom
-    });
+      bridgeUrl: selectedChannel.value.bridgeUrl,
+      appId: selectedChannel.value.appId,
+      appSecret: selectedChannel.value.appSecret,
+      encryptKey: selectedChannel.value.encryptKey,
+      verificationToken: selectedChannel.value.verificationToken,
+      connectionMode: selectedChannel.value.connectionMode,
+      clientId: selectedChannel.value.clientId,
+      clientSecret: selectedChannel.value.clientSecret,
+      webhook: selectedChannel.value.webhook,
+      host: selectedChannel.value.host,
+      port: selectedChannel.value.port != null
+        ? Number(selectedChannel.value.port)
+        : undefined
+    };
+
+    await channelsApi.update(selectedChannel.value.name, payload);
     toast.success('配置已保存');
     closeModal();
     await loadChannels();
   } catch (e) {
-    toast.error('保存失败：' + (e as Error).message);
+    toast.error('保存失败: ' + (e as Error).message);
   } finally {
     saving.value = false;
   }

@@ -92,7 +92,7 @@ public class WebConsoleController {
         Map<String, Object> response = new HashMap<>();
         try {
             String sessionKey = request.getSessionKey() != null ? request.getSessionKey() : "web:default";
-            // 使用编排器处理请求（支持多 Agent 模式）
+            // 娴ｈ法鏁ょ紓鏍ㄥ笓閸ｃ劌顦╅悶鍡氼嚞濮瑰偊绱欓弨顖涘瘮婢?Agent 濡€崇础閿?
             String result = orchestrator.process(sessionKey, request.getMessage());
             response.put("success", true);
             response.put("message", result);
@@ -126,17 +126,17 @@ public class WebConsoleController {
     }
 
     /**
-     * 执行任务并订阅执行过程事件（SSE 流式输出）
+     * 閹笛嗩攽娴犺濮熼獮鎯邦吂闂冨懏澧界悰宀冪箖缁嬪绨ㄦ禒璁圭礄SSE 濞翠礁绱℃潏鎾冲毉閿?
      *
-     * 前端可以使用 EventSource 连接到这个端点，实时接收 Agent 执行过程中的思考和步骤
+     * 閸撳秶顏崣顖欎簰娴ｈ法鏁?EventSource 鏉╃偞甯撮崚鎷岀箹娑擃亞顏悙鐧哥礉鐎圭偞妞傞幒銉︽暪 Agent 閹笛嗩攽鏉╁洨鈻兼稉顓犳畱閹繆鈧啫鎷板銉╊€?
      */
     @PostMapping(value = "/execute/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public ResponseEntity<SseEmitter> executeStream(@RequestBody ChatRequest request) {
-        SseEmitter emitter = new SseEmitter(300000L); // 5 分钟超时
+        SseEmitter emitter = new SseEmitter(300000L); // 5 閸掑棝鎸撶搾鍛
 
         String sessionKey = request.getSessionKey() != null ? request.getSessionKey() : "web:default";
 
-        // 订阅执行事件
+        // 鐠併垽妲勯幍褑顢戞禍瀣╂
         String subscriberId = executionTraceService.subscribe(sessionKey, emitter);
 
         logger.info("Starting execution with SSE streaming for session: {}, subscriber: {}",
@@ -144,17 +144,17 @@ public class WebConsoleController {
 
         executor.submit(() -> {
             try {
-                // 发送连接确认事件
+                // 閸欐垿鈧浇绻涢幒銉р€樼拋銈勭皑娴?
                 emitter.send(SseEmitter.event()
                     .name("connected")
                     .data(Map.of("sessionId", sessionKey, "subscriberId", subscriberId)));
                 logger.debug("Sent connected event to client");
 
-                // 执行任务（带回调）- 使用 orchestrator 支持多 Agent 模式的回调
+                // 閹笛嗩攽娴犺濮熼敍鍫濈敨閸ョ偠鐨熼敍? 娴ｈ法鏁?orchestrator 閺€顖涘瘮婢?Agent 濡€崇础閻ㄥ嫬娲栫拫?
                 String result = orchestrator.process(sessionKey, request.getMessage(),
                     (ExecutionEvent event) -> {
                         try {
-                            // 通过 ExecutionTraceService 发布事件（会自动推送给所有订阅者）
+                            // 闁俺绻?ExecutionTraceService 閸欐垵绔锋禍瀣╂閿涘牅绱伴懛顏勫З閹恒劑鈧胶绮伴幍鈧張澶庮吂闂冨懓鈧拑绱?
                             executionTraceService.publish(event);
                             logger.debug("Published execution event: {}", event.getType());
                         } catch (Exception e) {
@@ -162,8 +162,8 @@ public class WebConsoleController {
                         }
                     });
 
-                // 完成时不再发送 complete 事件，因为 FINAL_RESPONSE 事件已经作为结束信号
-                // 前端会根据 FINAL_RESPONSE 事件清理流式状态
+                // 鐎瑰本鍨氶弮鏈电瑝閸愬秴褰傞柅?complete 娴滃娆㈤敍灞芥礈娑?FINAL_RESPONSE 娴滃娆㈠鑼病娴ｆ粈璐熺紒鎾存将娣団€冲娇
+                // 閸撳秶顏导姘壌閹?FINAL_RESPONSE 娴滃娆㈠〒鍛倞濞翠礁绱￠悩鑸碘偓?
                 logger.debug("Execution completed, FINAL_RESPONSE event already sent");
 
                 emitter.complete();
@@ -186,9 +186,9 @@ public class WebConsoleController {
     }
 
     /**
-     * 订阅指定 session 的执行事件（只读，不触发执行）
+     * 鐠併垽妲勯幐鍥х暰 session 閻ㄥ嫭澧界悰灞肩皑娴犺绱欓崣顏囶嚢閿涘奔绗夌憴锕€褰傞幍褑顢戦敍?
      *
-     * 用于多客户端同时查看同一个 Agent 的执行状态
+     * 閻劋绨径姘吂閹撮顏崥灞炬閺屻儳婀呴崥灞肩娑?Agent 閻ㄥ嫭澧界悰宀€濮搁幀?
      */
     @GetMapping(value = "/execute/stream/{sessionKey}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public ResponseEntity<SseEmitter> subscribeExecution(@PathVariable String sessionKey) {
@@ -198,14 +198,14 @@ public class WebConsoleController {
 
         logger.info("Client subscribed to session: {}, subscriber: {}", sessionKey, subscriberId);
 
-        // 发送历史事件（如果有的话）
+        // 閸欐垿鈧礁宸婚崣韫皑娴犺绱欐俊鍌涚亯閺堝娈戠拠婵撶礆
         executor.submit(() -> {
             try {
                 emitter.send(SseEmitter.event()
                     .name("subscribed")
                     .data(Map.of("sessionId", sessionKey, "subscriberId", subscriberId)));
 
-                // 重播历史事件
+                // 闁插秵鎸遍崢鍡楀蕉娴滃娆?
                 executionTraceService.getHistory(sessionKey).forEach(event -> {
                     try {
                         emitter.send(SseEmitter.event()
@@ -270,7 +270,7 @@ public class WebConsoleController {
             jobInfo.put("enabled", job.isEnabled());
             jobInfo.put("message", job.getPayload() != null ? job.getPayload().getMessage() : "");
 
-            // 格式化 schedule 信息
+            // 閺嶇厧绱￠崠?schedule 娣団剝浼?
             CronSchedule schedule = job.getSchedule();
             if (schedule != null) {
                 switch (schedule.getKind()) {
@@ -280,7 +280,7 @@ public class WebConsoleController {
                 }
             }
 
-            // 下次执行时间
+            // 娑撳顐奸幍褑顢戦弮鍫曟？
             if (job.getState() != null && job.getState().getNextRunAtMs() != null) {
                 jobInfo.put("nextRun", job.getState().getNextRunAtMs());
             }
@@ -291,7 +291,7 @@ public class WebConsoleController {
     }
 
     /**
-     * 创建定时任务
+     * 閸掓稑缂撶€规碍妞傛禒璇插
      * POST /api/cron
      */
     @PostMapping("/cron")
@@ -304,7 +304,7 @@ public class WebConsoleController {
             } else if (request.getEverySeconds() != null) {
                 schedule = CronSchedule.every(request.getEverySeconds() * 1000L);
             } else {
-                response.put("error", "需要提供 cron 或 everySeconds 参数");
+                response.put("error", "Either cron or everySeconds is required");
                 return ResponseEntity.badRequest().body(response);
             }
 
@@ -323,7 +323,7 @@ public class WebConsoleController {
     }
 
     /**
-     * 删除定时任务
+     * 閸掔娀娅庣€规碍妞傛禒璇插
      * DELETE /api/cron/{id}
      */
     @DeleteMapping("/cron/{id}")
@@ -332,16 +332,16 @@ public class WebConsoleController {
         boolean removed = cronService.removeJob(id);
         if (removed) {
             response.put("success", true);
-            response.put("message", "任务已删除");
+            response.put("message", "Cron job deleted");
         } else {
-            response.put("error", "未找到任务：" + id);
+            response.put("error", "Cron job not found: " + id);
             return ResponseEntity.status(404).body(response);
         }
         return ResponseEntity.ok(response);
     }
 
     /**
-     * 启用/禁用定时任务
+     * 閸氼垳鏁?缁備胶鏁ょ€规碍妞傛禒璇插
      * PUT /api/cron/{id}/enable
      */
     @PutMapping("/cron/{id}/enable")
@@ -352,11 +352,11 @@ public class WebConsoleController {
         try {
             CronJob job = cronService.enableJob(id, request.isEnabled());
             if (job == null) {
-                response.put("error", "未找到任务：" + id);
+                response.put("error", "Cron job not found: " + id);
                 return ResponseEntity.status(404).body(response);
             }
             response.put("success", true);
-            response.put("message", request.isEnabled() ? "任务已启用" : "任务已禁用");
+            response.put("message", request.isEnabled() ? "Cron job enabled" : "Cron job disabled");
             return ResponseEntity.ok(response);
         } catch (Exception e) {
             response.put("error", e.getMessage());
@@ -367,19 +367,19 @@ public class WebConsoleController {
     // ==================== Auth API ====================
 
     /**
-     * 检查认证状态
+     * 濡偓閺屻儴顓荤拠浣哄Ц閹?
      * GET /api/auth/check
      */
     @GetMapping("/auth/check")
     public ResponseEntity<Map<String, Object>> checkAuth() {
         Map<String, Object> response = new HashMap<>();
-        response.put("authenticated", true); // Spring Security 已通过则已认证
+        response.put("authenticated", true); // Spring Security 瀹告煡鈧俺绻冮崚娆忓嚒鐠併倛鐦?
         response.put("authEnabled", config.getGateway().isAuthEnabled());
         return ResponseEntity.ok(response);
     }
 
     /**
-     * 登录获取认证 Token
+     * 閻ц缍嶉懢宄板絿鐠併倛鐦?Token
      * POST /api/auth/login
      */
     @PostMapping("/auth/login")
@@ -391,7 +391,7 @@ public class WebConsoleController {
 
             if (validUsername == null || validUsername.isEmpty() ||
                 validPassword == null || validPassword.isEmpty()) {
-                // 未启用认证
+                // 閺堫亜鎯庨悽銊吇鐠?
                 response.put("success", true);
                 response.put("token", "auth-disabled");
                 return ResponseEntity.ok(response);
@@ -400,13 +400,13 @@ public class WebConsoleController {
             if (validUsername.equals(request.getUsername()) &&
                 validPassword.equals(request.getPassword())) {
                 response.put("success", true);
-                // 使用 Base64 编码凭证（HTTP Basic Auth 标准格式）
+                // 娴ｈ法鏁?Base64 缂傛牜鐖滈崙顓＄槈閿涘湚TTP Basic Auth 閺嶅洤鍣弽鐓庣础閿?
                 String credentials = request.getUsername() + ":" + request.getPassword();
                 String token = Base64.getEncoder().encodeToString(credentials.getBytes());
                 response.put("token", token);
             } else {
                 response.put("success", false);
-                response.put("error", "用户名或密码错误");
+                response.put("error", "閻劍鍩涢崥宥嗗灗鐎靛棛鐖滈柨娆掝嚖");
                 return ResponseEntity.status(401).body(response);
             }
         } catch (Exception e) {
@@ -420,7 +420,7 @@ public class WebConsoleController {
     // ==================== Channels API ====================
 
     /**
-     * 列出所有频道
+     * 閸掓鍤幍鈧張澶愵暥闁?
      * GET /api/channels
      */
     @GetMapping("/channels")
@@ -447,7 +447,7 @@ public class WebConsoleController {
     }
 
     /**
-     * 获取频道详细配置
+     * 閼惧嘲褰囨０鎴︿壕鐠囷妇绮忛柊宥囩枂
      * GET /api/channels/{name}
      */
     @GetMapping("/channels/{name}")
@@ -458,11 +458,11 @@ public class WebConsoleController {
         try {
             Object channelConfig = getChannelConfig(channelsConfig, name);
             if (channelConfig == null) {
-                response.put("error", "未知的频道名称：" + name);
+                response.put("error", "閺堫亞鐓￠惃鍕暥闁挸鎮曠粔甯窗" + name);
                 return ResponseEntity.status(404).body(response);
             }
 
-            // 反射获取配置属性
+            // 閸欏秴鐨犻懢宄板絿闁板秶鐤嗙仦鐐粹偓?
             Map<String, Object> configMap = extractChannelConfig(channelConfig, name);
             configMap.put("name", name);
             return ResponseEntity.ok(configMap);
@@ -488,41 +488,49 @@ public class WebConsoleController {
     private Map<String, Object> extractChannelConfig(Object config, String name) {
         Map<String, Object> result = new HashMap<>();
         try {
-            // 获取 enabled 属性
             var enabledMethod = config.getClass().getMethod("isEnabled");
             result.put("enabled", enabledMethod.invoke(config));
-
-            // 获取 token 属性（如果存在）
-            try {
-                var tokenMethod = config.getClass().getMethod("getToken");
-                Object token = tokenMethod.invoke(config);
-                if (token != null && !token.toString().isEmpty()) {
-                    // 隐藏敏感信息
-                    String tokenStr = token.toString();
-                    result.put("token", tokenStr.length() > 8 ?
-                            tokenStr.substring(0, 4) + "****" + tokenStr.substring(tokenStr.length() - 4) :
-                            "****");
-                }
-            } catch (NoSuchMethodException e) {
-                // 某些频道可能没有 token
-            }
-
-            // 获取 allowFrom 属性（如果存在）
-            try {
-                var allowFromMethod = config.getClass().getMethod("getAllowFrom");
-                result.put("allowFrom", allowFromMethod.invoke(config));
-            } catch (NoSuchMethodException e) {
-                // 某些频道可能没有 allowFrom
-            }
-
+            addChannelProperty(result, config, "getToken", "token", true);
+            addChannelProperty(result, config, "getAllowFrom", "allowFrom", false);
+            addChannelProperty(result, config, "getBridgeUrl", "bridgeUrl", false);
+            addChannelProperty(result, config, "getAppId", "appId", true);
+            addChannelProperty(result, config, "getAppSecret", "appSecret", true);
+            addChannelProperty(result, config, "getEncryptKey", "encryptKey", true);
+            addChannelProperty(result, config, "getVerificationToken", "verificationToken", true);
+            addChannelProperty(result, config, "getConnectionMode", "connectionMode", false);
+            addChannelProperty(result, config, "getClientId", "clientId", true);
+            addChannelProperty(result, config, "getClientSecret", "clientSecret", true);
+            addChannelProperty(result, config, "getWebhook", "webhook", true);
+            addChannelProperty(result, config, "getHost", "host", false);
+            addChannelProperty(result, config, "getPort", "port", false);
         } catch (Exception e) {
             logger.warn("Failed to extract channel config for {}: {}", name, e.getMessage());
         }
         return result;
     }
 
+    private void addChannelProperty(Map<String, Object> result, Object config,
+                                    String getterName, String fieldName, boolean maskSecret) {
+        try {
+            var getter = config.getClass().getMethod(getterName);
+            Object value = getter.invoke(config);
+            if (value == null) {
+                return;
+            }
+            if (maskSecret && value instanceof String text && !text.isEmpty()) {
+                result.put(fieldName, maskSecret(text));
+                return;
+            }
+            result.put(fieldName, value);
+        } catch (NoSuchMethodException ignored) {
+            // Optional field for some channel types.
+        } catch (Exception e) {
+            logger.debug("Failed to extract channel property {}: {}", fieldName, e.getMessage());
+        }
+    }
+
     /**
-     * 更新频道配置
+     * ?????????
      * PUT /api/channels/{name}
      */
     @PutMapping("/channels/{name}")
@@ -535,29 +543,31 @@ public class WebConsoleController {
             Object channelConfig = getChannelConfig(channelsConfig, name);
 
             if (channelConfig == null) {
-                response.put("error", "未知的频道名称：" + name);
+                response.put("error", "????????????" + name);
                 return ResponseEntity.status(404).body(response);
             }
 
-            // 更新 enabled 属性
             var setEnabledMethod = channelConfig.getClass().getMethod("setEnabled", boolean.class);
             setEnabledMethod.invoke(channelConfig, request.isEnabled());
 
-            // 如果提供了 token，更新 token
-            if (request.getToken() != null && !request.getToken().isEmpty()) {
-                try {
-                    var setTokenMethod = channelConfig.getClass().getMethod("setToken", String.class);
-                    setTokenMethod.invoke(channelConfig, request.getToken());
-                } catch (NoSuchMethodException e) {
-                    // 某些频道可能没有 token
-                }
-            }
+            updateChannelStringField(channelConfig, "setToken", request.getToken(), true);
+            updateChannelListField(channelConfig, "setAllowFrom", request.getAllowFrom());
+            updateChannelStringField(channelConfig, "setBridgeUrl", request.getBridgeUrl(), false);
+            updateChannelStringField(channelConfig, "setAppId", request.getAppId(), true);
+            updateChannelStringField(channelConfig, "setAppSecret", request.getAppSecret(), true);
+            updateChannelStringField(channelConfig, "setEncryptKey", request.getEncryptKey(), true);
+            updateChannelStringField(channelConfig, "setVerificationToken", request.getVerificationToken(), true);
+            updateChannelStringField(channelConfig, "setConnectionMode", request.getConnectionMode(), false);
+            updateChannelStringField(channelConfig, "setClientId", request.getClientId(), true);
+            updateChannelStringField(channelConfig, "setClientSecret", request.getClientSecret(), true);
+            updateChannelStringField(channelConfig, "setWebhook", request.getWebhook(), true);
+            updateChannelStringField(channelConfig, "setHost", request.getHost(), false);
+            updateChannelIntField(channelConfig, "setPort", request.getPort());
 
-            // TODO: 将配置持久化到 config.json
-            // ConfigLoader.save(ConfigLoader.getConfigPath(), config);
+            ConfigLoader.save(ConfigLoader.getConfigPath(), config);
 
             response.put("success", true);
-            response.put("message", "频道配置已更新");
+            response.put("message", "???????????");
             return ResponseEntity.ok(response);
         } catch (Exception e) {
             response.put("error", e.getMessage());
@@ -568,7 +578,7 @@ public class WebConsoleController {
     // ==================== Providers API ====================
 
     /**
-     * 列出所有 LLM 提供商
+     * ???????LLM ?????
      * GET /api/providers
      */
     @GetMapping("/providers")
@@ -588,11 +598,10 @@ public class WebConsoleController {
     }
 
     private void addProviderInfo(List<Map<String, Object>> providers, String name,
-                                  ProvidersConfig.ProviderConfig providerConfig) {
+                                 ProvidersConfig.ProviderConfig providerConfig) {
         Map<String, Object> info = new HashMap<>();
         info.put("name", name);
         info.put("apiBase", providerConfig.getApiBase());
-        // 隐藏 API Key 敏感信息
         String apiKey = providerConfig.getApiKey();
         if (apiKey != null && !apiKey.isEmpty()) {
             info.put("apiKey", apiKey.length() > 8 ?
@@ -605,8 +614,24 @@ public class WebConsoleController {
         providers.add(info);
     }
 
+    @GetMapping("/providers/{name}")
+    public ResponseEntity<Map<String, Object>> getProvider(@PathVariable String name) {
+        Map<String, Object> response = new HashMap<>();
+        ProvidersConfig.ProviderConfig providerConfig = getProviderConfig(config.getProviders(), name);
+        if (providerConfig == null) {
+            response.put("error", "Unknown provider: " + name);
+            return ResponseEntity.status(404).body(response);
+        }
+
+        response.put("name", name);
+        response.put("apiBase", providerConfig.getApiBase());
+        response.put("apiKey", maskIfPresent(providerConfig.getApiKey()));
+        response.put("authorized", providerConfig.isValid());
+        return ResponseEntity.ok(response);
+    }
+
     /**
-     * 更新提供商配置
+     * ???????????
      * PUT /api/providers/{name}
      */
     @PutMapping("/providers/{name}")
@@ -619,25 +644,22 @@ public class WebConsoleController {
             ProvidersConfig.ProviderConfig providerConfig = getProviderConfig(providersConfig, name);
 
             if (providerConfig == null) {
-                response.put("error", "未知的提供商名称：" + name);
+                response.put("error", "Unknown provider: " + name);
                 return ResponseEntity.status(404).body(response);
             }
 
-            // 更新 API Key
-            if (request.getApiKey() != null) {
+            if (request.getApiKey() != null && !isMaskedSecret(request.getApiKey())) {
                 providerConfig.setApiKey(request.getApiKey());
             }
 
-            // 更新 API Base
             if (request.getApiBase() != null && !request.getApiBase().isEmpty()) {
                 providerConfig.setApiBase(request.getApiBase());
             }
 
-            // TODO: 将配置持久化到 config.json
-            // ConfigLoader.save(ConfigLoader.getConfigPath(), config);
+            ConfigLoader.save(ConfigLoader.getConfigPath(), config);
 
             response.put("success", true);
-            response.put("message", "提供商配置已更新");
+            response.put("message", "????????????");
             return ResponseEntity.ok(response);
         } catch (Exception e) {
             response.put("error", e.getMessage());
@@ -658,10 +680,71 @@ public class WebConsoleController {
         };
     }
 
+    private void updateChannelStringField(Object channelConfig, String setterName, String value, boolean treatAsSecret)
+            throws Exception {
+        if (value == null) {
+            return;
+        }
+        if (treatAsSecret && isMaskedSecret(value)) {
+            return;
+        }
+        try {
+            var setter = channelConfig.getClass().getMethod(setterName, String.class);
+            setter.invoke(channelConfig, value);
+        } catch (NoSuchMethodException ignored) {
+            // Optional field for some channel types.
+        }
+    }
+
+    private void updateChannelListField(Object channelConfig, String setterName, List<String> value) throws Exception {
+        if (value == null) {
+            return;
+        }
+        try {
+            var setter = channelConfig.getClass().getMethod(setterName, List.class);
+            setter.invoke(channelConfig, value);
+        } catch (NoSuchMethodException ignored) {
+            // Optional field for some channel types.
+        }
+    }
+
+    private void updateChannelIntField(Object channelConfig, String setterName, Integer value) throws Exception {
+        if (value == null) {
+            return;
+        }
+        try {
+            var setter = channelConfig.getClass().getMethod(setterName, int.class);
+            setter.invoke(channelConfig, value);
+        } catch (NoSuchMethodException ignored) {
+            // Optional field for some channel types.
+        }
+    }
+
+    private String maskIfPresent(String secret) {
+        if (secret == null || secret.isEmpty()) {
+            return "";
+        }
+        return maskSecret(secret);
+    }
+
+    private String maskSecret(String secret) {
+        if (secret == null || secret.isEmpty()) {
+            return "";
+        }
+        return secret.length() > 8
+                ? secret.substring(0, 4) + "****" + secret.substring(secret.length() - 4)
+                : "****";
+    }
+
+    private boolean isMaskedSecret(String value) {
+        return value != null && value.contains("****");
+    }
+
+    // ==================== Models API ====================
     // ==================== Models API ====================
 
     /**
-     * 列出所有可用模型
+     * 閸掓鍤幍鈧張澶婂讲閻劍膩閸?
      * GET /api/models
      */
     @GetMapping("/models")
@@ -681,7 +764,7 @@ public class WebConsoleController {
             modelInfo.put("maxContextSize", def.getMaxContextSize());
             modelInfo.put("description", def.getDescription() != null ? def.getDescription() : "");
 
-            // 检查提供商是否已授权
+            // 濡偓閺屻儲褰佹笟娑樻櫌閺勵垰鎯佸鍙夊房閺?
             ProvidersConfig.ProviderConfig providerConfig = getProviderConfig(providersConfig, def.getProvider());
             modelInfo.put("authorized", providerConfig != null && providerConfig.isValid());
 
@@ -694,7 +777,7 @@ public class WebConsoleController {
     // ==================== Config API ====================
 
     /**
-     * 获取当前模型和提供商配置
+     * 閼惧嘲褰囪ぐ鎾冲濡€崇€烽崪灞惧絹娓氭稑鏅㈤柊宥囩枂
      * GET /api/config/model
      */
     @GetMapping("/config/model")
@@ -706,33 +789,33 @@ public class WebConsoleController {
     }
 
     /**
-     * 更新模型配置
+     * 閺囧瓨鏌婂Ο鈥崇€烽柊宥囩枂
      * PUT /api/config/model
      */
     @PutMapping("/config/model")
     public ResponseEntity<Map<String, Object>> updateConfigModel(@RequestBody UpdateModelRequest request) {
         Map<String, Object> response = new HashMap<>();
         try {
-            // 验证模型是否存在
+            // 妤犲矁鐦夊Ο鈥崇€烽弰顖氭儊鐎涙ê婀?
             ModelsConfig.ModelDefinition modelDef = config.getModels().getDefinitions().get(request.getModel());
             if (modelDef == null) {
-                response.put("error", "未知的模型：" + request.getModel());
+                response.put("error", "閺堫亞鐓￠惃鍕侀崹瀣剁窗" + request.getModel());
                 return ResponseEntity.status(400).body(response);
             }
 
-            // 更新模型配置
+            // 閺囧瓨鏌婂Ο鈥崇€烽柊宥囩枂
             config.getAgent().setModel(request.getModel());
 
-            // 如果提供了 provider，也更新
+            // 婵″倹鐏夐幓鎰返娴?provider閿涘奔绡冮弴瀛樻煀
             if (request.getProvider() != null && !request.getProvider().isEmpty()) {
                 config.getAgent().setProvider(request.getProvider());
             }
 
-            // TODO: 将配置持久化到 config.json
+            // TODO: 鐏忓棝鍘ょ純顔藉瘮娑斿懎瀵查崚?config.json
             // ConfigLoader.save(ConfigLoader.getConfigPath(), config);
 
             response.put("success", true);
-            response.put("message", "模型配置已更新");
+            response.put("message", "Model updated");
             return ResponseEntity.ok(response);
         } catch (Exception e) {
             response.put("error", e.getMessage());
@@ -741,7 +824,7 @@ public class WebConsoleController {
     }
 
     /**
-     * 获取 Agent 配置
+     * 閼惧嘲褰?Agent 闁板秶鐤?
      * GET /api/config/agent
      */
     @GetMapping("/config/agent")
@@ -761,7 +844,7 @@ public class WebConsoleController {
     }
 
     /**
-     * 更新 Agent 配置
+     * 閺囧瓨鏌?Agent 闁板秶鐤?
      * PUT /api/config/agent
      */
     @PutMapping("/config/agent")
@@ -770,7 +853,7 @@ public class WebConsoleController {
         try {
             AgentConfig agentConfig = config.getAgent();
 
-            // 更新配置
+            // 閺囧瓨鏌婇柊宥囩枂
             if (request.getMaxTokens() != null) {
                 agentConfig.setMaxTokens(request.getMaxTokens());
             }
@@ -787,11 +870,11 @@ public class WebConsoleController {
                 agentConfig.setRestrictToWorkspace(request.getRestrictToWorkspace());
             }
 
-            // TODO: 将配置持久化到 config.json
+            // TODO: 鐏忓棝鍘ょ純顔藉瘮娑斿懎瀵查崚?config.json
             // ConfigLoader.save(ConfigLoader.getConfigPath(), config);
 
             response.put("success", true);
-            response.put("message", "Agent 配置已更新");
+            response.put("message", "Agent config updated");
             return ResponseEntity.ok(response);
         } catch (Exception e) {
             response.put("error", e.getMessage());
@@ -802,7 +885,7 @@ public class WebConsoleController {
     // ==================== Skills API ====================
 
     /**
-     * 列出所有技能
+     * 閸掓鍤幍鈧張澶嬪Η閼?
      * GET /api/skills
      */
     @GetMapping("/skills")
@@ -820,7 +903,7 @@ public class WebConsoleController {
     }
 
     /**
-     * 获取技能内容
+     * 閼惧嘲褰囬幎鈧懗钘夊敶鐎?
      * GET /api/skills/{skillName}
      */
     @GetMapping("/skills/{skillName}")
@@ -829,7 +912,7 @@ public class WebConsoleController {
         try {
             String content = skillsService.loadSkill(skillName);
             if (content == null) {
-                response.put("error", "技能不存在：" + skillName);
+                response.put("error", "Skill not found: " + skillName);
                 return ResponseEntity.status(404).body(response);
             }
             response.put("name", skillName);
@@ -842,7 +925,7 @@ public class WebConsoleController {
     }
 
     /**
-     * 创建或更新技能
+     * 閸掓稑缂撻幋鏍ㄦ纯閺傜増濡ч懗?
      * PUT /api/skills/{skillName}
      */
     @PutMapping("/skills/{skillName}")
@@ -861,7 +944,7 @@ public class WebConsoleController {
     }
 
     /**
-     * 删除技能
+     * 閸掔娀娅庨幎鈧懗?
      * DELETE /api/skills/{skillName}
      */
     @DeleteMapping("/skills/{skillName}")
@@ -871,7 +954,7 @@ public class WebConsoleController {
         if (deleted) {
             response.put("success", true);
         } else {
-            response.put("error", "技能不存在：" + skillName);
+            response.put("error", "Skill not found: " + skillName);
             return ResponseEntity.status(404).body(response);
         }
         return ResponseEntity.ok(response);
@@ -880,7 +963,7 @@ public class WebConsoleController {
     // ==================== MCP API ====================
 
     /**
-     * 获取 MCP 服务器配置
+     * 閼惧嘲褰?MCP 閺堝秴濮熼崳銊╁帳缂?
      * GET /api/mcp
      */
     @GetMapping("/mcp")
@@ -896,7 +979,7 @@ public class WebConsoleController {
             serverInfo.put("type", server.getType());
             serverInfo.put("description", server.getDescription());
             serverInfo.put("endpoint", server.getEndpoint());
-            // 隐藏 API Key
+            // 闂呮劘妫?API Key
             if (server.getApiKey() != null && !server.getApiKey().isEmpty()) {
                 String key = server.getApiKey();
                 serverInfo.put("apiKey", key.length() > 8 ?
@@ -911,7 +994,7 @@ public class WebConsoleController {
     }
 
     /**
-     * 更新 MCP 全局启用状态
+     * 閺囧瓨鏌?MCP 閸忋劌鐪崥顖滄暏閻樿埖鈧?
      * PUT /api/mcp
      */
     @PutMapping("/mcp")
@@ -920,12 +1003,12 @@ public class WebConsoleController {
         Map<String, Object> response = new HashMap<>();
         config.getMcpServers().setEnabled(request.isEnabled());
         response.put("success", true);
-        response.put("message", "MCP 配置已更新");
+        response.put("message", "MCP config updated");
         return ResponseEntity.ok(response);
     }
 
     /**
-     * 添加 MCP 服务器
+     * 濞ｈ濮?MCP 閺堝秴濮熼崳?
      * POST /api/mcp
      */
     @PostMapping("/mcp")
@@ -955,7 +1038,7 @@ public class WebConsoleController {
     }
 
     /**
-     * 更新 MCP 服务器配置
+     * 閺囧瓨鏌?MCP 閺堝秴濮熼崳銊╁帳缂?
      * PUT /api/mcp/{serverName}
      */
     @PutMapping("/mcp/{serverName}")
@@ -966,7 +1049,7 @@ public class WebConsoleController {
         try {
             MCPServersConfig.MCPServerConfig server = findMcpServer(serverName);
             if (server == null) {
-                response.put("error", "服务器不存在：" + serverName);
+                response.put("error", "MCP server not found: " + serverName);
                 return ResponseEntity.status(404).body(response);
             }
 
@@ -989,7 +1072,7 @@ public class WebConsoleController {
     }
 
     /**
-     * 删除 MCP 服务器
+     * 閸掔娀娅?MCP 閺堝秴濮熼崳?
      * DELETE /api/mcp/{serverName}
      */
     @DeleteMapping("/mcp/{serverName}")
@@ -999,16 +1082,16 @@ public class WebConsoleController {
         boolean removed = servers.removeIf(s -> s.getName().equals(serverName));
         if (removed) {
             response.put("success", true);
-            response.put("message", "服务器已删除");
+            response.put("message", "MCP server deleted");
         } else {
-            response.put("error", "服务器不存在：" + serverName);
+            response.put("error", "MCP server not found: " + serverName);
             return ResponseEntity.status(404).body(response);
         }
         return ResponseEntity.ok(response);
     }
 
     /**
-     * 测试 MCP 服务器连接
+     * 濞村鐦?MCP 閺堝秴濮熼崳銊ㄧ箾閹?
      * POST /api/mcp/{serverName}/test
      */
     @PostMapping("/mcp/{serverName}/test")
@@ -1017,11 +1100,11 @@ public class WebConsoleController {
         try {
             MCPServersConfig.MCPServerConfig server = findMcpServer(serverName);
             if (server == null) {
-                response.put("error", "服务器不存在：" + serverName);
+                response.put("error", "MCP server not found: " + serverName);
                 return ResponseEntity.status(404).body(response);
             }
 
-            // TODO: 实际测试连接
+            // TODO: 鐎圭偤妾ù瀣槸鏉╃偞甯?
             response.put("serverName", serverName);
             response.put("connected", true);
             response.put("initialized", true);
@@ -1054,7 +1137,7 @@ public class WebConsoleController {
     // ==================== Workspace Files API ====================
 
     /**
-     * 列出工作区文件
+     * 閸掓鍤銉ょ稊閸栫儤鏋冩禒?
      * GET /api/workspace/files
      */
     @GetMapping("/workspace/files")
@@ -1088,7 +1171,7 @@ public class WebConsoleController {
     }
 
     /**
-     * 读取工作区文件
+     * 鐠囪褰囧銉ょ稊閸栫儤鏋冩禒?
      * GET /api/workspace/files/{fileName}
      */
     @GetMapping("/workspace/files/{fileName}")
@@ -1103,7 +1186,7 @@ public class WebConsoleController {
             }
 
             if (!Files.exists(filePath)) {
-                response.put("error", "文件不存在：" + fileName);
+                response.put("error", "File not found: " + fileName);
                 return ResponseEntity.status(404).body(response);
             }
 
@@ -1117,7 +1200,7 @@ public class WebConsoleController {
     }
 
     /**
-     * 保存工作区文件
+     * 娣囨繂鐡ㄥ銉ょ稊閸栫儤鏋冩禒?
      * PUT /api/workspace/files/{fileName}
      */
     @PutMapping("/workspace/files/{fileName}")
@@ -1133,14 +1216,14 @@ public class WebConsoleController {
                 return ResponseEntity.status(403).body(response);
             }
 
-            // 确保父目录存在
+            // 绾喕绻氶悥鍓佹窗瑜版洖鐡ㄩ崷?
             if (filePath.getParent() != null) {
                 Files.createDirectories(filePath.getParent());
             }
 
             Files.writeString(filePath, request.getContent());
             response.put("success", true);
-            response.put("message", "文件已保存");
+            response.put("message", "File saved");
             return ResponseEntity.ok(response);
         } catch (Exception e) {
             response.put("error", e.getMessage());
@@ -1151,7 +1234,7 @@ public class WebConsoleController {
     // ==================== Token Stats API ====================
 
     /**
-     * 获取 Token 使用统计
+     * 閼惧嘲褰?Token 娴ｈ法鏁ょ紒鐔活吀
      * GET /api/token-stats
      */
     @GetMapping("/token-stats")
@@ -1170,7 +1253,7 @@ public class WebConsoleController {
             response.put("startDate", start.toString());
             response.put("endDate", end.toString());
 
-            // 按模型分组（简化版）
+            // 閹稿膩閸ㄥ鍨庣紒鍕剁礄缁犫偓閸栨牜澧楅敍?
             response.put("byModel", List.of());
             response.put("byDate", List.of());
 
@@ -1184,7 +1267,7 @@ public class WebConsoleController {
     // ==================== Feedback API ====================
 
     /**
-     * 获取反馈系统状态
+     * 閼惧嘲褰囬崣宥夘洯缁崵绮洪悩鑸碘偓?
      * GET /api/feedback
      */
     @GetMapping("/feedback")
@@ -1197,22 +1280,22 @@ public class WebConsoleController {
     }
 
     /**
-     * 提交反馈
+     * 閹绘劒姘﹂崣宥夘洯
      * POST /api/feedback
      */
     @PostMapping("/feedback")
     public ResponseEntity<Map<String, Object>> submitFeedback(@RequestBody SubmitFeedbackRequest request) {
         Map<String, Object> response = new HashMap<>();
-        // TODO: 保存反馈到存储
+        // TODO: 娣囨繂鐡ㄩ崣宥夘洯閸掓澘鐡ㄩ崒?
         response.put("success", true);
-        response.put("message", "反馈已记录，感谢您的评价！");
+        response.put("message", "Feedback submitted");
         return ResponseEntity.ok(response);
     }
 
     // ==================== Upload API ====================
 
     /**
-     * 上传图片
+     * 娑撳﹣绱堕崶鍓у
      * POST /api/upload
      */
     @PostMapping("/upload")
@@ -1226,7 +1309,7 @@ public class WebConsoleController {
             if (request.getImages() != null) {
                 for (UploadImage img : request.getImages()) {
                     if (img.getData() != null && img.getData().startsWith("data:image/")) {
-                        // 解析 base64 数据
+                        // 鐟欙絾鐎?base64 閺佺増宓?
                         String[] parts = img.getData().split(",");
                         if (parts.length == 2) {
                             byte[] data = Base64.getDecoder().decode(parts[1]);
@@ -1253,7 +1336,7 @@ public class WebConsoleController {
         if (originalName != null && originalName.contains(".")) {
             extension = originalName.substring(originalName.lastIndexOf("."));
         } else {
-            extension = ".jpg"; // 默认扩展名
+            extension = ".jpg"; // 姒涙顓婚幍鈺佺潔閸?
         }
         return timestamp + "_" + UUID.randomUUID().toString().substring(0, 8) + extension;
     }
@@ -1261,7 +1344,7 @@ public class WebConsoleController {
     // ==================== Files API ====================
 
     /**
-     * 访问上传的文件（无需认证，用于 img src）
+     * 鐠佸潡妫舵稉濠佺炊閻ㄥ嫭鏋冩禒璁圭礄閺冪娀娓剁拋銈堢槈閿涘瞼鏁ゆ禍?img src閿?
      * GET /api/files/{relativePath}
      */
     @GetMapping("/files/{relativePath}")
@@ -1324,21 +1407,60 @@ public class WebConsoleController {
     public static class UpdateChannelRequest {
         private boolean enabled;
         private String token;
+        private List<String> allowFrom;
+        private String bridgeUrl;
+        private String appId;
+        private String appSecret;
+        private String encryptKey;
+        private String verificationToken;
+        private String connectionMode;
+        private String clientId;
+        private String clientSecret;
+        private String webhook;
+        private String host;
+        private Integer port;
 
         public boolean isEnabled() { return enabled; }
         public void setEnabled(boolean enabled) { this.enabled = enabled; }
         public String getToken() { return token; }
         public void setToken(String token) { this.token = token; }
+        public List<String> getAllowFrom() { return allowFrom; }
+        public void setAllowFrom(List<String> allowFrom) { this.allowFrom = allowFrom; }
+        public String getBridgeUrl() { return bridgeUrl; }
+        public void setBridgeUrl(String bridgeUrl) { this.bridgeUrl = bridgeUrl; }
+        public String getAppId() { return appId; }
+        public void setAppId(String appId) { this.appId = appId; }
+        public String getAppSecret() { return appSecret; }
+        public void setAppSecret(String appSecret) { this.appSecret = appSecret; }
+        public String getEncryptKey() { return encryptKey; }
+        public void setEncryptKey(String encryptKey) { this.encryptKey = encryptKey; }
+        public String getVerificationToken() { return verificationToken; }
+        public void setVerificationToken(String verificationToken) { this.verificationToken = verificationToken; }
+        public String getConnectionMode() { return connectionMode; }
+        public void setConnectionMode(String connectionMode) { this.connectionMode = connectionMode; }
+        public String getClientId() { return clientId; }
+        public void setClientId(String clientId) { this.clientId = clientId; }
+        public String getClientSecret() { return clientSecret; }
+        public void setClientSecret(String clientSecret) { this.clientSecret = clientSecret; }
+        public String getWebhook() { return webhook; }
+        public void setWebhook(String webhook) { this.webhook = webhook; }
+        public String getHost() { return host; }
+        public void setHost(String host) { this.host = host; }
+        public Integer getPort() { return port; }
+        public void setPort(Integer port) { this.port = port; }
     }
 
     public static class UpdateProviderRequest {
         private String apiKey;
         private String apiBase;
+        private String baseUrl;
 
         public String getApiKey() { return apiKey; }
         public void setApiKey(String apiKey) { this.apiKey = apiKey; }
-        public String getApiBase() { return apiBase; }
+        public String getApiBase() { return apiBase != null ? apiBase : baseUrl; }
         public void setApiBase(String apiBase) { this.apiBase = apiBase; }
+        public String getBaseUrl() { return baseUrl; }
+        public void setBaseUrl(String baseUrl) { this.baseUrl = baseUrl; }
     }
 
     public static class UpdateModelRequest {
@@ -1521,3 +1643,4 @@ public class WebConsoleController {
         public void setName(String name) { this.name = name; }
     }
 }
+
