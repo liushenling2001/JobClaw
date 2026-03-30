@@ -208,6 +208,12 @@ public class Config {
         config.getAgent().setMemoryTokenBudgetPercentage(20);
         config.getAgent().setMemoryMinTokenBudget(1024);
         config.getAgent().setMemoryMaxTokenBudget(16384);
+        config.getAgent().setContextMaxPromptTokenPercentage(75);
+        config.getAgent().setContextLongInputPromptTokenPercentage(60);
+        config.getAgent().setContextLongInputTokenPercentage(6);
+        config.getAgent().setContextMaxHistoryRetrieval(10);
+        config.getAgent().setContextMaxSummaryRetrieval(6);
+        config.getAgent().setContextMaxMemoryRetrieval(10);
     }
 
     private static void setGatewayDefaults(Config config) {

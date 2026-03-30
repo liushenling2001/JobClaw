@@ -3,14 +3,24 @@ package io.jobclaw.config;
 import io.jobclaw.agent.AgentLoop;
 import io.jobclaw.bus.MessageBus;
 import io.jobclaw.channels.ChannelManager;
+import io.jobclaw.conversation.ConversationStore;
+import io.jobclaw.conversation.file.FileConversationStore;
+import io.jobclaw.context.ContextAssembler;
+import io.jobclaw.context.ContextAssemblyPolicy;
+import io.jobclaw.context.DefaultContextAssemblyPolicy;
+import io.jobclaw.context.DefaultContextAssembler;
 import io.jobclaw.cron.CronService;
 import io.jobclaw.mcp.MCPService;
 import io.jobclaw.providers.HTTPProvider;
 import io.jobclaw.providers.LLMProvider;
+import io.jobclaw.retrieval.RetrievalService;
+import io.jobclaw.retrieval.SqliteRetrievalService;
 import io.jobclaw.session.SessionManager;
 import io.jobclaw.skills.SkillsLoader;
 import io.jobclaw.skills.SkillsService;
 import io.jobclaw.stats.TokenUsageService;
+import io.jobclaw.summary.SummaryService;
+import io.jobclaw.summary.file.FileSummaryService;
 import io.jobclaw.tools.*;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
@@ -19,6 +29,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import java.io.IOException;
+import java.nio.file.Paths;
 
 /**
  * Spring configuration for Agent-related beans
@@ -61,8 +72,54 @@ public class AgentBeansConfig {
 
     @Bean
     @ConditionalOnMissingBean
-    public SessionManager sessionManager(Config config) {
-        return new SessionManager(config.getWorkspacePath());
+    public ConversationStore conversationStore(Config config) {
+        return new FileConversationStore(Paths.get(config.getWorkspacePath(), "sessions", "conversation").toString());
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public SummaryService summaryService(Config config) {
+        return new FileSummaryService(Paths.get(config.getWorkspacePath(), "sessions", "conversation").toString());
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public SessionManager sessionManager(Config config,
+                                         ConversationStore conversationStore,
+                                         SummaryService summaryService) {
+        return new SessionManager(Paths.get(config.getWorkspacePath(), "sessions").toString(), conversationStore, summaryService);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public RetrievalService retrievalService(Config config,
+                                             ConversationStore conversationStore,
+                                             SummaryService summaryService) {
+        return new SqliteRetrievalService(
+                conversationStore,
+                summaryService,
+                Paths.get(config.getWorkspacePath(), "sessions", "conversation", "search.db").toString()
+        );
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public ContextAssembler contextAssembler(Config config,
+                                             SessionManager sessionManager,
+                                             RetrievalService retrievalService) {
+        return new DefaultContextAssembler(
+                sessionManager,
+                config.getAgent().getRecentMessagesToKeep(),
+                retrievalService
+        );
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public ContextAssemblyPolicy contextAssemblyPolicy(Config config,
+                                                       SessionManager sessionManager,
+                                                       SummaryService summaryService) {
+        return new DefaultContextAssemblyPolicy(config.getAgent(), sessionManager, summaryService);
     }
 
     @Bean
@@ -154,8 +211,12 @@ public class AgentBeansConfig {
     @Bean
     @ConditionalOnMissingBean
     public AgentLoop agentLoop(Config config, SessionManager sessionManager,
-                               ToolCallback[] allToolCallbacks) {
-        return new AgentLoop(config, sessionManager, allToolCallbacks);
+                               ToolCallback[] allToolCallbacks,
+                               io.jobclaw.agent.ContextBuilder contextBuilder,
+                               ContextAssembler contextAssembler,
+                               ContextAssemblyPolicy contextAssemblyPolicy,
+                               SummaryService summaryService) {
+        return new AgentLoop(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler, contextAssemblyPolicy, summaryService);
     }
 
     // Tool beans with dependencies

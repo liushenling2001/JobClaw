@@ -37,6 +37,18 @@ public class AgentConfig {
     private int memoryMinTokenBudget;
     /** 记忆最大 token 预算 */
     private int memoryMaxTokenBudget;
+    /** prompt 可用 token 预算占上下文窗口的百分比 */
+    private int contextMaxPromptTokenPercentage;
+    /** 长输入时 prompt 可用 token 预算占上下文窗口的百分比 */
+    private int contextLongInputPromptTokenPercentage;
+    /** 判定为长输入的 token 百分比阈值 */
+    private int contextLongInputTokenPercentage;
+    /** history retrieval 最大条数 */
+    private int contextMaxHistoryRetrieval;
+    /** summary retrieval 最大条数 */
+    private int contextMaxSummaryRetrieval;
+    /** memory retrieval 最大条数 */
+    private int contextMaxMemoryRetrieval;
 
     public AgentConfig() {
         this.workspace = "~/.jobclaw/workspace";
@@ -60,6 +72,12 @@ public class AgentConfig {
         this.memoryTokenBudgetPercentage = 20;
         this.memoryMinTokenBudget = 1024;
         this.memoryMaxTokenBudget = 16384;
+        this.contextMaxPromptTokenPercentage = 75;
+        this.contextLongInputPromptTokenPercentage = 60;
+        this.contextLongInputTokenPercentage = 6;
+        this.contextMaxHistoryRetrieval = 10;
+        this.contextMaxSummaryRetrieval = 6;
+        this.contextMaxMemoryRetrieval = 10;
     }
 
     public String getWorkspace() {
@@ -221,5 +239,53 @@ public class AgentConfig {
 
     public void setMemoryMaxTokenBudget(int memoryMaxTokenBudget) {
         this.memoryMaxTokenBudget = memoryMaxTokenBudget;
+    }
+
+    public int getContextMaxPromptTokenPercentage() {
+        return contextMaxPromptTokenPercentage;
+    }
+
+    public void setContextMaxPromptTokenPercentage(int contextMaxPromptTokenPercentage) {
+        this.contextMaxPromptTokenPercentage = contextMaxPromptTokenPercentage;
+    }
+
+    public int getContextLongInputPromptTokenPercentage() {
+        return contextLongInputPromptTokenPercentage;
+    }
+
+    public void setContextLongInputPromptTokenPercentage(int contextLongInputPromptTokenPercentage) {
+        this.contextLongInputPromptTokenPercentage = contextLongInputPromptTokenPercentage;
+    }
+
+    public int getContextLongInputTokenPercentage() {
+        return contextLongInputTokenPercentage;
+    }
+
+    public void setContextLongInputTokenPercentage(int contextLongInputTokenPercentage) {
+        this.contextLongInputTokenPercentage = contextLongInputTokenPercentage;
+    }
+
+    public int getContextMaxHistoryRetrieval() {
+        return contextMaxHistoryRetrieval;
+    }
+
+    public void setContextMaxHistoryRetrieval(int contextMaxHistoryRetrieval) {
+        this.contextMaxHistoryRetrieval = contextMaxHistoryRetrieval;
+    }
+
+    public int getContextMaxSummaryRetrieval() {
+        return contextMaxSummaryRetrieval;
+    }
+
+    public void setContextMaxSummaryRetrieval(int contextMaxSummaryRetrieval) {
+        this.contextMaxSummaryRetrieval = contextMaxSummaryRetrieval;
+    }
+
+    public int getContextMaxMemoryRetrieval() {
+        return contextMaxMemoryRetrieval;
+    }
+
+    public void setContextMaxMemoryRetrieval(int contextMaxMemoryRetrieval) {
+        this.contextMaxMemoryRetrieval = contextMaxMemoryRetrieval;
     }
 }

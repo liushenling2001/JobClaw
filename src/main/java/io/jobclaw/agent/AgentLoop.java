@@ -2,12 +2,21 @@ package io.jobclaw.agent;
 
 import io.jobclaw.agent.evolution.MemoryEvolver;
 import io.jobclaw.agent.evolution.MemoryStore;
+import io.jobclaw.context.ContextAssembler;
+import io.jobclaw.context.ContextAssemblyOptions;
+import io.jobclaw.context.ContextAssemblyPolicy;
 import io.jobclaw.config.Config;
 import io.jobclaw.session.Session;
 import io.jobclaw.session.SessionManager;
+import io.jobclaw.summary.SummaryService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.SystemMessage;
+import org.springframework.ai.chat.messages.ToolResponseMessage;
+import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.openai.api.OpenAiApi;
@@ -17,6 +26,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import reactor.core.publisher.Flux;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
@@ -46,6 +56,8 @@ public class AgentLoop {
 
     // 新增组件
     private final ContextBuilder contextBuilder;
+    private final ContextAssembler contextAssembler;
+    private final ContextAssemblyPolicy contextAssemblyPolicy;
     private final SessionSummarizer sessionSummarizer;
 
     // 无工具调用的专用 ChatClient（用于摘要生成）
@@ -58,8 +70,12 @@ public class AgentLoop {
     private final Map<String, Boolean> toolExecutingState;
 
     public AgentLoop(Config config, SessionManager sessionManager,
-                     ToolCallback[] allToolCallbacks) {
-        this(config, sessionManager, allToolCallbacks, null, null);
+                     ToolCallback[] allToolCallbacks,
+                     ContextBuilder contextBuilder,
+                     ContextAssembler contextAssembler,
+                     ContextAssemblyPolicy contextAssemblyPolicy,
+                     SummaryService summaryService) {
+        this(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler, contextAssemblyPolicy, summaryService, null, null);
     }
 
     /**
@@ -67,6 +83,10 @@ public class AgentLoop {
      */
     public AgentLoop(Config config, SessionManager sessionManager,
                      ToolCallback[] allToolCallbacks,
+                     ContextBuilder contextBuilder,
+                     ContextAssembler contextAssembler,
+                     ContextAssemblyPolicy contextAssemblyPolicy,
+                     SummaryService summaryService,
                      ChatClient chatClient, String model) {
         this.config = config;
         this.sessionManager = sessionManager;
@@ -112,7 +132,9 @@ public class AgentLoop {
 
         // 初始化 ContextBuilder（需要 SkillsService）
         io.jobclaw.skills.SkillsService skillsService = null;
-        this.contextBuilder = new ContextBuilder(config, sessionManager, skillsService);
+        this.contextBuilder = contextBuilder;
+        this.contextAssembler = contextAssembler;
+        this.contextAssemblyPolicy = contextAssemblyPolicy;
 
         // 设置上下文窗口
         this.contextBuilder.setContextWindow(config.getAgent().getContextWindow());
@@ -129,7 +151,8 @@ public class AgentLoop {
                 this,
                 config.getAgent(),
                 memoryStore,
-                memoryEvolver
+                memoryEvolver,
+                summaryService
         );
 
         // 初始化 THINK_STREAM 缓冲区
@@ -241,18 +264,17 @@ public class AgentLoop {
                     .temperature(config.getAgent().getTemperature())
                     .build();
 
-            // 使用 ContextBuilder 构建完整消息列表（包含历史对话）
-            List<io.jobclaw.providers.Message> messages = contextBuilder.buildMessages(sessionKey, userContent);
-
-            // 构建用户提示词（包含历史对话）
-            String userPrompt = buildUserPromptWithHistory(messages, userContent);
+            // 使用结构化上下文装配器，保留消息边界，不再拍平成单段文本
+            ContextAssemblyOptions assemblyOptions = contextAssemblyPolicy.buildOptions(sessionKey, userContent);
+            List<io.jobclaw.providers.Message> historyMessages =
+                    contextAssembler.assemble(sessionKey, userContent, assemblyOptions);
+            List<Message> promptMessages = buildPromptMessages(systemPrompt, historyMessages, userContent);
 
             // 使用流式响应获取 LLM 回复
             StringBuilder fullResponse = new StringBuilder();
 
             Flux<String> contentStream = chatClient.prompt()
-                    .system(systemPrompt)
-                    .user(userPrompt)
+                    .messages(promptMessages)
                     .toolCallbacks(tools)
                     .options(options)
                     .stream()
@@ -290,9 +312,8 @@ public class AgentLoop {
             }
 
             // 保存会话历史
-            session.addMessage("user", userContent);
-            session.addMessage("assistant", response);
-            sessionManager.save(session);
+            sessionManager.addMessage(sessionKey, "user", userContent);
+            sessionManager.addMessage(sessionKey, "assistant", response);
 
             // 触发会话摘要检查
             sessionSummarizer.maybeSummarize(sessionKey);
@@ -353,59 +374,44 @@ public class AgentLoop {
         return contextBuilder.buildSystemPrompt(sessionKey, currentMessage);
     }
 
-    /**
-     * 构建用户提示词（包含历史对话）
-     *
-     * @param messages 完整消息列表（包含历史对话和当前消息）
-     * @param currentContent 当前用户消息内容
-     * @return 包含历史对话的用户提示词
-     */
-    private String buildUserPromptWithHistory(List<io.jobclaw.providers.Message> messages, String currentContent) {
-        if (messages == null || messages.isEmpty()) {
-            return currentContent;
+    private List<Message> buildPromptMessages(String systemPrompt,
+                                              List<io.jobclaw.providers.Message> historyMessages,
+                                              String currentContent) {
+        List<Message> promptMessages = new ArrayList<>();
+        if (systemPrompt != null && !systemPrompt.isBlank()) {
+            promptMessages.add(new SystemMessage(systemPrompt));
         }
-
-        StringBuilder historyBuffer = new StringBuilder();
-        int historyCount = 0;
-
-        // 遍历消息列表，构建历史对话
-        // 排除 system 消息和最后一条当前用户消息（已在 messages 末尾）
-        for (int i = 0; i < messages.size(); i++) {
-            io.jobclaw.providers.Message msg = messages.get(i);
-            String role = msg.getRole();
-            String content = msg.getContent();
-
-            // 跳过 system 消息（已在 system prompt 中）
-            if ("system".equals(role)) {
-                continue;
-            }
-
-            // 跳过最后一条消息（即当前用户消息，会单独添加）
-            if (i == messages.size() - 1) {
-                break;
-            }
-
-            historyCount++;
-            if ("user".equals(role)) {
-                historyBuffer.append("User: ").append(content).append("\n\n");
-            } else if ("assistant".equals(role)) {
-                historyBuffer.append("Assistant: ").append(content).append("\n\n");
-            } else if ("tool".equals(role)) {
-                historyBuffer.append("[Tool Result: ").append(content).append("]\n\n");
+        if (historyMessages != null) {
+            for (io.jobclaw.providers.Message message : historyMessages) {
+                Message springMessage = toSpringMessage(message);
+                if (springMessage != null) {
+                    promptMessages.add(springMessage);
+                }
             }
         }
+        promptMessages.add(new UserMessage(currentContent));
+        return promptMessages;
+    }
 
-        // 构建最终用户提示词
-        if (historyBuffer.length() == 0) {
-            // 没有历史对话，直接返回当前消息
-            return currentContent;
-        } else {
-            // 有历史对话，添加分隔符和当前消息
-            historyBuffer.append("---\n\n");
-            historyBuffer.append("Current Request: ").append(currentContent);
-            logger.debug("Added {} historical messages to prompt for session", historyCount);
-            return historyBuffer.toString();
+    private Message toSpringMessage(io.jobclaw.providers.Message message) {
+        if (message == null || message.getRole() == null) {
+            return null;
         }
+
+        String role = message.getRole();
+        String content = message.getContent() != null ? message.getContent() : "";
+        return switch (role) {
+            case "system" -> new SystemMessage(content);
+            case "assistant" -> new AssistantMessage(content);
+            case "tool" -> ToolResponseMessage.builder()
+                    .responses(List.of(new ToolResponseMessage.ToolResponse(
+                            message.getToolCallId() != null ? message.getToolCallId() : "tool",
+                            message.getToolCallId() != null ? message.getToolCallId() : "tool",
+                            content
+                    )))
+                    .build();
+            default -> new UserMessage(content);
+        };
     }
 
     /**
@@ -493,7 +499,7 @@ public class AgentLoop {
     private ToolCallback[] wrapToolCallbacks(ToolCallback[] rawCallbacks,
                                              String sessionKey,
                                              Consumer<ExecutionEvent> eventCallback) {
-        if (eventCallback == null || rawCallbacks == null) {
+        if (rawCallbacks == null) {
             return rawCallbacks;
         }
 
@@ -533,11 +539,18 @@ public class AgentLoop {
                     "toolId", toolId
                 );
 
+                io.jobclaw.providers.Message assistantToolMessage =
+                        io.jobclaw.providers.Message.assistant("");
+                assistantToolMessage.setToolCalls(List.of(
+                        new io.jobclaw.providers.ToolCall(toolId, toolName, request)
+                ));
+                sessionManager.addFullMessage(sessionKey, assistantToolMessage);
+
                 // 标记工具执行中，THINK_STREAM 需要缓冲
                 setToolExecuting(sessionKey, true);
 
                 // 发布 TOOL_START 事件（包含 metadata）
-                eventCallback.accept(new ExecutionEvent(
+                if (eventCallback != null) eventCallback.accept(new ExecutionEvent(
                     sessionKey,
                     ExecutionEvent.EventType.TOOL_START,
                     "正在调用工具：" + toolName ,
@@ -547,6 +560,8 @@ public class AgentLoop {
                 try {
                     // 调用原始工具
                     String response = callback.call(request);
+                    sessionManager.addFullMessage(sessionKey,
+                            io.jobclaw.providers.Message.tool(toolId, response));
 
                     // 构建 metadata（使用 Map.of 节省内存）
                     Map<String, Object> endMetadata = Map.of(
@@ -555,7 +570,7 @@ public class AgentLoop {
                     );
                     
                     // 发布 TOOL_END 事件（包含 metadata）
-                    eventCallback.accept(new ExecutionEvent(
+                    if (eventCallback != null) eventCallback.accept(new ExecutionEvent(
                         sessionKey,
                         ExecutionEvent.EventType.TOOL_END,
                         "工具调用完成：" + toolName,
@@ -566,7 +581,7 @@ public class AgentLoop {
                     String resultData = truncateOutput(response, toolName);
                     
                     // 发布 TOOL_OUTPUT 事件（显示工具返回结果，包含 metadata）
-                    eventCallback.accept(new ExecutionEvent(
+                    if (eventCallback != null) eventCallback.accept(new ExecutionEvent(
                         sessionKey,
                         ExecutionEvent.EventType.TOOL_OUTPUT,
                         resultData,
@@ -577,19 +592,25 @@ public class AgentLoop {
                     setToolExecuting(sessionKey, false);
                     
                     // 刷新缓冲的 THINK_STREAM
-                    flushThinkStreamBuffer(sessionKey, eventCallback);
+                    if (eventCallback != null) {
+                        flushThinkStreamBuffer(sessionKey, eventCallback);
+                    } else {
+                        clearThinkStreamBuffer(sessionKey);
+                    }
                     
                     return response;
                     
                 } catch (Exception e) {
                     // 构建 error metadata（使用 Map.of 节省内存）
+                    sessionManager.addFullMessage(sessionKey,
+                            io.jobclaw.providers.Message.tool(toolId, "ERROR: " + e.getMessage()));
                     Map<String, Object> errorMetadata = Map.of(
                         "toolName", toolName,
                         "toolId", toolId
                     );
 
                     // 发布 TOOL_ERROR 事件
-                    eventCallback.accept(new ExecutionEvent(
+                    if (eventCallback != null) eventCallback.accept(new ExecutionEvent(
                         sessionKey,
                         ExecutionEvent.EventType.TOOL_ERROR,
                         "工具执行失败：" + toolName + " - " + e.getMessage(),

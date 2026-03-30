@@ -9,6 +9,9 @@ import io.jobclaw.bus.MessageBus;
 import io.jobclaw.config.*;
 import io.jobclaw.cron.*;
 import io.jobclaw.mcp.MCPService;
+import io.jobclaw.retrieval.RetrievalBundle;
+import io.jobclaw.retrieval.RetrievalService;
+import io.jobclaw.retrieval.SearchQuery;
 import io.jobclaw.security.SecurityGuard;
 import io.jobclaw.session.Session;
 import io.jobclaw.session.SessionManager;
@@ -53,6 +56,7 @@ public class WebConsoleController {
     private final io.jobclaw.mcp.MCPService mcpService;
     private final TokenUsageService tokenUsageService;
     private final SecurityGuard securityGuard;
+    private final RetrievalService retrievalService;
 
     private final ExecutorService executor = Executors.newCachedThreadPool();
     private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd");
@@ -63,7 +67,8 @@ public class WebConsoleController {
                                  CronService cronService, SkillsService skillsService,
                                  io.jobclaw.mcp.MCPService mcpService,
                                  TokenUsageService tokenUsageService,
-                                 SecurityGuard securityGuard) {
+                                 SecurityGuard securityGuard,
+                                 RetrievalService retrievalService) {
         this.config = config;
         this.sessionManager = sessionManager;
         this.agentLoop = agentLoop;
@@ -75,6 +80,7 @@ public class WebConsoleController {
         this.mcpService = mcpService;
         this.tokenUsageService = tokenUsageService;
         this.securityGuard = securityGuard;
+        this.retrievalService = retrievalService;
     }
 
     @GetMapping("/status")
@@ -226,16 +232,13 @@ public class WebConsoleController {
     @GetMapping("/sessions")
     public ResponseEntity<List<Map<String, Object>>> getSessions() {
         List<Map<String, Object>> sessions = new ArrayList<>();
-        for (String key : sessionManager.getSessionKeys()) {
-            Session session = sessionManager.getSession(key);
-            if (session != null) {
-                Map<String, Object> info = new HashMap<>();
-                info.put("key", key);
-                info.put("created", session.getCreated());
-                info.put("updated", session.getUpdated());
-                info.put("message_count", session.getMessages().size());
-                sessions.add(info);
-            }
+        for (io.jobclaw.conversation.SessionRecord record : sessionManager.listSessionRecords()) {
+            Map<String, Object> info = new HashMap<>();
+            info.put("key", record.getSessionId());
+            info.put("created", record.getCreatedAt());
+            info.put("updated", record.getUpdatedAt());
+            info.put("message_count", record.getMessageCount());
+            sessions.add(info);
         }
         return ResponseEntity.ok(sessions);
     }
@@ -247,6 +250,76 @@ public class WebConsoleController {
             return ResponseEntity.notFound().build();
         }
         return ResponseEntity.ok(session);
+    }
+
+    @GetMapping("/sessions/search")
+    public ResponseEntity<Map<String, Object>> searchSessions(
+            @RequestParam("q") String query,
+            @RequestParam(value = "sessionId", required = false) String sessionId,
+            @RequestParam(value = "role", required = false) String role,
+            @RequestParam(value = "limit", required = false) Integer limit) {
+        Map<String, Object> response = new HashMap<>();
+        if (query == null || query.isBlank()) {
+            response.put("history", List.of());
+            response.put("summaries", List.of());
+            response.put("memory", List.of());
+            response.put("sessionSummary", null);
+            return ResponseEntity.ok(response);
+        }
+
+        int normalizedLimit = limit != null && limit > 0 ? Math.min(limit, 20) : 8;
+        SearchQuery searchQuery = new SearchQuery(sessionId, query, role, null, null, normalizedLimit, null);
+        RetrievalBundle bundle = retrievalService.retrieveForContext(sessionId, query);
+
+        response.put("history", retrievalService.searchHistory(searchQuery).stream()
+                .map(this::toHistorySearchResult)
+                .toList());
+        response.put("summaries", retrievalService.searchSummaries(searchQuery).stream()
+                .map(this::toSummarySearchResult)
+                .toList());
+        response.put("memory", retrievalService.searchMemory(searchQuery).stream()
+                .map(this::toMemorySearchResult)
+                .toList());
+        response.put("sessionSummary", bundle.sessionSummary().orElse(null));
+        return ResponseEntity.ok(response);
+    }
+
+    private Map<String, Object> toHistorySearchResult(io.jobclaw.conversation.StoredMessage message) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("messageId", message.messageId());
+        result.put("sessionId", message.sessionId());
+        result.put("sequence", message.sequence());
+        result.put("role", message.role());
+        result.put("content", message.content());
+        result.put("createdAt", message.createdAt());
+        return result;
+    }
+
+    private Map<String, Object> toSummarySearchResult(io.jobclaw.summary.ChunkSummary summary) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("chunkId", summary.chunkId());
+        result.put("sessionId", summary.sessionId());
+        result.put("summaryText", summary.summaryText());
+        result.put("entities", summary.entities());
+        result.put("topics", summary.topics());
+        result.put("decisions", summary.decisions());
+        result.put("openQuestions", summary.openQuestions());
+        result.put("createdAt", summary.createdAt());
+        return result;
+    }
+
+    private Map<String, Object> toMemorySearchResult(io.jobclaw.summary.MemoryFact fact) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("factId", fact.factId());
+        result.put("sessionId", fact.sessionId());
+        result.put("scope", fact.scope());
+        result.put("factType", fact.factType());
+        result.put("subject", fact.subject());
+        result.put("predicate", fact.predicate());
+        result.put("objectText", fact.objectText());
+        result.put("confidence", fact.confidence());
+        result.put("updatedAt", fact.updatedAt());
+        return result;
     }
 
     @DeleteMapping("/sessions/{key}")
@@ -839,6 +912,17 @@ public class WebConsoleController {
         response.put("maxToolIterations", agentConfig.getMaxToolIterations());
         response.put("heartbeatEnabled", agentConfig.isHeartbeatEnabled());
         response.put("restrictToWorkspace", agentConfig.isRestrictToWorkspace());
+        response.put("contextWindow", agentConfig.getContextWindow());
+        response.put("recentMessagesToKeep", agentConfig.getRecentMessagesToKeep());
+        response.put("memoryTokenBudgetPercentage", agentConfig.getMemoryTokenBudgetPercentage());
+        response.put("memoryMinTokenBudget", agentConfig.getMemoryMinTokenBudget());
+        response.put("memoryMaxTokenBudget", agentConfig.getMemoryMaxTokenBudget());
+        response.put("contextMaxPromptTokenPercentage", agentConfig.getContextMaxPromptTokenPercentage());
+        response.put("contextLongInputPromptTokenPercentage", agentConfig.getContextLongInputPromptTokenPercentage());
+        response.put("contextLongInputTokenPercentage", agentConfig.getContextLongInputTokenPercentage());
+        response.put("contextMaxHistoryRetrieval", agentConfig.getContextMaxHistoryRetrieval());
+        response.put("contextMaxSummaryRetrieval", agentConfig.getContextMaxSummaryRetrieval());
+        response.put("contextMaxMemoryRetrieval", agentConfig.getContextMaxMemoryRetrieval());
 
         return ResponseEntity.ok(response);
     }
@@ -869,9 +953,41 @@ public class WebConsoleController {
             if (request.getRestrictToWorkspace() != null) {
                 agentConfig.setRestrictToWorkspace(request.getRestrictToWorkspace());
             }
+            if (request.getContextWindow() != null) {
+                agentConfig.setContextWindow(request.getContextWindow());
+            }
+            if (request.getRecentMessagesToKeep() != null) {
+                agentConfig.setRecentMessagesToKeep(request.getRecentMessagesToKeep());
+            }
+            if (request.getMemoryTokenBudgetPercentage() != null) {
+                agentConfig.setMemoryTokenBudgetPercentage(request.getMemoryTokenBudgetPercentage());
+            }
+            if (request.getMemoryMinTokenBudget() != null) {
+                agentConfig.setMemoryMinTokenBudget(request.getMemoryMinTokenBudget());
+            }
+            if (request.getMemoryMaxTokenBudget() != null) {
+                agentConfig.setMemoryMaxTokenBudget(request.getMemoryMaxTokenBudget());
+            }
+            if (request.getContextMaxPromptTokenPercentage() != null) {
+                agentConfig.setContextMaxPromptTokenPercentage(request.getContextMaxPromptTokenPercentage());
+            }
+            if (request.getContextLongInputPromptTokenPercentage() != null) {
+                agentConfig.setContextLongInputPromptTokenPercentage(request.getContextLongInputPromptTokenPercentage());
+            }
+            if (request.getContextLongInputTokenPercentage() != null) {
+                agentConfig.setContextLongInputTokenPercentage(request.getContextLongInputTokenPercentage());
+            }
+            if (request.getContextMaxHistoryRetrieval() != null) {
+                agentConfig.setContextMaxHistoryRetrieval(request.getContextMaxHistoryRetrieval());
+            }
+            if (request.getContextMaxSummaryRetrieval() != null) {
+                agentConfig.setContextMaxSummaryRetrieval(request.getContextMaxSummaryRetrieval());
+            }
+            if (request.getContextMaxMemoryRetrieval() != null) {
+                agentConfig.setContextMaxMemoryRetrieval(request.getContextMaxMemoryRetrieval());
+            }
 
-            // TODO: 鐏忓棝鍘ょ純顔藉瘮娑斿懎瀵查崚?config.json
-            // ConfigLoader.save(ConfigLoader.getConfigPath(), config);
+            ConfigLoader.save(ConfigLoader.getConfigPath(), config);
 
             response.put("success", true);
             response.put("message", "Agent config updated");
@@ -1479,6 +1595,17 @@ public class WebConsoleController {
         private Integer maxToolIterations;
         private Boolean heartbeatEnabled;
         private Boolean restrictToWorkspace;
+        private Integer contextWindow;
+        private Integer recentMessagesToKeep;
+        private Integer memoryTokenBudgetPercentage;
+        private Integer memoryMinTokenBudget;
+        private Integer memoryMaxTokenBudget;
+        private Integer contextMaxPromptTokenPercentage;
+        private Integer contextLongInputPromptTokenPercentage;
+        private Integer contextLongInputTokenPercentage;
+        private Integer contextMaxHistoryRetrieval;
+        private Integer contextMaxSummaryRetrieval;
+        private Integer contextMaxMemoryRetrieval;
 
         public Integer getMaxTokens() { return maxTokens; }
         public void setMaxTokens(Integer maxTokens) { this.maxTokens = maxTokens; }
@@ -1490,6 +1617,28 @@ public class WebConsoleController {
         public void setHeartbeatEnabled(Boolean heartbeatEnabled) { this.heartbeatEnabled = heartbeatEnabled; }
         public Boolean getRestrictToWorkspace() { return restrictToWorkspace; }
         public void setRestrictToWorkspace(Boolean restrictToWorkspace) { this.restrictToWorkspace = restrictToWorkspace; }
+        public Integer getContextWindow() { return contextWindow; }
+        public void setContextWindow(Integer contextWindow) { this.contextWindow = contextWindow; }
+        public Integer getRecentMessagesToKeep() { return recentMessagesToKeep; }
+        public void setRecentMessagesToKeep(Integer recentMessagesToKeep) { this.recentMessagesToKeep = recentMessagesToKeep; }
+        public Integer getMemoryTokenBudgetPercentage() { return memoryTokenBudgetPercentage; }
+        public void setMemoryTokenBudgetPercentage(Integer memoryTokenBudgetPercentage) { this.memoryTokenBudgetPercentage = memoryTokenBudgetPercentage; }
+        public Integer getMemoryMinTokenBudget() { return memoryMinTokenBudget; }
+        public void setMemoryMinTokenBudget(Integer memoryMinTokenBudget) { this.memoryMinTokenBudget = memoryMinTokenBudget; }
+        public Integer getMemoryMaxTokenBudget() { return memoryMaxTokenBudget; }
+        public void setMemoryMaxTokenBudget(Integer memoryMaxTokenBudget) { this.memoryMaxTokenBudget = memoryMaxTokenBudget; }
+        public Integer getContextMaxPromptTokenPercentage() { return contextMaxPromptTokenPercentage; }
+        public void setContextMaxPromptTokenPercentage(Integer contextMaxPromptTokenPercentage) { this.contextMaxPromptTokenPercentage = contextMaxPromptTokenPercentage; }
+        public Integer getContextLongInputPromptTokenPercentage() { return contextLongInputPromptTokenPercentage; }
+        public void setContextLongInputPromptTokenPercentage(Integer contextLongInputPromptTokenPercentage) { this.contextLongInputPromptTokenPercentage = contextLongInputPromptTokenPercentage; }
+        public Integer getContextLongInputTokenPercentage() { return contextLongInputTokenPercentage; }
+        public void setContextLongInputTokenPercentage(Integer contextLongInputTokenPercentage) { this.contextLongInputTokenPercentage = contextLongInputTokenPercentage; }
+        public Integer getContextMaxHistoryRetrieval() { return contextMaxHistoryRetrieval; }
+        public void setContextMaxHistoryRetrieval(Integer contextMaxHistoryRetrieval) { this.contextMaxHistoryRetrieval = contextMaxHistoryRetrieval; }
+        public Integer getContextMaxSummaryRetrieval() { return contextMaxSummaryRetrieval; }
+        public void setContextMaxSummaryRetrieval(Integer contextMaxSummaryRetrieval) { this.contextMaxSummaryRetrieval = contextMaxSummaryRetrieval; }
+        public Integer getContextMaxMemoryRetrieval() { return contextMaxMemoryRetrieval; }
+        public void setContextMaxMemoryRetrieval(Integer contextMaxMemoryRetrieval) { this.contextMaxMemoryRetrieval = contextMaxMemoryRetrieval; }
     }
 
     public static class CreateCronJobRequest {

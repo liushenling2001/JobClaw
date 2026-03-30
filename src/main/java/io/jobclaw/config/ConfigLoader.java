@@ -145,6 +145,17 @@ public class ConfigLoader {
         applyStringOverride("JOBCLAW_AGENT_MODEL", config.getAgent()::setModel);
         applyIntOverride("JOBCLAW_AGENT_MAX_TOKENS", config.getAgent()::setMaxTokens);
         applyDoubleOverride("JOBCLAW_AGENT_TEMPERATURE", config.getAgent()::setTemperature);
+        applyIntOverride("JOBCLAW_AGENT_CONTEXT_WINDOW", config.getAgent()::setContextWindow);
+        applyIntOverride("JOBCLAW_AGENT_RECENT_MESSAGES_TO_KEEP", config.getAgent()::setRecentMessagesToKeep);
+        applyIntOverride("JOBCLAW_AGENT_MEMORY_TOKEN_BUDGET_PERCENTAGE", config.getAgent()::setMemoryTokenBudgetPercentage);
+        applyIntOverride("JOBCLAW_AGENT_MEMORY_MIN_TOKEN_BUDGET", config.getAgent()::setMemoryMinTokenBudget);
+        applyIntOverride("JOBCLAW_AGENT_MEMORY_MAX_TOKEN_BUDGET", config.getAgent()::setMemoryMaxTokenBudget);
+        applyIntOverride("JOBCLAW_AGENT_CONTEXT_MAX_PROMPT_TOKEN_PERCENTAGE", config.getAgent()::setContextMaxPromptTokenPercentage);
+        applyIntOverride("JOBCLAW_AGENT_CONTEXT_LONG_INPUT_PROMPT_TOKEN_PERCENTAGE", config.getAgent()::setContextLongInputPromptTokenPercentage);
+        applyIntOverride("JOBCLAW_AGENT_CONTEXT_LONG_INPUT_TOKEN_PERCENTAGE", config.getAgent()::setContextLongInputTokenPercentage);
+        applyIntOverride("JOBCLAW_AGENT_CONTEXT_MAX_HISTORY_RETRIEVAL", config.getAgent()::setContextMaxHistoryRetrieval);
+        applyIntOverride("JOBCLAW_AGENT_CONTEXT_MAX_SUMMARY_RETRIEVAL", config.getAgent()::setContextMaxSummaryRetrieval);
+        applyIntOverride("JOBCLAW_AGENT_CONTEXT_MAX_MEMORY_RETRIEVAL", config.getAgent()::setContextMaxMemoryRetrieval);
     }
 
     private static void applyChannelOverrides(Config config) {
