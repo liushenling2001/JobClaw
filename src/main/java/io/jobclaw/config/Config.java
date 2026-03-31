@@ -199,6 +199,11 @@ public class Config {
         config.getAgent().setMaxTokens(16384);
         config.getAgent().setTemperature(0.7);
         config.getAgent().setMaxToolIterations(20);
+        config.getAgent().setMaxRepairAttempts(1);
+        config.getAgent().setMaxVerificationRepairAttempts(1);
+        config.getAgent().setMaxFileExpectationRepairAttempts(2);
+        config.getAgent().setMaxTestCommandRepairAttempts(1);
+        config.getAgent().setMaxCommandExitRepairAttempts(1);
         config.getAgent().setMaxToolOutputLength(10000);
         // 上下文管理默认值（参考 TinyClaw）
         config.getAgent().setContextWindow(128_000);

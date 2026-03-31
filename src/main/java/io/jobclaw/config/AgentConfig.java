@@ -14,6 +14,11 @@ public class AgentConfig {
     private int maxTokens;
     private double temperature;
     private int maxToolIterations;
+    private int maxRepairAttempts;
+    private int maxVerificationRepairAttempts;
+    private int maxFileExpectationRepairAttempts;
+    private int maxTestCommandRepairAttempts;
+    private int maxCommandExitRepairAttempts;
     private boolean restrictToWorkspace;
     private boolean heartbeatEnabled;
     private boolean feedbackEnabled;
@@ -57,6 +62,11 @@ public class AgentConfig {
         this.maxTokens = 16384;
         this.temperature = 0.7;
         this.maxToolIterations = 20;
+        this.maxRepairAttempts = 1;
+        this.maxVerificationRepairAttempts = 1;
+        this.maxFileExpectationRepairAttempts = 2;
+        this.maxTestCommandRepairAttempts = 1;
+        this.maxCommandExitRepairAttempts = 1;
         this.restrictToWorkspace = true;
         this.heartbeatEnabled = false;
         this.feedbackEnabled = false;
@@ -126,6 +136,46 @@ public class AgentConfig {
 
     public void setMaxToolIterations(int maxToolIterations) {
         this.maxToolIterations = maxToolIterations;
+    }
+
+    public int getMaxRepairAttempts() {
+        return maxRepairAttempts;
+    }
+
+    public void setMaxRepairAttempts(int maxRepairAttempts) {
+        this.maxRepairAttempts = maxRepairAttempts;
+    }
+
+    public int getMaxVerificationRepairAttempts() {
+        return maxVerificationRepairAttempts;
+    }
+
+    public void setMaxVerificationRepairAttempts(int maxVerificationRepairAttempts) {
+        this.maxVerificationRepairAttempts = maxVerificationRepairAttempts;
+    }
+
+    public int getMaxFileExpectationRepairAttempts() {
+        return maxFileExpectationRepairAttempts;
+    }
+
+    public void setMaxFileExpectationRepairAttempts(int maxFileExpectationRepairAttempts) {
+        this.maxFileExpectationRepairAttempts = maxFileExpectationRepairAttempts;
+    }
+
+    public int getMaxTestCommandRepairAttempts() {
+        return maxTestCommandRepairAttempts;
+    }
+
+    public void setMaxTestCommandRepairAttempts(int maxTestCommandRepairAttempts) {
+        this.maxTestCommandRepairAttempts = maxTestCommandRepairAttempts;
+    }
+
+    public int getMaxCommandExitRepairAttempts() {
+        return maxCommandExitRepairAttempts;
+    }
+
+    public void setMaxCommandExitRepairAttempts(int maxCommandExitRepairAttempts) {
+        this.maxCommandExitRepairAttempts = maxCommandExitRepairAttempts;
     }
 
     public boolean isRestrictToWorkspace() {

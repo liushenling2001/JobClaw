@@ -22,6 +22,25 @@ class ExecutionTraceServiceFilterTest {
     }
 
     @Test
+    void shouldKeepTaskHarnessCustomEventsQueryableByRunId() {
+        ExecutionTraceService service = new ExecutionTraceService();
+        service.publish(new ExecutionEvent(
+                "session-a",
+                ExecutionEvent.EventType.CUSTOM,
+                "Task harness started",
+                Map.of("source", "task_harness", "label", "started"),
+                "run-9",
+                null,
+                "task_harness",
+                "Task Harness"
+        ));
+
+        var runEvents = service.getHistoryByRun("session-a", "run-9", 10);
+        assertEquals(1, runEvents.size());
+        assertEquals("task_harness", runEvents.get(0).getMetadata().get("source"));
+    }
+
+    @Test
     void shouldFilterHistoryByBoardId() {
         ExecutionTraceService service = new ExecutionTraceService();
         service.publish(new ExecutionEvent("session-a", ExecutionEvent.EventType.CUSTOM, "b1", Map.of("boardId", "board-1")));
