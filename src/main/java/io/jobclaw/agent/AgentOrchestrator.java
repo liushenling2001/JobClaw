@@ -1,5 +1,6 @@
 package io.jobclaw.agent;
 
+import io.jobclaw.agent.runtime.AgentRunIds;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -14,7 +15,6 @@ import java.util.regex.Pattern;
  */
 @Component
 public class AgentOrchestrator {
-
     private static final Logger logger = LoggerFactory.getLogger(AgentOrchestrator.class);
 
     private static final Pattern ROLE_PATTERN = Pattern.compile(
@@ -23,9 +23,22 @@ public class AgentOrchestrator {
     );
 
     private final AgentRegistry agentRegistry;
+    private final TaskHarnessService taskHarnessService;
+    private final TaskHarnessVerifier taskHarnessVerifier;
+    private final TaskHarnessRepairPromptBuilder taskHarnessRepairPromptBuilder;
+    private final TaskHarnessRepairStrategy taskHarnessRepairStrategy;
 
-    public AgentOrchestrator(AgentRegistry agentRegistry) {
+    public AgentOrchestrator(io.jobclaw.config.Config config,
+                             AgentRegistry agentRegistry,
+                             TaskHarnessService taskHarnessService,
+                             TaskHarnessVerifier taskHarnessVerifier,
+                             TaskHarnessRepairPromptBuilder taskHarnessRepairPromptBuilder,
+                             TaskHarnessRepairStrategy taskHarnessRepairStrategy) {
         this.agentRegistry = agentRegistry;
+        this.taskHarnessService = taskHarnessService;
+        this.taskHarnessVerifier = taskHarnessVerifier;
+        this.taskHarnessRepairPromptBuilder = taskHarnessRepairPromptBuilder;
+        this.taskHarnessRepairStrategy = taskHarnessRepairStrategy;
         logger.info("AgentOrchestrator initialized");
     }
 
@@ -52,20 +65,13 @@ public class AgentOrchestrator {
                                         String userContent,
                                         AgentDefinition definition,
                                         Consumer<ExecutionEvent> eventCallback) {
-        try {
+        return executeWithHarness(sessionKey, userContent, eventCallback, (taskInput, callback) -> {
             AgentLoop agent = agentRegistry.getOrCreateAgent(definition, sessionKey);
-            if (eventCallback != null) {
-                return agent.processWithDefinition(sessionKey, userContent, definition, eventCallback);
+            if (callback != null) {
+                return agent.processWithDefinition(sessionKey, taskInput, definition, callback);
             }
-            return agent.processWithDefinition(sessionKey, userContent, definition);
-        } catch (Exception e) {
-            logger.error("Error in single-agent mode with definition", e);
-            if (eventCallback != null) {
-                eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.ERROR,
-                        "Error: " + e.getMessage()));
-            }
-            return "Error: " + e.getMessage();
-        }
+            return agent.processWithDefinition(sessionKey, taskInput, definition);
+        });
     }
 
     public String process(String sessionKey, String userContent) {
@@ -124,40 +130,26 @@ public class AgentOrchestrator {
     private String handleSingleAgentDefault(String sessionKey,
                                             String userContent,
                                             Consumer<ExecutionEvent> eventCallback) {
-        try {
+        return executeWithHarness(sessionKey, userContent, eventCallback, (taskInput, callback) -> {
             AgentLoop agent = agentRegistry.getOrCreateAgent(AgentRole.ASSISTANT, sessionKey);
-            if (eventCallback != null) {
-                return agent.process(sessionKey, userContent, eventCallback);
+            if (callback != null) {
+                return agent.process(sessionKey, taskInput, callback);
             }
-            return agent.process(sessionKey, userContent);
-        } catch (Exception e) {
-            logger.error("Error in single-agent mode", e);
-            if (eventCallback != null) {
-                eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.ERROR,
-                        "Error: " + e.getMessage()));
-            }
-            return "Error: " + e.getMessage();
-        }
+            return agent.process(sessionKey, taskInput);
+        });
     }
 
     private String handleSingleAgentWithRole(String sessionKey,
                                              String userContent,
                                              AgentRole role,
                                              Consumer<ExecutionEvent> eventCallback) {
-        try {
+        return executeWithHarness(sessionKey, userContent, eventCallback, (taskInput, callback) -> {
             AgentLoop agent = agentRegistry.getOrCreateAgent(role, sessionKey);
-            if (eventCallback != null) {
-                return agent.process(sessionKey, userContent, role, eventCallback);
+            if (callback != null) {
+                return agent.process(sessionKey, taskInput, role, callback);
             }
-            return agent.process(sessionKey, userContent, role);
-        } catch (Exception e) {
-            logger.error("Error in single-agent mode with role", e);
-            if (eventCallback != null) {
-                eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.ERROR,
-                        "Error: " + e.getMessage()));
-            }
-            return "Error: " + e.getMessage();
-        }
+            return agent.process(sessionKey, taskInput, role);
+        });
     }
 
     public String getStatus() {
@@ -166,5 +158,128 @@ public class AgentOrchestrator {
         sb.append("  Mode: single-agent + explicit role/definition routing\n");
         sb.append("  ").append(agentRegistry.getPoolStatus().replace("\n", "\n  "));
         return sb.toString();
+    }
+
+    private String executeWithHarness(String sessionKey,
+                                      String userContent,
+                                      Consumer<ExecutionEvent> eventCallback,
+                                      HarnessAction action) {
+        String runId = AgentRunIds.newTopLevelRunId();
+        TaskHarnessRun harnessRun = taskHarnessService.startRun(
+                sessionKey,
+                runId,
+                userContent,
+                eventCallback
+        );
+        Consumer<ExecutionEvent> effectiveCallback = taskHarnessService.wrapEventCallback(harnessRun, eventCallback);
+        if (effectiveCallback != null) {
+            effectiveCallback.accept(new ExecutionEvent(
+                    sessionKey,
+                    ExecutionEvent.EventType.CUSTOM,
+                    "Task harness run created",
+                    java.util.Map.of(
+                            "source", "task_harness",
+                            "label", "run_created",
+                            "runId", runId
+                    ),
+                    runId,
+                    null,
+                    "task_harness",
+                    "Task Harness"
+            ));
+        }
+        taskHarnessService.transition(
+                harnessRun,
+                TaskHarnessPhase.PLAN,
+                "running",
+                "route",
+                "Routing task into orchestrator",
+                java.util.Map.of(),
+                effectiveCallback
+        );
+
+        try {
+            String currentResponse = action.run(userContent, effectiveCallback);
+            TaskHarnessVerificationResult currentResult =
+                    taskHarnessService.verify(harnessRun, currentResponse, null, taskHarnessVerifier, effectiveCallback);
+
+            if (currentResult.success()) {
+                taskHarnessService.complete(harnessRun, true, currentResult.reason(), effectiveCallback);
+                return currentResponse;
+            }
+
+            while (true) {
+                TaskHarnessFailure failure = taskHarnessService.recordFailure(
+                        harnessRun,
+                        taskHarnessRepairPromptBuilder.classify(harnessRun, currentResponse, null),
+                        effectiveCallback
+                );
+
+                if (!canAttemptRepair(harnessRun)) {
+                    taskHarnessService.complete(harnessRun, false, currentResult.reason(), effectiveCallback);
+                    return currentResponse;
+                }
+
+                currentResponse = attemptRepair(action, harnessRun, userContent, failure, effectiveCallback);
+                currentResult =
+                        taskHarnessService.verify(harnessRun, currentResponse, null, taskHarnessVerifier, effectiveCallback);
+
+                if (currentResult.success()) {
+                    taskHarnessService.complete(harnessRun, true, currentResult.reason(), effectiveCallback);
+                    return currentResponse;
+                }
+            }
+        } catch (Exception e) {
+            logger.error("Harness execution failed for session {}", sessionKey, e);
+            if (effectiveCallback != null) {
+                effectiveCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.ERROR,
+                        "Error: " + e.getMessage()));
+            }
+            TaskHarnessVerificationResult failedResult =
+                    taskHarnessService.verify(harnessRun, null, e, taskHarnessVerifier, effectiveCallback);
+            taskHarnessService.recordFailure(
+                    harnessRun,
+                    taskHarnessRepairPromptBuilder.classify(harnessRun, null, e),
+                    effectiveCallback
+            );
+            taskHarnessService.complete(harnessRun, false, failedResult.reason(), effectiveCallback);
+            return "Error: " + e.getMessage();
+        }
+    }
+
+    private String attemptRepair(HarnessAction action,
+                                 TaskHarnessRun harnessRun,
+                                 String originalInput,
+                                 TaskHarnessFailure failure,
+                                 Consumer<ExecutionEvent> effectiveCallback) throws Exception {
+        int maxAttempts = taskHarnessRepairStrategy.maxAttempts(harnessRun);
+        int attempt = harnessRun.incrementRepairAttempts();
+        taskHarnessService.transition(
+                harnessRun,
+                TaskHarnessPhase.REPAIR,
+                "running",
+                "repair",
+                "Starting repair attempt " + attempt,
+                java.util.Map.of(
+                        "attempt", attempt,
+                        "maxAttempts", maxAttempts,
+                        "reason", failure.reason(),
+                        "kind", failure.kind().name(),
+                        "failureType", taskHarnessRepairStrategy.failureType(harnessRun)
+                ),
+                effectiveCallback
+        );
+
+        String repairInput = taskHarnessRepairPromptBuilder.build(harnessRun, originalInput, failure, attempt);
+        return action.run(repairInput, effectiveCallback);
+    }
+
+    private boolean canAttemptRepair(TaskHarnessRun harnessRun) {
+        return harnessRun.getRepairAttempts() < taskHarnessRepairStrategy.maxAttempts(harnessRun);
+    }
+
+    @FunctionalInterface
+    private interface HarnessAction {
+        String run(String taskInput, Consumer<ExecutionEvent> callback) throws Exception;
     }
 }

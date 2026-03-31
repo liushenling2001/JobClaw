@@ -1,111 +1,253 @@
 # JobClaw
 
-JobClaw 是一个以 Spring Boot + Spring AI 为核心的多智能体执行框架，提供 CLI、Web Console、工具调用、会话检索、持久化 Agent Catalog、以及共享黑板协作能力。
+JobClaw 是一个基于 Spring Boot + Spring AI 的智能体执行系统。  
+它不是一个“只会聊天”的壳，而是一个面向真实任务执行的后端运行时，提供：
 
-当前版本重点不是“页面操作编排”，而是后端执行架构升级：
-- 会话改为 append-only 原始消息存储。
-- 上下文改为 message list 分层装配（recent history / summary / memory / retrieval）。
-- 检索层独立为 SQLite FTS5（history / summary / memory 分离检索）。
-- 多智能体支持持久化自定义 agent + 内置角色 + async 可观测执行。
-- TEAM / SEQUENTIAL / DEBATE 协作已接入 Shared Board。
+- CLI 与 Web Console 双入口
+- 可调用工具体系
+- 会话持久化、摘要、记忆、检索
+- 多智能体协作
+- MCP 接入
+- Cron 调度
+- 可观测的执行事件流
+- 面向结果校验与失败修复的 `TaskHarness`
 
-## 核心能力
+当前版本的重点是把执行链路从“模型回答”推进到“任务闭环”：
 
-### 1) 对话与上下文架构
-- 原始消息持久化：`ConversationStore`（`messages.ndjson`，append-only）。
-- 摘要层：`chunk summaries`、`session summary`、`memory facts`。
-- 检索层：`RetrievalService`（默认 `SqliteRetrievalService`）。
-- 装配层：`ContextAssembler` + `ContextAssemblyPolicy`。
-- 兼容层：`SessionManager` 保留 Web API 所需会话视图。
+- 任务运行拥有显式 phase
+- 工具调用和验证过程可追踪
+- 常见失败会进入 repair
+- 修复不是盲重试，而是基于失败类型做定向处理
 
-### 2) 多智能体运行
-- `spawn`：创建子智能体执行任务（支持同步/异步）。
-- `collaborate`：支持三种模式。
-1. `TEAM`：并行协作。
-2. `SEQUENTIAL`：串行接力。
-3. `DEBATE`：正反辩论。
-- 子智能体来源：
-1. 内置角色（assistant/coder/researcher/writer/reviewer/planner/tester）。
-2. 持久化自定义 agent（由 `agent_catalog` 创建和管理）。
+## 适用场景
 
-### 3) 共享黑板协作
-- `SharedBoardService` 文件化落盘。
-- `board_write` / `board_read` 工具可被协作流程调用。
-- 协作过程中的 board 事件会进入 execution trace，前端可展示进展。
+JobClaw 适合这些类型的系统：
 
-### 4) Web Console 与 API
-- 聊天、流式输出、会话管理、配置管理、工具与技能管理。
-- 会话搜索接口已提供：`/api/sessions/search`。
+- 需要让 LLM 调用文件、命令、网络等工具
+- 需要把运行过程开放给 Web 前端观察
+- 需要会话记忆、摘要、检索，而不是单轮 prompt
+- 需要多智能体协作，而不是单 Agent 串行输出
+- 需要对“是否真的完成任务”做结果校验
+
+## 当前能力
+
+### 1. 会话与上下文
+
+- 原始消息持久化
+- Chunk summary、session summary、memory facts
+- 基于 SQLite FTS5 的检索层
+- 分层上下文组装
+- append-only 会话存储
+
+核心组件：
+
+- `ConversationStore`
+- `SummaryService`
+- `RetrievalService`
+- `ContextAssembler`
+- `ContextAssemblyPolicy`
+
+### 2. 执行运行时
+
+- `AgentLoop` 负责单轮模型与工具交互
+- `AgentOrchestrator` 负责主执行入口
+- `ExecutionTraceService` 负责执行事件流与 SSE
+- `TaskHarness` 负责任务级执行闭环
+
+当前 `TaskHarness` 已支持：
+
+- `PLAN -> ACT -> OBSERVE -> VERIFY -> REPAIR -> FINISH/FAILED`
+- 结构化 step 记录
+- `runId` 级别追踪
+- verifier failure type
+- repair prompt 定向指引
+- 按失败类型区分 repair budget
+
+### 3. 结果校验与修复
+
+当前 verifier 已覆盖：
+
+- 空响应
+- 错误响应
+- 执行异常
+- 测试命令失败
+- 文件写入未落地
+- 命令非零退出
+
+当前 failure type 包括：
+
+- `EXECUTION_FAILURE`
+- `EMPTY_RESPONSE`
+- `ERROR_RESPONSE`
+- `TEST_COMMAND`
+- `FILE_EXPECTATION`
+- `COMMAND_EXIT`
+
+### 4. 多智能体协作
+
+支持：
+
+- `spawn`
+- `collaborate`
+
+协作模式：
+
+- `TEAM`
+- `SEQUENTIAL`
+- `DEBATE`
+
+同时提供共享黑板能力：
+
+- `SharedBoardService`
+- `board` 相关执行事件可进入 trace
+
+### 5. 工具体系
+
+当前内建工具覆盖这些方向：
+
+- 文件：`read_file` `write_file` `edit_file` `append_file` `list_dir`
+- 命令：`run_command` `exec`
+- 网络：`web_search` `web_fetch`
+- 系统：`cron` `message` `query_token_usage`
+- MCP：`mcp`
+- 多智能体：`spawn` `collaborate`
+- Agent 管理：`agent_catalog`
+- 协作：`board_write` `board_read`
+
+### 6. Web Console
+
+后端已提供完整 Web API 与 SSE 流：
+
+- 聊天
+- 执行流
+- 会话管理
+- 配置管理
+- Cron 管理
+- MCP 管理
+- 技能管理
+- TaskHarness run 查询
+
+说明：
+
+- 当前前端已经能提交任务并走完整后端 TaskHarness
+- 前端还没有把 TaskHarness 做成专门 UI 面板
+- 但后端的 run / events 查询接口已经可用
+
+## TaskHarness 说明
+
+这是当前版本最重要的运行时能力。
+
+### 执行模型
+
+TaskHarness 把一次任务运行定义为一个有状态的执行过程，而不是一次纯文本响应。
+
+核心 phase：
+
+- `PLAN`
+- `ACT`
+- `OBSERVE`
+- `VERIFY`
+- `REPAIR`
+- `FINISH`
+- `FAILED`
+
+### 当前行为
+
+每次任务执行时：
+
+1. 创建 `runId`
+2. 启动 TaskHarness run
+3. 进入主执行
+4. 对结果执行 verifier
+5. 如果失败，生成结构化 failure
+6. 基于 failure type 生成 repair prompt
+7. 在预算内循环 repair
+8. 成功结束或失败结束
+
+### 当前可观测接口
+
+- `POST /api/execute/stream`
+- SSE 事件：`task-harness-run`
+- `GET /api/task-harness/runs/{runId}`
+- `GET /api/task-harness/runs/{runId}/events`
+
+你可以把这套接口看成“任务级调试入口”。
+
+## 系统架构
+
+```text
+Web / CLI
+  -> AgentOrchestrator
+    -> TaskHarness
+      -> AgentLoop
+        -> ContextAssembler + ContextAssemblyPolicy
+        -> LLM + ToolCallbacks
+        -> SessionSummarizer
+
+Storage / Retrieval
+  -> ConversationStore
+  -> SummaryService
+  -> RetrievalService (SQLite FTS5)
+  -> AgentCatalogStore
+  -> SharedBoardService
+  -> CronStore
+```
 
 ## 技术栈
 
 - Java 17
 - Spring Boot 3.4.0
 - Spring AI 1.1.0
-- SQLite (xerial sqlite-jdbc)
-- Vue 3 + Vite（`ui/`）
+- SQLite
+- OkHttp
+- Apache POI
+- Vue 3 + Vite（静态资源已打包进 `src/main/resources/static`）
 
 ## 快速开始
 
 ### 环境要求
+
 - JDK 17+
 - Maven 3.6+
-- Node.js 18+（仅前端开发或重建静态资源需要）
+- Node.js 18+  
+  仅在你需要重新构建前端时才需要
 
 ### 构建
+
 ```bash
 mvn clean package -DskipTests
 ```
 
-### 初始化（首次）
+### 首次初始化
+
 ```bash
 java -jar target/jobclaw-1.0.0.jar onboard
 ```
 
 默认会生成：
+
 - 配置文件：`~/.jobclaw/config.json`
-- 工作空间：`~/.jobclaw/workspace`
+- 工作目录：`~/.jobclaw/workspace`
 
-### 配置 Provider（示例）
-编辑 `~/.jobclaw/config.json`：
+### 启动 Web Gateway
 
-```json
-{
-  "agent": {
-    "provider": "dashscope",
-    "model": "qwen3.5-plus"
-  },
-  "providers": {
-    "dashscope": {
-      "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-      "apiKey": "sk-xxxx"
-    },
-    "openai": {
-      "baseUrl": "https://api.openai.com/v1",
-      "apiKey": ""
-    },
-    "ollama": {
-      "baseUrl": "http://localhost:11434/v1",
-      "apiKey": ""
-    }
-  }
-}
-```
-
-### 启动
 ```bash
 java -jar target/jobclaw-1.0.0.jar gateway
 ```
 
-Web Console 默认地址：
-- `http://localhost:18791`
+默认地址：
 
-CLI 模式：
+- [http://localhost:18791](http://localhost:18791)
+
+### 启动 CLI Agent
+
 ```bash
 java -jar target/jobclaw-1.0.0.jar agent
 ```
 
-## 常用命令
+## CLI 命令
+
+当前主要命令：
 
 ```bash
 java -jar target/jobclaw-1.0.0.jar onboard
@@ -118,16 +260,58 @@ java -jar target/jobclaw-1.0.0.jar demo
 java -jar target/jobclaw-1.0.0.jar version
 ```
 
-## 关键工具（Agent Tooling）
+## 配置
 
-- 文件与命令：`read_file` `write_file` `list_dir` `edit_file` `append_file` `run_command` `exec`
-- 网络：`web_search` `web_fetch`
-- 系统：`cron` `message` `query_token_usage` `mcp`
-- 多智能体：`spawn` `collaborate`
-- Agent 管理：`agent_catalog`
-- 协作黑板：`board_write` `board_read`
+主配置文件：
 
-## API 概览（节选）
+- `~/.jobclaw/config.json`
+
+最小示例：
+
+```json
+{
+  "agent": {
+    "provider": "dashscope",
+    "model": "qwen3.5-plus",
+    "maxTokens": 16384,
+    "temperature": 0.7,
+    "maxToolIterations": 20,
+    "maxRepairAttempts": 1,
+    "maxVerificationRepairAttempts": 1,
+    "maxFileExpectationRepairAttempts": 2,
+    "maxTestCommandRepairAttempts": 1,
+    "maxCommandExitRepairAttempts": 1
+  },
+  "providers": {
+    "dashscope": {
+      "apiBase": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "apiKey": "sk-xxxx"
+    },
+    "openai": {
+      "apiBase": "https://api.openai.com/v1",
+      "apiKey": ""
+    },
+    "ollama": {
+      "apiBase": "http://localhost:11434/v1",
+      "apiKey": ""
+    }
+  }
+}
+```
+
+### MCP 配置
+
+当前系统支持在配置中声明 MCP 服务，并在运行时通过 `mcp` 工具使用。  
+系统 prompt 中只会注入 MCP 的最简说明，不会展开冗长描述。
+
+### Cron 存储
+
+当前 Cron 存储采用最新版本格式。  
+旧格式不会迁移，会在加载时清空并重建。
+
+## Web API 概览
+
+常用接口：
 
 - `POST /api/chat`
 - `POST /api/chat/stream`
@@ -137,85 +321,90 @@ java -jar target/jobclaw-1.0.0.jar version
 - `GET /api/sessions/{key}`
 - `GET /api/sessions/search`
 - `DELETE /api/sessions/{key}`
-- `GET /api/channels` / `PUT /api/channels/{name}`
-- `GET /api/providers` / `PUT /api/providers/{name}`
+- `GET /api/task-harness/runs/{runId}`
+- `GET /api/task-harness/runs/{runId}/events`
 
-## 数据与存储布局
+配置与管理接口还包括：
 
-默认目录：`~/.jobclaw/workspace/sessions/conversation`
+- channels
+- providers
+- models
+- cron
+- mcp
+- skills
+- token stats
 
-主要内容：
-- 每会话目录下：
-1. `messages.ndjson`（原始消息，append-only）
-2. `session.json`（会话元数据投影）
-3. `chunks.ndjson`
-4. `chunk-summaries.ndjson`
-5. `session-summary.json`
-6. `memory-facts.ndjson`
-- 检索索引：
-1. `search.db`（SQLite FTS5）
-- Agent Catalog：
-1. `agents.db`
-- Shared Board：
-1. `boards/`
+## 数据目录
 
-## 架构分层（当前实现）
+默认工作目录：
 
-```text
-Web/CLI
-  -> AgentOrchestrator
-    -> AgentLoop
-      -> ContextAssembler + ContextAssemblyPolicy
-      -> LLM + ToolCallbacks
-      -> SessionSummarizer
+- `~/.jobclaw/workspace`
 
-Storage & Retrieval
-  -> ConversationStore (append-only messages)
-  -> SummaryService (chunk/session/facts)
-  -> RetrievalService (SQLite FTS5)
-  -> AgentCatalogStore (SQLite)
-  -> SharedBoardService (file-based)
-```
+主要数据包括：
 
-## 前端开发
+- 会话原始消息
+- session 元数据
+- chunk summaries
+- session summary
+- memory facts
+- `search.db`
+- `agents.db`
+- `boards/`
+- cron 存储
 
-前端代码在 `ui/`：
+## 前端说明
 
-```bash
-cd ui
-npm install
-npm run dev
-```
+当前仓库中已经包含打包后的静态前端资源：
 
-构建并同步到后端静态资源：
-```bash
-cd ui
-npm run build
-```
+- `src/main/resources/static`
+
+如果你要重新开发或重建前端，需要使用前端源码目录重新构建后再同步产物。  
+当前后端对前端的兼容情况如下：
+
+- 现有前端可以正常提交任务
+- 后端执行已经走 TaskHarness
+- 新增的 `task-harness-run` 事件不会破坏旧前端
+- 新接口已经可用于后续前端增强
 
 ## 测试与验证
 
-后端编译：
+编译：
+
 ```bash
 mvn -DskipTests compile
 ```
 
-后端测试：
+运行测试：
+
 ```bash
 mvn test
 ```
 
-前端构建验证：
-```bash
-cd ui
-npm run build
-```
+当前 TaskHarness 相关的定向测试覆盖：
 
-## 相关设计文档
+- verifier
+- repair prompt
+- execution trace filter
+- repair strategy
+- test command expectation
+- file expectation
+- command exit expectation
 
-- `docs/conversation-architecture-refactor.md`
-- `docs/natural-language-agent-runtime-design.md`
-- `docs/multi-agent-shared-board-design.md`
+## 当前里程碑
+
+当前这版可以看作 JobClaw 从“对话代理”升级到“任务执行运行时”的第一阶段里程碑：
+
+- 执行链路显式化
+- failure type 结构化
+- repair loop 可控
+- TaskHarness 可查询
+- Web SSE 与 run 查询打通
+
+如果你要继续推进，下一阶段最自然的是：
+
+- 前端可视化 TaskHarness
+- 更细粒度的 expectation extraction
+- 更强的 repair policy
 
 ## License
 

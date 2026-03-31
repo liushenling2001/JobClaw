@@ -74,7 +74,8 @@ public class AgentLoop {
                      ContextAssembler contextAssembler,
                      ContextAssemblyPolicy contextAssemblyPolicy,
                      SummaryService summaryService) {
-        this(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler, contextAssemblyPolicy, summaryService, null, null);
+        this(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler, contextAssemblyPolicy,
+                summaryService, null, null);
     }
 
     /**
@@ -546,7 +547,8 @@ public class AgentLoop {
                 // 构建 metadata（使用 Map.of 节省内存）
                 Map<String, Object> startMetadata = Map.of(
                     "toolName", toolName,
-                    "toolId", toolId
+                    "toolId", toolId,
+                    "request", truncateToolRequest(request)
                 );
 
                 io.jobclaw.providers.Message assistantToolMessage =
@@ -576,7 +578,8 @@ public class AgentLoop {
                     // 构建 metadata（使用 Map.of 节省内存）
                     Map<String, Object> endMetadata = Map.of(
                         "toolName", toolName,
-                        "toolId", toolId
+                        "toolId", toolId,
+                        "request", truncateToolRequest(request)
                     );
                     
                     // 发布 TOOL_END 事件（包含 metadata）
@@ -616,7 +619,8 @@ public class AgentLoop {
                             io.jobclaw.providers.Message.tool(toolId, "ERROR: " + e.getMessage()));
                     Map<String, Object> errorMetadata = Map.of(
                         "toolName", toolName,
-                        "toolId", toolId
+                        "toolId", toolId,
+                        "request", truncateToolRequest(request)
                     );
 
                     // 发布 TOOL_ERROR 事件
@@ -664,6 +668,17 @@ public class AgentLoop {
                            toolName, output.length(), maxLength);
                 
                 return truncated + truncateNotice;
+            }
+
+            private String truncateToolRequest(String request) {
+                if (request == null || request.isBlank()) {
+                    return "";
+                }
+                int maxLength = Math.min(500, config.getAgent().getMaxToolOutputLength());
+                if (request.length() <= maxLength) {
+                    return request;
+                }
+                return request.substring(0, maxLength) + "\n[request truncated]";
             }
         };
     }
