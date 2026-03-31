@@ -2,7 +2,6 @@ package io.jobclaw;
 
 import io.jobclaw.cli.CliCommandRegistry;
 import io.jobclaw.cli.CliCommand;
-import io.jobclaw.cli.VersionCommand;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;

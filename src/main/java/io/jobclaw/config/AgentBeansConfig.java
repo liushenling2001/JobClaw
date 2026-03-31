@@ -57,12 +57,6 @@ public class AgentBeansConfig {
 
     @Bean
     @ConditionalOnMissingBean
-    public ToolRegistry toolRegistry() {
-        return new ToolRegistry();
-    }
-
-    @Bean
-    @ConditionalOnMissingBean
     public SkillsLoader skillsLoader(Config config) {
         return new SkillsLoader(config.getWorkspacePath(), null, null);
     }
@@ -194,8 +188,8 @@ public class AgentBeansConfig {
 
     @Bean
     @ConditionalOnMissingBean
-    public CronService cronService() {
-        return new CronService();
+    public CronService cronService(Config config) {
+        return new CronService(config.getWorkspacePath());
     }
 
     @Bean

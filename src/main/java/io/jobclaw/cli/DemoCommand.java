@@ -2,6 +2,7 @@ package io.jobclaw.cli;
 
 import io.jobclaw.agent.AgentLoop;
 import io.jobclaw.agent.AgentOrchestrator;
+import io.jobclaw.SpringContext;
 import io.jobclaw.config.Config;
 import io.jobclaw.config.ConfigLoader;
 import org.slf4j.Logger;
@@ -61,8 +62,7 @@ public class DemoCommand extends CliCommand {
         }
 
         // 2. 获取编排器
-        AgentOrchestrator orchestrator = getApplicationContext()
-            .getBean(AgentOrchestrator.class);
+        AgentOrchestrator orchestrator = SpringContext.getBean(AgentOrchestrator.class);
         if (orchestrator == null) {
             System.err.println("Error: AgentOrchestrator bean not found");
             return 1;
@@ -158,13 +158,4 @@ public class DemoCommand extends CliCommand {
         System.out.println("  jobclaw demo agent-multi");
     }
 
-    private org.springframework.context.ApplicationContext getApplicationContext() {
-        try {
-            java.lang.reflect.Method getMethod = CliCommand.class.getDeclaredMethod("getAppContext");
-            getMethod.setAccessible(true);
-            return (org.springframework.context.ApplicationContext) getMethod.invoke(this);
-        } catch (Exception e) {
-            throw new RuntimeException("Failed to get ApplicationContext", e);
-        }
-    }
 }

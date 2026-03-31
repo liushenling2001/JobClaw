@@ -1,5 +1,6 @@
 package io.jobclaw.tools;
 
+import io.jobclaw.config.Config;
 import org.apache.poi.hssf.usermodel.HSSFWorkbook;
 import org.apache.poi.hwpf.HWPFDocument;
 import org.apache.poi.hwpf.extractor.WordExtractor;
@@ -15,6 +16,7 @@ import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
 
 import java.io.FileInputStream;
+import java.nio.file.Path;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.List;
@@ -25,19 +27,19 @@ import java.util.List;
 @Component
 public class FileTools {
 
-    public FileTools() {
+    private final Config config;
+
+    public FileTools(Config config) {
+        this.config = config;
     }
 
     @Tool(name = "read_file", description = "Read the contents of a file")
     public String readFile(
         @ToolParam(description = "The path of the file to read") String path
     ) {
-        if (path == null || path.isEmpty()) {
-            return "Error: path is required";
-        }
-
         try {
-            String content = Files.readString(Paths.get(path));
+            Path resolvedPath = resolvePath(path);
+            String content = Files.readString(resolvedPath);
             return content;
         } catch (Exception e) {
             return "Error reading file: " + e.getMessage();
@@ -57,8 +59,11 @@ public class FileTools {
         }
 
         try {
-            Files.createDirectories(Paths.get(path).getParent());
-            Files.writeString(Paths.get(path), content);
+            Path resolvedPath = resolvePath(path);
+            if (resolvedPath.getParent() != null) {
+                Files.createDirectories(resolvedPath.getParent());
+            }
+            Files.writeString(resolvedPath, content);
             return "Successfully wrote to " + path;
         } catch (Exception e) {
             return "Error writing file: " + e.getMessage();
@@ -69,13 +74,10 @@ public class FileTools {
     public String listDir(
         @ToolParam(description = "The path of the directory to list") String path
     ) {
-        if (path == null || path.isEmpty()) {
-            return "Error: path is required";
-        }
-
         try {
+            Path resolvedPath = resolvePath(path);
             List<String> entries = new java.util.ArrayList<>();
-            Files.list(Paths.get(path)).forEach(p -> {
+            Files.list(resolvedPath).forEach(p -> {
                 String type = Files.isDirectory(p) ? "[DIR]  " : "[FILE] ";
                 entries.add(type + p.getFileName());
             });
@@ -94,12 +96,13 @@ public class FileTools {
             return "Error: path is required";
         }
 
-        String lowerPath = path.toLowerCase();
+        String resolvedPath = resolvePath(path).toString();
+        String lowerPath = resolvedPath.toLowerCase();
         try {
             if (lowerPath.endsWith(".docx")) {
-                return readDocx(path);
+                return readDocx(resolvedPath);
             } else if (lowerPath.endsWith(".doc")) {
-                return readDoc(path);
+                return readDoc(resolvedPath);
             } else {
                 return "Error: file must be a .doc or .docx file, got: " + path;
             }
@@ -117,12 +120,13 @@ public class FileTools {
             return "Error: path is required";
         }
 
-        String lowerPath = path.toLowerCase();
+        String resolvedPath = resolvePath(path).toString();
+        String lowerPath = resolvedPath.toLowerCase();
         try {
             if (lowerPath.endsWith(".xlsx")) {
-                return readXlsx(path, sheet);
+                return readXlsx(resolvedPath, sheet);
             } else if (lowerPath.endsWith(".xls")) {
-                return readXls(path, sheet);
+                return readXls(resolvedPath, sheet);
             } else {
                 return "Error: file must be a .xls or .xlsx file, got: " + path;
             }
@@ -148,7 +152,7 @@ public class FileTools {
         }
 
         try {
-            java.nio.file.Path resolvedPath = Paths.get(path).normalize();
+            java.nio.file.Path resolvedPath = resolvePath(path);
             
             if (!Files.exists(resolvedPath)) {
                 return "Error: file not found: " + path;
@@ -186,7 +190,7 @@ public class FileTools {
         }
 
         try {
-            java.nio.file.Path resolvedPath = Paths.get(path).normalize();
+            java.nio.file.Path resolvedPath = resolvePath(path);
             java.nio.file.Path parentDir = resolvedPath.getParent();
             
             if (parentDir != null && !Files.exists(parentDir)) {
@@ -370,5 +374,17 @@ public class FileTools {
             index += substring.length();
         }
         return count;
+    }
+
+    private Path resolvePath(String path) {
+        Path workspace = Paths.get(config.getWorkspacePath());
+        if (path == null || path.isBlank()) {
+            return workspace.normalize();
+        }
+        Path input = Paths.get(path);
+        if (input.isAbsolute()) {
+            return input.normalize();
+        }
+        return workspace.resolve(input).normalize();
     }
 }
