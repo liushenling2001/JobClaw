@@ -7,7 +7,6 @@ import io.jobclaw.config.Config;
 import io.jobclaw.config.ConfigLoader;
 import io.jobclaw.providers.LLMProvider;
 import io.jobclaw.session.SessionManager;
-import io.jobclaw.tools.ToolRegistry;
 
 import java.io.File;
 import java.nio.file.Paths;
@@ -56,13 +55,6 @@ public abstract class CliCommand {
      */
     protected SessionManager getSessionManager() {
         return SpringContext.getBean(SessionManager.class);
-    }
-
-    /**
-     * Get ToolRegistry bean from Spring context
-     */
-    protected ToolRegistry getToolRegistry() {
-        return SpringContext.getBean(ToolRegistry.class);
     }
 
     /**

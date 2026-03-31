@@ -187,7 +187,7 @@ public class OnboardCommand extends CliCommand {
         System.out.println("     \"tools\": {");
         System.out.println("       \"web\": {");
         System.out.println("         \"search\": {");
-        System.out.println("           \"api_key\": \"你的千帆 API Key\"  // 百度千帆 API Key");
+        System.out.println("           \"apiKey\": \"你的千帆 API Key\"  // 百度千帆 API Key");
         System.out.println("         }");
         System.out.println("       }");
         System.out.println("     }");
