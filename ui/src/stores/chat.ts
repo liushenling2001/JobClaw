@@ -45,9 +45,61 @@ export const useChatStore = defineStore('chat', {
         role,
         content,
         timestamp: new Date().toISOString(),
-        toolCall
+        toolCall,
+        kind: 'chat' as const
       };
       this.messages.push(msg);
+    },
+
+    upsertProgressMessage(payload: {
+      content: string;
+      runId?: string | null;
+      boardId?: string | null;
+      entryType?: string;
+      latestEntryType?: string;
+      latestEntryTitle?: string;
+      totalEntries?: number;
+      artifactCount?: number;
+      riskCount?: number;
+      summaryCount?: number;
+    }) {
+      const runId = payload.runId || undefined;
+      const boardId = payload.boardId || undefined;
+      const key = runId || boardId || 'session';
+      const messageId = `progress_${key}`;
+
+      const existing = this.messages.find(m => m.id === messageId);
+      const nextMeta = {
+        entryType: payload.entryType,
+        latestEntryType: payload.latestEntryType,
+        latestEntryTitle: payload.latestEntryTitle,
+        totalEntries: payload.totalEntries,
+        artifactCount: payload.artifactCount,
+        riskCount: payload.riskCount,
+        summaryCount: payload.summaryCount
+      };
+
+      if (existing) {
+        existing.content = payload.content;
+        existing.timestamp = new Date().toISOString();
+        existing.role = 'system';
+        existing.kind = 'progress';
+        existing.runId = runId;
+        existing.boardId = boardId;
+        existing.progressMeta = nextMeta;
+        return;
+      }
+
+      this.messages.push({
+        id: messageId,
+        role: 'system',
+        content: payload.content,
+        timestamp: new Date().toISOString(),
+        kind: 'progress',
+        runId,
+        boardId,
+        progressMeta: nextMeta
+      });
     },
 
     appendToLastAssistantMessage(content: string) {

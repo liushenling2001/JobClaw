@@ -5,75 +5,148 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * 执行过程事件 - 用于跟踪 Agent 执行过程中的每一步
+ * Execution event emitted during agent processing and streamed to SSE consumers.
  */
 public class ExecutionEvent {
 
     public enum EventType {
-        /** Agent 开始思考 */
         THINK_START,
-        /** Agent 思考中（流式输出） */
         THINK_STREAM,
-        /** Agent 思考结束 */
         THINK_END,
-        /** 工具调用开始 */
         TOOL_START,
-        /** 工具调用结束 */
         TOOL_END,
-        /** 工具输出 */
         TOOL_OUTPUT,
-        /** 工具执行错误 */
         TOOL_ERROR,
-        /** 错误事件 */
         ERROR,
-        /** 最终响应 */
         FINAL_RESPONSE,
-        /** 自定义消息 */
         CUSTOM
     }
 
     private final String sessionId;
+    private final String runId;
+    private final String parentRunId;
+    private final String agentId;
+    private final String agentName;
     private final EventType type;
     private final String content;
     private final Instant timestamp;
     private final Map<String, Object> metadata;
 
     public ExecutionEvent(String sessionId, EventType type, String content) {
-        this.sessionId = sessionId;
-        this.type = type;
-        this.content = content != null ? content : "";
-        this.timestamp = Instant.now();
-        this.metadata = new HashMap<>();
+        this(sessionId, type, content, null);
     }
 
     public ExecutionEvent(String sessionId, EventType type, String content, Map<String, Object> metadata) {
-        this.sessionId = sessionId;
-        this.type = type;
-        this.content = content != null ? content : "";
-        this.timestamp = Instant.now();
-        this.metadata = metadata != null ? metadata : new HashMap<>();
+        this(
+                sessionId,
+                type,
+                content,
+                metadata,
+                AgentExecutionContext.getCurrentRunId(),
+                AgentExecutionContext.getCurrentParentRunId(),
+                currentAgentId(),
+                currentAgentName(),
+                Instant.now()
+        );
     }
 
-    public String getSessionId() { return sessionId; }
-    public EventType getType() { return type; }
-    public String getContent() { return content; }
-    public Instant getTimestamp() { return timestamp; }
-    public Map<String, Object> getMetadata() { return metadata; }
+    public ExecutionEvent(String sessionId,
+                          EventType type,
+                          String content,
+                          Map<String, Object> metadata,
+                          String runId,
+                          String parentRunId,
+                          String agentId,
+                          String agentName) {
+        this(sessionId, type, content, metadata, runId, parentRunId, agentId, agentName, Instant.now());
+    }
 
-    /**
-     * 添加元数据
-     */
+    private ExecutionEvent(String sessionId,
+                           EventType type,
+                           String content,
+                           Map<String, Object> metadata,
+                           String runId,
+                           String parentRunId,
+                           String agentId,
+                           String agentName,
+                           Instant timestamp) {
+        this.sessionId = sessionId;
+        this.runId = runId;
+        this.parentRunId = parentRunId;
+        this.agentId = agentId;
+        this.agentName = agentName;
+        this.type = type;
+        this.content = content != null ? content : "";
+        this.timestamp = timestamp != null ? timestamp : Instant.now();
+        this.metadata = metadata != null ? new HashMap<>(metadata) : new HashMap<>();
+    }
+
+    public String getSessionId() {
+        return sessionId;
+    }
+
+    public String getRunId() {
+        return runId;
+    }
+
+    public String getParentRunId() {
+        return parentRunId;
+    }
+
+    public String getAgentId() {
+        return agentId;
+    }
+
+    public String getAgentName() {
+        return agentName;
+    }
+
+    public EventType getType() {
+        return type;
+    }
+
+    public String getContent() {
+        return content;
+    }
+
+    public Instant getTimestamp() {
+        return timestamp;
+    }
+
+    public Map<String, Object> getMetadata() {
+        return metadata;
+    }
+
     public ExecutionEvent withMetadata(String key, Object value) {
         this.metadata.put(key, value);
         return this;
     }
 
-    /**
-     * 转换为 SSE 数据格式
-     */
+    public ExecutionEvent routedTo(String targetSessionId,
+                                   String runId,
+                                   String parentRunId,
+                                   String agentId,
+                                   String agentName) {
+        return new ExecutionEvent(
+                targetSessionId,
+                type,
+                content,
+                metadata,
+                runId,
+                parentRunId,
+                agentId,
+                agentName,
+                timestamp
+        );
+    }
+
     public Map<String, Object> toSseData() {
         Map<String, Object> data = new HashMap<>();
         data.put("sessionId", sessionId);
+        data.put("runId", runId);
+        data.put("parentRunId", parentRunId);
+        data.put("agentId", agentId);
+        data.put("agentName", agentName);
         data.put("type", type.name());
         data.put("content", content);
         data.put("timestamp", timestamp.toString());
@@ -85,9 +158,21 @@ public class ExecutionEvent {
     public String toString() {
         return "ExecutionEvent{" +
                 "sessionId='" + sessionId + '\'' +
+                ", runId='" + runId + '\'' +
+                ", agentId='" + agentId + '\'' +
                 ", type=" + type +
                 ", contentLength=" + content.length() +
                 ", timestamp=" + timestamp +
                 '}';
+    }
+
+    private static String currentAgentId() {
+        AgentExecutionContext.ExecutionScope scope = AgentExecutionContext.getCurrentScope();
+        return scope != null ? scope.agentId() : null;
+    }
+
+    private static String currentAgentName() {
+        AgentExecutionContext.ExecutionScope scope = AgentExecutionContext.getCurrentScope();
+        return scope != null ? scope.agentName() : null;
     }
 }

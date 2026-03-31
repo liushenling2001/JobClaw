@@ -2,21 +2,30 @@ package io.jobclaw.agent;
 
 import io.jobclaw.agent.evolution.MemoryEvolver;
 import io.jobclaw.agent.evolution.MemoryStore;
+import io.jobclaw.agent.runtime.AgentRunIds;
+import io.jobclaw.context.ContextAssembler;
+import io.jobclaw.context.ContextAssemblyOptions;
+import io.jobclaw.context.ContextAssemblyPolicy;
 import io.jobclaw.config.Config;
 import io.jobclaw.session.Session;
 import io.jobclaw.session.SessionManager;
+import io.jobclaw.summary.SummaryService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.SystemMessage;
+import org.springframework.ai.chat.messages.ToolResponseMessage;
+import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.openai.api.OpenAiApi;
 import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.method.MethodToolCallbackProvider;
-import org.springframework.beans.factory.ObjectProvider;
 import reactor.core.publisher.Flux;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
@@ -46,6 +55,8 @@ public class AgentLoop {
 
     // 新增组件
     private final ContextBuilder contextBuilder;
+    private final ContextAssembler contextAssembler;
+    private final ContextAssemblyPolicy contextAssemblyPolicy;
     private final SessionSummarizer sessionSummarizer;
 
     // 无工具调用的专用 ChatClient（用于摘要生成）
@@ -58,8 +69,12 @@ public class AgentLoop {
     private final Map<String, Boolean> toolExecutingState;
 
     public AgentLoop(Config config, SessionManager sessionManager,
-                     ToolCallback[] allToolCallbacks) {
-        this(config, sessionManager, allToolCallbacks, null, null);
+                     ToolCallback[] allToolCallbacks,
+                     ContextBuilder contextBuilder,
+                     ContextAssembler contextAssembler,
+                     ContextAssemblyPolicy contextAssemblyPolicy,
+                     SummaryService summaryService) {
+        this(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler, contextAssemblyPolicy, summaryService, null, null);
     }
 
     /**
@@ -67,6 +82,10 @@ public class AgentLoop {
      */
     public AgentLoop(Config config, SessionManager sessionManager,
                      ToolCallback[] allToolCallbacks,
+                     ContextBuilder contextBuilder,
+                     ContextAssembler contextAssembler,
+                     ContextAssemblyPolicy contextAssemblyPolicy,
+                     SummaryService summaryService,
                      ChatClient chatClient, String model) {
         this.config = config;
         this.sessionManager = sessionManager;
@@ -112,7 +131,9 @@ public class AgentLoop {
 
         // 初始化 ContextBuilder（需要 SkillsService）
         io.jobclaw.skills.SkillsService skillsService = null;
-        this.contextBuilder = new ContextBuilder(config, sessionManager, skillsService);
+        this.contextBuilder = contextBuilder;
+        this.contextAssembler = contextAssembler;
+        this.contextAssemblyPolicy = contextAssemblyPolicy;
 
         // 设置上下文窗口
         this.contextBuilder.setContextWindow(config.getAgent().getContextWindow());
@@ -129,7 +150,8 @@ public class AgentLoop {
                 this,
                 config.getAgent(),
                 memoryStore,
-                memoryEvolver
+                memoryEvolver,
+                summaryService
         );
 
         // 初始化 THINK_STREAM 缓冲区
@@ -212,7 +234,14 @@ public class AgentLoop {
     public String processWithDefinition(String sessionKey, String userContent, AgentDefinition definition,
                                         Consumer<ExecutionEvent> eventCallback) {
         // 设置执行上下文（供 SpawnTool/CollaborateTool 获取 sessionKey）
-        AgentExecutionContext.setCurrentContext(sessionKey, eventCallback);
+        AgentExecutionContext.ExecutionScope previousScope = AgentExecutionContext.getCurrentScope();
+        AgentExecutionContext.ExecutionScope scope = createExecutionScope(
+                sessionKey,
+                definition,
+                eventCallback,
+                previousScope
+        );
+        AgentExecutionContext.setCurrentContext(scope);
 
         try {
             Session session = sessionManager.getOrCreate(sessionKey);
@@ -228,7 +257,7 @@ public class AgentLoop {
 
             // 使用 ContextBuilder 构建系统提示（支持 Agent 定义）
             String systemPrompt = definition != null ?
-                    buildSystemPromptWithDefinition(definition) : buildSystemPrompt(sessionKey, userContent);
+                    buildSystemPromptWithDefinition(sessionKey, userContent, definition) : buildSystemPrompt(sessionKey, userContent);
 
             // 创建工具回调（支持工具过滤）
             ToolCallback[] rawTools = filterToolsByDefinition(definition);
@@ -241,18 +270,17 @@ public class AgentLoop {
                     .temperature(config.getAgent().getTemperature())
                     .build();
 
-            // 使用 ContextBuilder 构建完整消息列表（包含历史对话）
-            List<io.jobclaw.providers.Message> messages = contextBuilder.buildMessages(sessionKey, userContent);
-
-            // 构建用户提示词（包含历史对话）
-            String userPrompt = buildUserPromptWithHistory(messages, userContent);
+            // 使用结构化上下文装配器，保留消息边界，不再拍平成单段文本
+            ContextAssemblyOptions assemblyOptions = contextAssemblyPolicy.buildOptions(sessionKey, userContent);
+            List<io.jobclaw.providers.Message> historyMessages =
+                    contextAssembler.assemble(sessionKey, userContent, assemblyOptions);
+            List<Message> promptMessages = buildPromptMessages(systemPrompt, historyMessages, userContent);
 
             // 使用流式响应获取 LLM 回复
             StringBuilder fullResponse = new StringBuilder();
 
             Flux<String> contentStream = chatClient.prompt()
-                    .system(systemPrompt)
-                    .user(userPrompt)
+                    .messages(promptMessages)
                     .toolCallbacks(tools)
                     .options(options)
                     .stream()
@@ -290,9 +318,8 @@ public class AgentLoop {
             }
 
             // 保存会话历史
-            session.addMessage("user", userContent);
-            session.addMessage("assistant", response);
-            sessionManager.save(session);
+            sessionManager.addMessage(sessionKey, "user", userContent);
+            sessionManager.addMessage(sessionKey, "assistant", response);
 
             // 触发会话摘要检查
             sessionSummarizer.maybeSummarize(sessionKey);
@@ -311,7 +338,11 @@ public class AgentLoop {
             return "Error: " + e.getMessage() + " (check network/API key)";
         } finally {
             // 清理执行上下文
-            AgentExecutionContext.clear();
+            if (previousScope != null) {
+                AgentExecutionContext.setCurrentContext(previousScope);
+            } else {
+                AgentExecutionContext.clear();
+            }
         }
     }
 
@@ -353,59 +384,44 @@ public class AgentLoop {
         return contextBuilder.buildSystemPrompt(sessionKey, currentMessage);
     }
 
-    /**
-     * 构建用户提示词（包含历史对话）
-     *
-     * @param messages 完整消息列表（包含历史对话和当前消息）
-     * @param currentContent 当前用户消息内容
-     * @return 包含历史对话的用户提示词
-     */
-    private String buildUserPromptWithHistory(List<io.jobclaw.providers.Message> messages, String currentContent) {
-        if (messages == null || messages.isEmpty()) {
-            return currentContent;
+    private List<Message> buildPromptMessages(String systemPrompt,
+                                              List<io.jobclaw.providers.Message> historyMessages,
+                                              String currentContent) {
+        List<Message> promptMessages = new ArrayList<>();
+        if (systemPrompt != null && !systemPrompt.isBlank()) {
+            promptMessages.add(new SystemMessage(systemPrompt));
         }
-
-        StringBuilder historyBuffer = new StringBuilder();
-        int historyCount = 0;
-
-        // 遍历消息列表，构建历史对话
-        // 排除 system 消息和最后一条当前用户消息（已在 messages 末尾）
-        for (int i = 0; i < messages.size(); i++) {
-            io.jobclaw.providers.Message msg = messages.get(i);
-            String role = msg.getRole();
-            String content = msg.getContent();
-
-            // 跳过 system 消息（已在 system prompt 中）
-            if ("system".equals(role)) {
-                continue;
-            }
-
-            // 跳过最后一条消息（即当前用户消息，会单独添加）
-            if (i == messages.size() - 1) {
-                break;
-            }
-
-            historyCount++;
-            if ("user".equals(role)) {
-                historyBuffer.append("User: ").append(content).append("\n\n");
-            } else if ("assistant".equals(role)) {
-                historyBuffer.append("Assistant: ").append(content).append("\n\n");
-            } else if ("tool".equals(role)) {
-                historyBuffer.append("[Tool Result: ").append(content).append("]\n\n");
+        if (historyMessages != null) {
+            for (io.jobclaw.providers.Message message : historyMessages) {
+                Message springMessage = toSpringMessage(message);
+                if (springMessage != null) {
+                    promptMessages.add(springMessage);
+                }
             }
         }
+        promptMessages.add(new UserMessage(currentContent));
+        return promptMessages;
+    }
 
-        // 构建最终用户提示词
-        if (historyBuffer.length() == 0) {
-            // 没有历史对话，直接返回当前消息
-            return currentContent;
-        } else {
-            // 有历史对话，添加分隔符和当前消息
-            historyBuffer.append("---\n\n");
-            historyBuffer.append("Current Request: ").append(currentContent);
-            logger.debug("Added {} historical messages to prompt for session", historyCount);
-            return historyBuffer.toString();
+    private Message toSpringMessage(io.jobclaw.providers.Message message) {
+        if (message == null || message.getRole() == null) {
+            return null;
         }
+
+        String role = message.getRole();
+        String content = message.getContent() != null ? message.getContent() : "";
+        return switch (role) {
+            case "system" -> new SystemMessage(content);
+            case "assistant" -> new AssistantMessage(content);
+            case "tool" -> ToolResponseMessage.builder()
+                    .responses(List.of(new ToolResponseMessage.ToolResponse(
+                            message.getToolCallId() != null ? message.getToolCallId() : "tool",
+                            message.getToolCallId() != null ? message.getToolCallId() : "tool",
+                            content
+                    )))
+                    .build();
+            default -> new UserMessage(content);
+        };
     }
 
     /**
@@ -422,7 +438,8 @@ public class AgentLoop {
      * @return 系统提示
      */
     private String buildSystemPromptWithRole(AgentRole role) {
-        return buildSystemPromptWithDefinition(role != null ? AgentDefinition.fromRole(role) : null);
+        return buildSystemPromptWithDefinition("role:default", null,
+                role != null ? AgentDefinition.fromRole(role) : null);
     }
 
     /**
@@ -431,54 +448,53 @@ public class AgentLoop {
      * @param definition Agent 定义（null 表示默认配置）
      * @return 系统提示
      */
-    private String buildSystemPromptWithDefinition(AgentDefinition definition) {
-        StringBuilder sb = new StringBuilder();
-
-        if (definition != null) {
-            sb.append("# JobClaw Agent - ").append(definition.getDisplayName()).append("\n\n");
-            sb.append(definition.getSystemPrompt()).append("\n\n");
-        } else {
-            sb.append("# JobClaw Agent\n\n");
-            sb.append("You are a helpful AI assistant powered by JobClaw framework.\n\n");
+    private String buildSystemPromptWithDefinition(String sessionKey,
+                                                   String currentMessage,
+                                                   AgentDefinition definition) {
+        String basePrompt = buildSystemPrompt(sessionKey, currentMessage);
+        if (definition == null) {
+            return basePrompt;
         }
 
-        sb.append("## Tools Available\n");
-        sb.append("- **read_file**: Read the contents of a file (path: required)\n");
-        sb.append("- **write_file**: Write content to a file (path: required, content: required)\n");
-        sb.append("- **list_dir**: List the contents of a directory (path: required)\n");
-        sb.append("\n\n");
+        StringBuilder sb = new StringBuilder(basePrompt);
+        sb.append("\n\n---\n\n");
+        sb.append("# Agent Overlay\n\n");
+        sb.append("This execution is running as a specialized agent.\n\n");
+        sb.append("## Agent Identity\n");
+        sb.append("- Name: ").append(definition.getDisplayName()).append("\n");
+        sb.append("- Code: ").append(definition.getCode()).append("\n\n");
 
-        if (definition != null && definition.getAllowedTools() != null && !definition.getAllowedTools().isEmpty()) {
+        if (definition.getDescription() != null && !definition.getDescription().isBlank()) {
+            sb.append("## Agent Description\n");
+            sb.append(definition.getDescription()).append("\n\n");
+        }
+
+        if (definition.getSystemPrompt() != null && !definition.getSystemPrompt().isBlank()) {
+            sb.append("## Agent Instructions\n");
+            sb.append(definition.getSystemPrompt()).append("\n\n");
+        }
+
+        if (definition.getAllowedTools() != null && !definition.getAllowedTools().isEmpty()) {
             sb.append("## Tool Restrictions\n");
-            sb.append("You are only allowed to use the following tools: ");
+            sb.append("You are only allowed to use: ");
             sb.append(String.join(", ", definition.getAllowedTools()));
             sb.append("\n\n");
+        } else {
+            sb.append("## Tool Restrictions\n");
+            sb.append("No agent-specific tool override is set. Reuse the main assistant toolset.\n\n");
         }
 
-        if (definition != null && definition.getAllowedSkills() != null && !definition.getAllowedSkills().isEmpty()) {
+        if (definition.getAllowedSkills() != null && !definition.getAllowedSkills().isEmpty()) {
             sb.append("## Skill Restrictions\n");
-            sb.append("You are only allowed to use the following skills: ");
+            sb.append("You are only allowed to use: ");
             sb.append(String.join(", ", definition.getAllowedSkills()));
             sb.append("\n\n");
         }
 
-        sb.append("## Important Rules\n");
-        sb.append("1. **Think before acting**: Only use tools when necessary. If you can answer from your knowledge, do so directly.\n");
-        sb.append("2. **Avoid loops**: After using a tool 2-3 times, synthesize the information and provide a final answer.\n");
-        sb.append("3. **Be concise**: Don't call the same tool repeatedly with the same parameters.\n");
-        sb.append("4. **Know when to stop**: Once you have enough information to answer the question, stop calling tools and respond directly.\n");
-        sb.append("5. **Final answer required**: Always end with a clear, direct response to the user's question.\n");
-        sb.append("\n\n");
-
-        sb.append("## Response Format\n");
-        sb.append("- Use tools strategically to gather information\n");
-        sb.append("- After gathering information, provide a comprehensive answer in the user's language\n");
-        sb.append("- Do not mention tool usage in your final response unless specifically asked\n");
-        sb.append("\n\n");
-
-        sb.append("## Current Session\n");
-        sb.append("Time: ").append(Instant.now()).append("\n");
-
+        sb.append("## Execution Rules\n");
+        sb.append("1. Reuse the main assistant runtime policy, memory policy, and context rules unless the agent overlay narrows them.\n");
+        sb.append("2. If this is a built-in role agent or a persistent saved agent, prefer following the overlay rather than inventing a third temporary execution pattern.\n");
+        sb.append("3. When no specific saved agent is requested, sub-agent execution should default to the main assistant configuration plus the selected role overlay.\n");
         return sb.toString();
     }
 
@@ -493,7 +509,7 @@ public class AgentLoop {
     private ToolCallback[] wrapToolCallbacks(ToolCallback[] rawCallbacks,
                                              String sessionKey,
                                              Consumer<ExecutionEvent> eventCallback) {
-        if (eventCallback == null || rawCallbacks == null) {
+        if (rawCallbacks == null) {
             return rawCallbacks;
         }
 
@@ -533,11 +549,18 @@ public class AgentLoop {
                     "toolId", toolId
                 );
 
+                io.jobclaw.providers.Message assistantToolMessage =
+                        io.jobclaw.providers.Message.assistant("");
+                assistantToolMessage.setToolCalls(List.of(
+                        new io.jobclaw.providers.ToolCall(toolId, toolName, request)
+                ));
+                sessionManager.addFullMessage(sessionKey, assistantToolMessage);
+
                 // 标记工具执行中，THINK_STREAM 需要缓冲
                 setToolExecuting(sessionKey, true);
 
                 // 发布 TOOL_START 事件（包含 metadata）
-                eventCallback.accept(new ExecutionEvent(
+                if (eventCallback != null) eventCallback.accept(new ExecutionEvent(
                     sessionKey,
                     ExecutionEvent.EventType.TOOL_START,
                     "正在调用工具：" + toolName ,
@@ -547,6 +570,8 @@ public class AgentLoop {
                 try {
                     // 调用原始工具
                     String response = callback.call(request);
+                    sessionManager.addFullMessage(sessionKey,
+                            io.jobclaw.providers.Message.tool(toolId, response));
 
                     // 构建 metadata（使用 Map.of 节省内存）
                     Map<String, Object> endMetadata = Map.of(
@@ -555,7 +580,7 @@ public class AgentLoop {
                     );
                     
                     // 发布 TOOL_END 事件（包含 metadata）
-                    eventCallback.accept(new ExecutionEvent(
+                    if (eventCallback != null) eventCallback.accept(new ExecutionEvent(
                         sessionKey,
                         ExecutionEvent.EventType.TOOL_END,
                         "工具调用完成：" + toolName,
@@ -566,7 +591,7 @@ public class AgentLoop {
                     String resultData = truncateOutput(response, toolName);
                     
                     // 发布 TOOL_OUTPUT 事件（显示工具返回结果，包含 metadata）
-                    eventCallback.accept(new ExecutionEvent(
+                    if (eventCallback != null) eventCallback.accept(new ExecutionEvent(
                         sessionKey,
                         ExecutionEvent.EventType.TOOL_OUTPUT,
                         resultData,
@@ -577,19 +602,25 @@ public class AgentLoop {
                     setToolExecuting(sessionKey, false);
                     
                     // 刷新缓冲的 THINK_STREAM
-                    flushThinkStreamBuffer(sessionKey, eventCallback);
+                    if (eventCallback != null) {
+                        flushThinkStreamBuffer(sessionKey, eventCallback);
+                    } else {
+                        clearThinkStreamBuffer(sessionKey);
+                    }
                     
                     return response;
                     
                 } catch (Exception e) {
                     // 构建 error metadata（使用 Map.of 节省内存）
+                    sessionManager.addFullMessage(sessionKey,
+                            io.jobclaw.providers.Message.tool(toolId, "ERROR: " + e.getMessage()));
                     Map<String, Object> errorMetadata = Map.of(
                         "toolName", toolName,
                         "toolId", toolId
                     );
 
                     // 发布 TOOL_ERROR 事件
-                    eventCallback.accept(new ExecutionEvent(
+                    if (eventCallback != null) eventCallback.accept(new ExecutionEvent(
                         sessionKey,
                         ExecutionEvent.EventType.TOOL_ERROR,
                         "工具执行失败：" + toolName + " - " + e.getMessage(),
@@ -721,6 +752,39 @@ public class AgentLoop {
      * @param options 选项（max_tokens, temperature 等）
      * @return LLM 响应
      */
+    private AgentExecutionContext.ExecutionScope createExecutionScope(String sessionKey,
+                                                                      AgentDefinition definition,
+                                                                      Consumer<ExecutionEvent> eventCallback,
+                                                                      AgentExecutionContext.ExecutionScope previousScope) {
+        String agentId = definition != null ? definition.getCode() : "assistant";
+        String agentName = definition != null ? definition.getDisplayName() : "Assistant";
+        Consumer<ExecutionEvent> effectiveCallback = eventCallback != null
+                ? eventCallback
+                : previousScope != null ? previousScope.eventCallback() : null;
+
+        if (previousScope != null && sessionKey.equals(previousScope.sessionKey()) && previousScope.runId() != null) {
+            return new AgentExecutionContext.ExecutionScope(
+                    sessionKey,
+                    effectiveCallback,
+                    previousScope.runId(),
+                    previousScope.parentRunId(),
+                    agentId,
+                    agentName
+            );
+        }
+
+        String runId = previousScope != null ? AgentRunIds.newChildRunId() : AgentRunIds.newTopLevelRunId();
+        String parentRunId = previousScope != null ? previousScope.runId() : null;
+        return new AgentExecutionContext.ExecutionScope(
+                sessionKey,
+                effectiveCallback,
+                runId,
+                parentRunId,
+                agentId,
+                agentName
+        );
+    }
+
     public String callLLM(String prompt, Map<String, Object> options) {
         try {
             OpenAiChatOptions.Builder optionsBuilder = OpenAiChatOptions.builder();

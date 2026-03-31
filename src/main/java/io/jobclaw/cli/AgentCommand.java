@@ -1,12 +1,7 @@
 package io.jobclaw.cli;
 
 import io.jobclaw.agent.AgentLoop;
-import io.jobclaw.agent.ContextBuilder;
-import io.jobclaw.bus.MessageBus;
 import io.jobclaw.config.Config;
-import io.jobclaw.providers.LLMProvider;
-import io.jobclaw.session.SessionManager;
-import io.jobclaw.tools.ToolRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;

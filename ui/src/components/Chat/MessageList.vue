@@ -13,9 +13,52 @@
         :key="message.id"
         :class="[
           'flex gap-4',
-          message.role === 'user' ? 'flex-row-reverse' : ''
+          message.role === 'user' ? 'flex-row-reverse' : '',
+          message.kind === 'progress' ? 'items-start' : ''
         ]"
       >
+        <template v-if="message.kind === 'progress'">
+          <div class="w-full rounded-lg border border-secondary/30 bg-secondary/10 p-4">
+            <div class="flex items-center justify-between gap-3 mb-2">
+              <div class="flex items-center gap-2 text-secondary">
+                <span class="material-symbols-outlined text-sm">hub</span>
+                <span class="text-sm font-semibold">协作进展</span>
+              </div>
+              <div class="text-[11px] text-on-surface-variant font-mono">
+                {{ message.boardId || message.runId || 'session' }}
+              </div>
+            </div>
+
+            <div class="text-sm text-on-surface whitespace-pre-wrap font-mono">
+              {{ message.content }}
+            </div>
+
+            <div v-if="message.progressMeta" class="mt-3 grid grid-cols-4 gap-2 text-[11px]">
+              <div class="rounded border border-outline-variant/30 bg-surface-container p-2">
+                <div class="text-on-surface-variant">Entries</div>
+                <div class="text-on-surface font-semibold">{{ message.progressMeta.totalEntries ?? 0 }}</div>
+              </div>
+              <div class="rounded border border-outline-variant/30 bg-surface-container p-2">
+                <div class="text-on-surface-variant">Artifacts</div>
+                <div class="text-on-surface font-semibold">{{ message.progressMeta.artifactCount ?? 0 }}</div>
+              </div>
+              <div class="rounded border border-outline-variant/30 bg-surface-container p-2">
+                <div class="text-on-surface-variant">Risks</div>
+                <div class="text-on-surface font-semibold">{{ message.progressMeta.riskCount ?? 0 }}</div>
+              </div>
+              <div class="rounded border border-outline-variant/30 bg-surface-container p-2">
+                <div class="text-on-surface-variant">Summaries</div>
+                <div class="text-on-surface font-semibold">{{ message.progressMeta.summaryCount ?? 0 }}</div>
+              </div>
+            </div>
+
+            <div class="text-xs text-on-surface-variant mt-2">
+              {{ formatTime(message.timestamp) }}
+            </div>
+          </div>
+        </template>
+
+        <template v-else>
         <div
           :class="[
             'w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0',
@@ -50,6 +93,7 @@
             {{ formatTime(message.timestamp) }}
           </div>
         </div>
+        </template>
       </div>
 
       <div v-if="isStreaming" class="flex gap-4">

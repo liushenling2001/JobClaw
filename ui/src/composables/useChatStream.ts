@@ -1,4 +1,4 @@
-import { ref, onUnmounted, computed } from 'vue';
+﻿import { ref, onUnmounted, computed } from 'vue';
 import { useChatStore } from '@/stores/chat';
 import { useToast } from './useToast';
 
@@ -9,10 +9,10 @@ export function useChatStream() {
   const isConnecting = ref(false);
 
   const startStream = async (message: string) => {
-    // 清理上一轮流式输出残留的运行中工具消息
+    // 娓呯悊涓婁竴杞祦寮忚緭鍑烘畫鐣欑殑杩愯涓伐鍏锋秷鎭?
     chatStore.cleanupRunningToolMessages();
     
-    // 结束之前的流式会话（如果还在进行中）
+    // 缁撴潫涔嬪墠鐨勬祦寮忎細璇濓紙濡傛灉杩樺湪杩涜涓級
     if (chatStore.isStreaming) {
       chatStore.endStreamingSession();
     }
@@ -36,7 +36,7 @@ export function useChatStream() {
       }
 
       isConnecting.value = false;
-      // 开始新的流式会话
+      // 寮€濮嬫柊鐨勬祦寮忎細璇?
       chatStore.startStreamingSession();
 
       if (!response.body) {
@@ -46,12 +46,12 @@ export function useChatStream() {
       const decoder = new TextDecoder('utf-8');
       let buffer = '';
       let currentEvent: string | null = null;
-      let dataBuffer: string[] = [];  // 累积多行 data，跨 chunk 保持状态
+      let dataBuffer: string[] = [];  // 绱Н澶氳 data锛岃法 chunk 淇濇寔鐘舵€?
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) {
-          // 处理最后可能剩余的数据
+          // 澶勭悊鏈€鍚庡彲鑳藉墿浣欑殑鏁版嵁
           if (dataBuffer.length > 0) {
             const dataStr = dataBuffer.join('\n');
             try {
@@ -66,7 +66,7 @@ export function useChatStream() {
           break;
         }
 
-        // stream: true 正确处理跨 chunk 的多字节字符（如 emoji）
+        // stream: true 姝ｇ‘澶勭悊璺?chunk 鐨勫瀛楄妭瀛楃锛堝 emoji锛?
         const chunk = decoder.decode(value, { stream: true });
         buffer += chunk;
 
@@ -75,7 +75,7 @@ export function useChatStream() {
 
         for (const line of lines) {
           if (!line.trim() || line.trim().startsWith(':')) {
-            // 空行或注释行，表示事件结束，处理累积的 data
+            // 绌鸿鎴栨敞閲婅锛岃〃绀轰簨浠剁粨鏉燂紝澶勭悊绱Н鐨?data
             if (dataBuffer.length > 0) {
               const dataStr = dataBuffer.join('\n');
               dataBuffer = [];
@@ -96,7 +96,7 @@ export function useChatStream() {
           }
 
           if (line.startsWith('data:')) {
-            // 累积 data 行（SSE 规范：连续的 data 行用换行符连接）
+            // 绱Н data 琛岋紙SSE 瑙勮寖锛氳繛缁殑 data 琛岀敤鎹㈣绗﹁繛鎺ワ級
             dataBuffer.push(line.slice(5));
             continue;
           }
@@ -109,7 +109,7 @@ export function useChatStream() {
       if ((error as Error).name === 'AbortError') {
         console.log('Stream aborted');
       } else {
-        toast.error('流式输出错误：' + (error as Error).message);
+        toast.error('流式输出错误: ' + (error as Error).message);
       }
     }
   };
@@ -128,7 +128,7 @@ export function useChatStream() {
 
       case 'THINK_START':
       case 'think_start':
-        // 开始流式会话（如果还没有开始）
+        // 寮€濮嬫祦寮忎細璇濓紙濡傛灉杩樻病鏈夊紑濮嬶級
         if (!chatStore.currentAssistantMessageId) {
           chatStore.startStreamingSession();
         }
@@ -143,7 +143,7 @@ export function useChatStream() {
 
       case 'THINK_END':
       case 'think_end':
-        // 思考结束，将思考工具标记为完成
+        // 鎬濊€冪粨鏉燂紝灏嗘€濊€冨伐鍏锋爣璁颁负瀹屾垚
         {
           const messages = chatStore.messages;
           for (let i = messages.length - 1; i >= 0; i--) {
@@ -159,8 +159,8 @@ export function useChatStream() {
 
       case 'TOOL_START':
       case 'tool_start': {
-        const toolName = data.metadata?.toolName || '工具';
-        // 工具调用插入到当前流式消息之前
+        const toolName = data.metadata?.toolName || '宸ュ叿';
+        // 宸ュ叿璋冪敤鎻掑叆鍒板綋鍓嶆祦寮忔秷鎭箣鍓?
         chatStore.insertBeforeCurrentAssistantMessage({
           toolId: data.metadata?.toolId || 'tool_' + Date.now(),
           toolName: toolName,
@@ -168,19 +168,19 @@ export function useChatStream() {
           duration: 0,
           result: null,
           parameters: data.content || '',
-          _expanded: false  // 默认收起，点击展开
+          _expanded: false  // 榛樿鏀惰捣锛岀偣鍑诲睍寮€
         });
         break;
       }
 
       case 'TOOL_END':
       case 'tool_end':
-        // 工具调用结束，状态在 TOOL_OUTPUT 时更新
+        // 宸ュ叿璋冪敤缁撴潫锛岀姸鎬佸湪 TOOL_OUTPUT 鏃舵洿鏂?
         break;
 
       case 'TOOL_OUTPUT':
       case 'tool_output': {
-        // 更新最后一个运行中工具的结果
+        // 鏇存柊鏈€鍚庝竴涓繍琛屼腑宸ュ叿鐨勭粨鏋?
         const messages = chatStore.messages;
         for (let i = messages.length - 1; i >= 0; i--) {
           const msg = messages[i];
@@ -196,13 +196,13 @@ export function useChatStream() {
 
       case 'TOOL_ERROR':
       case 'tool_error': {
-        // 更新工具调用为错误状态
+        // 鏇存柊宸ュ叿璋冪敤涓洪敊璇姸鎬?
         const messages = chatStore.messages;
         for (let i = messages.length - 1; i >= 0; i--) {
           const msg = messages[i];
           if (msg.toolCall && msg.toolCall.status === 'running') {
             msg.toolCall.status = 'error';
-            msg.toolCall.result = '错误：' + data.content;
+            msg.toolCall.result = '错误: ' + data.content;
             msg.toolCall.duration = data.metadata?.duration || 0;
             break;
           }
@@ -212,32 +212,42 @@ export function useChatStream() {
 
       case 'FINAL_RESPONSE':
       case 'final_response':
-        // 结束流式会话
+        // 缁撴潫娴佸紡浼氳瘽
         chatStore.endStreamingSession();
         break;
 
       case 'ERROR':
       case 'error':
-        toast.error(data.message || '发生错误');
+        toast.error(data.message || '鍙戠敓閿欒');
         chatStore.endStreamingSession();
-        break;
-
-      case 'CUSTOM':
+        break;      case 'CUSTOM':
       case 'custom':
-        // 自定义事件（如异步任务完成通知）
-        // 显示为系统消息或 toast 通知
-        if (data.metadata?.asyncTaskStatus === 'completed') {
-          toast.success(data.content || '异步任务完成');
+        // Collaboration progress events are shown as grouped progress cards.
+        if (data.metadata?.boardId || data.runId) {
+          chatStore.upsertProgressMessage({
+            content: data.content || 'Collaboration progress updated',
+            runId: data.runId,
+            boardId: data.metadata?.boardId,
+            entryType: data.metadata?.entryType,
+            latestEntryType: data.metadata?.latestEntryType,
+            latestEntryTitle: data.metadata?.latestEntryTitle,
+            totalEntries: data.metadata?.boardTotalEntries,
+            artifactCount: data.metadata?.boardArtifactCount,
+            riskCount: data.metadata?.boardRiskCount,
+            summaryCount: data.metadata?.boardSummaryCount
+          });
+        } else if (data.metadata?.asyncTaskStatus === 'completed') {
+          toast.success(data.content || '寮傛浠诲姟瀹屾垚');
         } else if (data.metadata?.asyncTaskStatus === 'failed') {
-          toast.error(data.content || '异步任务失败');
+          toast.error(data.content || '寮傛浠诲姟澶辫触');
         } else {
-          // 其他自定义消息，追加到当前消息
+          // Other custom events fallback to message stream.
           chatStore.appendToCurrentAssistantMessage('\n\n' + data.content);
         }
         break;
 
       default:
-        // 忽略未知事件类型
+        // 蹇界暐鏈煡浜嬩欢绫诲瀷
         break;
     }
   };
@@ -260,3 +270,4 @@ export function useChatStream() {
     isConnecting
   };
 }
+

@@ -5,10 +5,6 @@ import io.jobclaw.config.MCPServersConfig;
 import io.jobclaw.tools.ToolRegistry;
 import org.springframework.stereotype.Component;
 
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
-
 /**
  * MCP 管理命令
  */

@@ -13,6 +13,18 @@ export interface Message {
   content: string;
   timestamp: string;
   toolCall?: ToolCall;
+  kind?: 'chat' | 'progress';
+  runId?: string;
+  boardId?: string;
+  progressMeta?: {
+    entryType?: string;
+    latestEntryType?: string;
+    latestEntryTitle?: string;
+    totalEntries?: number;
+    artifactCount?: number;
+    riskCount?: number;
+    summaryCount?: number;
+  };
 }
 
 // 工具调用类型
