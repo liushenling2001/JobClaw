@@ -49,9 +49,7 @@ class ContextBuilderMcpAwarenessTest {
         assertNotNull(snapshot);
         assertFalse(snapshot.isConnected());
         assertTrue(prompt.contains("# MCP"));
-        assertTrue(prompt.contains("`docs`"));
-        assertTrue(prompt.contains("disconnected"));
-        assertTrue(prompt.contains("MCP endpoint is empty"));
-        assertTrue(prompt.contains("mcp(action='list_servers')"));
+        assertTrue(prompt.contains("Use `mcp` tool for external MCP servers."));
+        assertTrue(prompt.contains("Configured servers: docs."));
     }
 }
