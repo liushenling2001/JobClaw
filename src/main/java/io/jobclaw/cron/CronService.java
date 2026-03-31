@@ -5,14 +5,15 @@ import com.cronutils.model.CronType;
 import com.cronutils.model.definition.CronDefinitionBuilder;
 import com.cronutils.model.time.ExecutionTime;
 import com.cronutils.parser.CronParser;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.stereotype.Component;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.time.ZoneId;
@@ -30,7 +31,6 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * - EVERY：周期性任务（固定间隔）
  * - CRON：Cron 表达式任务（复杂规则）
  */
-@Component
 public class CronService {
     
     private static final Logger logger = LoggerFactory.getLogger(CronService.class);
@@ -44,8 +44,12 @@ public class CronService {
     private static final String STATUS_OK = "ok";
     private static final String STATUS_ERROR = "error";
     private static final String THREAD_NAME = "cron-service";
+    private static final String LEGACY_CRON_FILE = "cron.json";
+    private static final String CRON_DIR = "cron";
+    private static final String CRON_STORE_FILE = "jobs.json";
     
-    private final String storePath;
+    private final Path storePath;
+    private final Path legacyStorePath;
     private CronStore store;
     private JobHandler onJob;
     private final ReentrantReadWriteLock lock;
@@ -62,8 +66,9 @@ public class CronService {
         String handle(CronJob job) throws Exception;
     }
     
-    public CronService() {
-        this.storePath = System.getProperty("user.home") + "/.jobclaw/cron.json";
+    public CronService(String workspacePath) {
+        this.storePath = resolveStorePath(workspacePath);
+        this.legacyStorePath = resolveLegacyStorePath();
         this.lock = new ReentrantReadWriteLock();
         this.running = false;
         this.cronParser = new CronParser(
@@ -320,17 +325,30 @@ public class CronService {
         store = new CronStore();
         
         try {
-            Path path = Paths.get(storePath);
-            if (Files.exists(path)) {
-                String json = Files.readString(path);
-                store = objectMapper.readValue(json, CronStore.class);
-                if (store.getJobs() == null) {
-                    store.setJobs(new ArrayList<>());
+            migrateLegacyStoreIfNeeded();
+            if (Files.exists(storePath)) {
+                String json = Files.readString(storePath);
+                JsonNode root = objectMapper.readTree(json);
+                int version = root.path("version").asInt(-1);
+
+                if (version != CronStore.CURRENT_VERSION) {
+                    logger.warn("Cron store version mismatch at {}. expected={}, actual={}. Resetting store.",
+                            storePath, CronStore.CURRENT_VERSION, version);
+                    resetStoreUnsafe();
+                    return;
                 }
+
+                CronStore loaded = objectMapper.treeToValue(root, CronStore.class);
+                if (loaded == null || loaded.getJobs() == null) {
+                    resetStoreUnsafe();
+                    return;
+                }
+                loaded.setVersion(CronStore.CURRENT_VERSION);
+                store = loaded;
             }
         } catch (Exception e) {
-            logger.warn("Failed to load cron store, using empty", e);
-            store = new CronStore();
+            logger.warn("Failed to load cron store at {}. Resetting to empty latest format.", storePath, e);
+            resetStoreUnsafe();
         }
     }
     
@@ -339,12 +357,50 @@ public class CronService {
      */
     private void saveStoreUnsafe() {
         try {
-            Path path = Paths.get(storePath);
-            Files.createDirectories(path.getParent());
+            Files.createDirectories(storePath.getParent());
+            store.setVersion(CronStore.CURRENT_VERSION);
             String json = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(store);
-            Files.writeString(path, json);
+            Files.writeString(storePath, json);
         } catch (Exception e) {
             logger.error("Failed to save cron store", e);
+        }
+    }
+
+    private void resetStoreUnsafe() {
+        store = new CronStore();
+        store.setVersion(CronStore.CURRENT_VERSION);
+        store.setJobs(new ArrayList<>());
+        saveStoreUnsafe();
+    }
+
+    private Path resolveStorePath(String workspacePath) {
+        if (workspacePath == null || workspacePath.isBlank()) {
+            return Paths.get(System.getProperty("user.home"), ".jobclaw", "workspace", CRON_DIR, CRON_STORE_FILE);
+        }
+        return Paths.get(workspacePath, CRON_DIR, CRON_STORE_FILE);
+    }
+
+    private Path resolveLegacyStorePath() {
+        return Paths.get(System.getProperty("user.home"), ".jobclaw", LEGACY_CRON_FILE);
+    }
+
+    private void migrateLegacyStoreIfNeeded() {
+        try {
+            if (Files.exists(storePath) || !Files.exists(legacyStorePath)) {
+                return;
+            }
+            Files.createDirectories(storePath.getParent());
+            Files.move(legacyStorePath, storePath, StandardCopyOption.REPLACE_EXISTING);
+            logger.info("Migrated legacy cron store: {} -> {}", legacyStorePath, storePath);
+        } catch (Exception moveError) {
+            logger.warn("Failed to move legacy cron store, trying copy: {}", moveError.getMessage());
+            try {
+                Files.createDirectories(storePath.getParent());
+                Files.copy(legacyStorePath, storePath, StandardCopyOption.REPLACE_EXISTING);
+                logger.info("Copied legacy cron store: {} -> {}", legacyStorePath, storePath);
+            } catch (Exception copyError) {
+                logger.error("Failed to migrate legacy cron store", copyError);
+            }
         }
     }
     

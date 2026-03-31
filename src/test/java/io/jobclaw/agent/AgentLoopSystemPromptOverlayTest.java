@@ -2,6 +2,7 @@ package io.jobclaw.agent;
 
 import io.jobclaw.config.Config;
 import io.jobclaw.conversation.file.FileConversationStore;
+import io.jobclaw.mcp.MCPService;
 import io.jobclaw.session.SessionManager;
 import io.jobclaw.summary.SummaryService;
 import io.jobclaw.summary.file.FileSummaryService;
@@ -29,7 +30,7 @@ class AgentLoopSystemPromptOverlayTest {
                 new FileConversationStore(conversationPath),
                 summaryService
         );
-        ContextBuilder contextBuilder = new ContextBuilder(config, sessionManager, null, summaryService);
+        ContextBuilder contextBuilder = new ContextBuilder(config, sessionManager, null, summaryService, new MCPService());
         AgentLoop agentLoop = new AgentLoop(
                 config,
                 sessionManager,

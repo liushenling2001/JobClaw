@@ -2,6 +2,7 @@ package io.jobclaw.agent;
 
 import io.jobclaw.config.Config;
 import io.jobclaw.conversation.file.FileConversationStore;
+import io.jobclaw.mcp.MCPService;
 import io.jobclaw.session.SessionManager;
 import io.jobclaw.summary.SummaryService;
 import io.jobclaw.summary.file.FileSummaryService;
@@ -27,7 +28,7 @@ class ContextBuilderAgentWorkflowPromptTest {
                 new FileConversationStore(workspace.resolve("sessions").resolve("conversation").toString()),
                 summaryService
         );
-        ContextBuilder builder = new ContextBuilder(config, sessionManager, null, summaryService);
+        ContextBuilder builder = new ContextBuilder(config, sessionManager, null, summaryService, new MCPService());
 
         String prompt = builder.buildSystemPrompt("web:test", "帮我创建一个专门做JD分析的智能体");
 

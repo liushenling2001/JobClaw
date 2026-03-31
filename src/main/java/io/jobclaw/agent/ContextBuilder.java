@@ -3,6 +3,8 @@ package io.jobclaw.agent;
 import io.jobclaw.agent.evolution.MemoryStore;
 import io.jobclaw.config.Config;
 import io.jobclaw.config.ConfigLoader;
+import io.jobclaw.config.MCPServersConfig;
+import io.jobclaw.mcp.MCPService;
 import io.jobclaw.providers.Message;
 import io.jobclaw.session.SessionManager;
 import io.jobclaw.skills.SkillsService;
@@ -51,6 +53,7 @@ public class ContextBuilder {
     private final MemoryStore memoryStore;
     private final SkillsService skillsService;
     private final SummaryService summaryService;
+    private final MCPService mcpService;
     private final Map<String, String> fileContentCache;
     private final String workspace;
 
@@ -59,11 +62,13 @@ public class ContextBuilder {
     public ContextBuilder(Config config,
                           SessionManager sessionManager,
                           SkillsService skillsService,
-                          SummaryService summaryService) {
+                          SummaryService summaryService,
+                          MCPService mcpService) {
         this.config = config;
         this.sessionManager = sessionManager;
         this.skillsService = skillsService;
         this.summaryService = summaryService;
+        this.mcpService = mcpService;
         this.fileContentCache = new ConcurrentHashMap<>();
         this.workspace = ConfigLoader.expandHome(config.getAgent().getWorkspace());
         this.contextWindow = config.getAgent().getContextWindow();
@@ -105,6 +110,7 @@ public class ContextBuilder {
         parts.add(getIdentity());
         addSectionIfNotBlank(parts, loadBootstrapFiles());
         addSectionIfNotBlank(parts, buildSkillsSection());
+        addSectionIfNotBlank(parts, buildMcpSection());
 
         int memoryBudget = calculateMemoryTokenBudget();
         String memoryContext = memoryStore.getMemoryContext(currentMessage, memoryBudget);
@@ -181,10 +187,42 @@ public class ContextBuilder {
         sb.append("\nSkills are stored in `").append(skillsPath).append("`.\n");
     }
 
+    private String buildMcpSection() {
+        if (mcpService == null) {
+            return "";
+        }
+
+        MCPServersConfig mcpConfig = config.getMcpServers();
+        if (mcpConfig == null || !mcpConfig.isEnabled()) {
+            return "";
+        }
+
+        mcpService.ensureConfiguredServersConnected(mcpConfig);
+
+        List<String> enabledServers = mcpConfig.getServers().stream()
+                .filter(server -> server != null && server.isEnabled())
+                .map(MCPServersConfig.MCPServerConfig::getName)
+                .map(this::safeTrim)
+                .filter(name -> !name.isEmpty())
+                .toList();
+
+        if (enabledServers.isEmpty()) {
+            return "";
+        }
+
+        return "# MCP\n\n"
+                + "Use `mcp` tool for external MCP servers.\n"
+                + "Configured servers: " + String.join(", ", enabledServers) + ".";
+    }
+
     private void addSectionIfNotBlank(List<String> parts, String section) {
         if (section != null && !section.trim().isEmpty()) {
             parts.add(section);
         }
+    }
+
+    private String safeTrim(String value) {
+        return value == null ? "" : value.trim();
     }
 
     private String getIdentity() {

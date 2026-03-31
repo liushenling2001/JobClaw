@@ -10,6 +10,7 @@ import io.jobclaw.context.DefaultContextAssemblyPolicy;
 import io.jobclaw.context.DefaultContextAssembler;
 import io.jobclaw.cron.CronService;
 import io.jobclaw.heartbeat.HeartbeatService;
+import io.jobclaw.mcp.MCPService;
 import io.jobclaw.providers.HTTPProvider;
 import io.jobclaw.providers.LLMProvider;
 import io.jobclaw.retrieval.RetrievalService;
@@ -19,7 +20,6 @@ import io.jobclaw.session.SessionManager;
 import io.jobclaw.skills.SkillsService;
 import io.jobclaw.summary.SummaryService;
 import io.jobclaw.summary.file.FileSummaryService;
-import io.jobclaw.tools.*;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -49,12 +49,6 @@ public class JobClawConfig {
 
     @Bean
     @ConditionalOnMissingBean
-    public PathResolver pathResolver(Config config) {
-        return new PathResolver(config);
-    }
-
-    @Bean
-    @ConditionalOnMissingBean
     public SecurityGuard securityGuard(Config config) {
         return new SecurityGuard(
                 config.getAgent().getWorkspace(),
@@ -65,21 +59,12 @@ public class JobClawConfig {
 
     @Bean
     @ConditionalOnMissingBean
-    public ToolRegistry toolRegistry(SecurityGuard securityGuard, PathResolver pathResolver) {
-        ToolRegistry registry = new ToolRegistry();
-        registry.register(new ReadFileTool(pathResolver));
-        registry.register(new WriteFileTool(pathResolver));
-        registry.register(new ListDirTool(pathResolver));
-        return registry;
-    }
-
-    @Bean
-    @ConditionalOnMissingBean
     public ContextBuilder contextBuilder(Config config,
                                          SessionManager sessionManager,
                                          SkillsService skillsService,
-                                         SummaryService summaryService) {
-        return new ContextBuilder(config, sessionManager, skillsService, summaryService);
+                                         SummaryService summaryService,
+                                         MCPService mcpService) {
+        return new ContextBuilder(config, sessionManager, skillsService, summaryService, mcpService);
     }
 
     @Bean
@@ -140,8 +125,8 @@ public class JobClawConfig {
 
     @Bean
     @ConditionalOnMissingBean
-    public CronService cronService() {
-        return new CronService();
+    public CronService cronService(Config config) {
+        return new CronService(config.getWorkspacePath());
     }
 
     @Bean

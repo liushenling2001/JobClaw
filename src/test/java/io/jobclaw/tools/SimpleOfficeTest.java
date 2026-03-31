@@ -1,5 +1,6 @@
 package io.jobclaw.tools;
 
+import io.jobclaw.config.Config;
 import java.io.File;
 import java.io.FileOutputStream;
 
@@ -59,7 +60,9 @@ public class SimpleOfficeTest {
         System.out.println("   ✅ 创建 " + filename);
         
         // 使用 FileTools 读取
-        FileTools tools = new FileTools();
+        Config config = Config.defaultConfig();
+        config.getAgent().setWorkspace(new File(".").getAbsolutePath());
+        FileTools tools = new FileTools(config);
         String content = tools.readExcel(filename, null);
         
         System.out.println("   ✅ 读取内容:");
@@ -103,7 +106,9 @@ public class SimpleOfficeTest {
         System.out.println("   ✅ 创建 " + filename);
         
         // 使用 FileTools 读取
-        FileTools tools = new FileTools();
+        Config config = Config.defaultConfig();
+        config.getAgent().setWorkspace(new File(".").getAbsolutePath());
+        FileTools tools = new FileTools(config);
         String content = tools.readExcel(filename, null);
         
         System.out.println("   ✅ 读取内容:");
