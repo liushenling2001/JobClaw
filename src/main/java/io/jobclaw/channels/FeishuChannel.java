@@ -98,6 +98,13 @@ public class FeishuChannel extends BaseChannel {
         running = true;
     }
 
+    private void ensureApiClient() {
+        if (this.apiClient == null) {
+            this.apiClient = new Client.Builder(config.getAppId(), config.getAppSecret())
+                    .build();
+        }
+    }
+
     /**
      * 启动 WebSocket 模式（使用官方 SDK）
      */
@@ -106,8 +113,7 @@ public class FeishuChannel extends BaseChannel {
 
         try {
             // 1. 创建 API Client 用于发送消息
-            this.apiClient = new Client.Builder(config.getAppId(), config.getAppSecret())
-                    .build();
+            ensureApiClient();
 
             // 2. 创建事件处理器 - 长连接模式下这两个参数为空字符串
             // 参考官方文档：https://open.feishu.cn/document/server-side-sdk/java-sdk-guide/handle-events
@@ -154,6 +160,7 @@ public class FeishuChannel extends BaseChannel {
      */
     private void startWebhookMode() {
         logger.info("飞书通道以 Webhook 模式启动");
+        ensureApiClient();
         logger.info("飞书通道已启动（HTTP API 模式）");
         logger.info("请配合 Webhook 服务使用以接收消息");
     }
@@ -268,6 +275,16 @@ public class FeishuChannel extends BaseChannel {
 
             logger.info("收到飞书消息：sender={}, chat={}, preview={}",
                     senderId, chatId, truncate(content, 80));
+
+            Map<String, String> metadata = new HashMap<>();
+            metadata.put("message_id", message.path("message_id").asText(""));
+            metadata.put("message_type", message.path("message_type").asText(""));
+            metadata.put("chat_type", message.path("chat_type").asText(""));
+            if (sender.has("tenant_key")) {
+                metadata.put("tenant_key", sender.get("tenant_key").asText(""));
+            }
+
+            handleMessage(senderId, chatId, content, null, metadata);
 
         } catch (Exception e) {
             logger.error("处理飞书消息 JSON 时出错：{}", e.getMessage());

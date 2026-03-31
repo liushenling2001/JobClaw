@@ -7,15 +7,17 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
-/**
- * Channel Manager - Manages lifecycle of all messaging channels
- */
 @Component
 public class ChannelManager {
 
@@ -24,9 +26,10 @@ public class ChannelManager {
     private final Map<String, Channel> channels;
     private final MessageBus messageBus;
     private final ChannelsConfig channelsConfig;
-
     private final ScheduledExecutorService dispatcherExecutor;
+
     private volatile boolean running = false;
+    private volatile ChannelStartReport lastStartReport = ChannelStartReport.empty();
 
     public ChannelManager(MessageBus messageBus,
                           ChannelsConfig channelsConfig,
@@ -35,7 +38,6 @@ public class ChannelManager {
         this.channelsConfig = channelsConfig;
         this.channels = new ConcurrentHashMap<>();
 
-        // Register all injected channels
         for (Channel channel : channelList) {
             register(channel);
         }
@@ -58,39 +60,52 @@ public class ChannelManager {
         }
 
         running = true;
-
-        // Initialize channels based on config
         initializeChannels();
 
-        // Start all registered channels
+        List<String> startedChannels = new ArrayList<>();
+        List<String> skippedChannels = new ArrayList<>();
+        Map<String, String> failedChannels = new LinkedHashMap<>();
+
         for (Channel channel : channels.values()) {
             try {
-                // Skip channels that are not properly configured
                 if (!shouldStart(channel)) {
-                    logger.debug("Channel {} not configured, skipping registration", channel.getName());
+                    logger.debug("Channel {} not configured, skipping startup", channel.getName());
+                    skippedChannels.add(channel.getName());
                     continue;
                 }
+
                 channel.start();
+                startedChannels.add(channel.getName());
                 logger.info("Started channel: {}", channel.getName());
             } catch (ChannelException e) {
-                // ChannelException 表示配置问题，静默跳过不打印错误
+                failedChannels.put(channel.getName(), e.getMessage());
                 logger.debug("Channel {} not started: {}", channel.getName(), e.getMessage());
             } catch (Exception e) {
+                failedChannels.put(channel.getName(), e.getMessage());
                 logger.error("Failed to start channel: {}", channel.getName(), e);
             }
         }
 
-        // Start outbound dispatcher
+        lastStartReport = new ChannelStartReport(startedChannels, skippedChannels, failedChannels);
         dispatcherExecutor.scheduleAtFixedRate(this::dispatchOutbound, 0, 100, TimeUnit.MILLISECONDS);
-
         logger.info("All channels started");
     }
 
-    /**
-     * Check if a channel should be started based on its configuration
-     */
     private boolean shouldStart(Channel channel) {
-        return channel.isConfigured();
+        return isEnabled(channel.getName()) && channel.isConfigured();
+    }
+
+    private boolean isEnabled(String channelName) {
+        return switch (channelName) {
+            case "telegram" -> channelsConfig.getTelegram().isEnabled();
+            case "discord" -> channelsConfig.getDiscord().isEnabled();
+            case "feishu" -> channelsConfig.getFeishu().isEnabled();
+            case "dingtalk" -> channelsConfig.getDingtalk().isEnabled();
+            case "qq" -> channelsConfig.getQq().isEnabled();
+            case "whatsapp" -> channelsConfig.getWhatsapp().isEnabled();
+            case "maixcam" -> channelsConfig.getMaixcam().isEnabled();
+            default -> false;
+        };
     }
 
     public void stopAll() {
@@ -114,8 +129,7 @@ public class ChannelManager {
     }
 
     private void initializeChannels() {
-        // Channels will be initialized based on configuration
-        // Each channel type checks its enabled flag
+        // Channels are initialized by Spring and filtered here by config.
     }
 
     private void dispatchOutbound() {
@@ -150,5 +164,39 @@ public class ChannelManager {
             status.put(channel.getName(), channel.isConnected());
         }
         return status;
+    }
+
+    public ChannelStartReport getLastStartReport() {
+        return lastStartReport;
+    }
+
+    public static class ChannelStartReport {
+        private final List<String> startedChannels;
+        private final List<String> skippedChannels;
+        private final Map<String, String> failedChannels;
+
+        public ChannelStartReport(List<String> startedChannels,
+                                  List<String> skippedChannels,
+                                  Map<String, String> failedChannels) {
+            this.startedChannels = List.copyOf(startedChannels);
+            this.skippedChannels = List.copyOf(skippedChannels);
+            this.failedChannels = Map.copyOf(failedChannels);
+        }
+
+        public static ChannelStartReport empty() {
+            return new ChannelStartReport(List.of(), List.of(), Map.of());
+        }
+
+        public List<String> getStartedChannels() {
+            return startedChannels;
+        }
+
+        public List<String> getSkippedChannels() {
+            return skippedChannels;
+        }
+
+        public Map<String, String> getFailedChannels() {
+            return failedChannels;
+        }
     }
 }

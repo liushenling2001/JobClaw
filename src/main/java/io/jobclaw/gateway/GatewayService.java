@@ -1,9 +1,11 @@
 package io.jobclaw.gateway;
 
+import io.jobclaw.agent.AgentOrchestrator;
+import io.jobclaw.bus.InboundMessage;
 import io.jobclaw.bus.MessageBus;
+import io.jobclaw.bus.OutboundMessage;
 import io.jobclaw.channels.ChannelManager;
 import io.jobclaw.config.Config;
-import io.jobclaw.config.ChannelsConfig;
 import io.jobclaw.cron.CronService;
 import io.jobclaw.heartbeat.HeartbeatService;
 import jakarta.annotation.PostConstruct;
@@ -15,6 +17,9 @@ import org.springframework.stereotype.Component;
 import java.nio.file.Paths;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 网关服务 - 统一管理网关生命周期
@@ -34,20 +39,30 @@ public class GatewayService {
     private final CronService cronService;
     private final ChannelManager channelManager;
     private final HeartbeatService heartbeatService;
+    private final AgentOrchestrator agentOrchestrator;
+    private final ExecutorService inboundExecutor;
 
     private CountDownLatch shutdownLatch;
     private volatile boolean started = false;
+    private volatile boolean inboundWorkerRunning = false;
 
     public GatewayService(Config config,
                           MessageBus messageBus,
                           CronService cronService,
                           ChannelManager channelManager,
-                          HeartbeatService heartbeatService) {
+                          HeartbeatService heartbeatService,
+                          AgentOrchestrator agentOrchestrator) {
         this.config = config;
         this.messageBus = messageBus;
         this.cronService = cronService;
         this.channelManager = channelManager;
         this.heartbeatService = heartbeatService;
+        this.agentOrchestrator = agentOrchestrator;
+        this.inboundExecutor = Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "gateway-inbound-worker");
+            t.setDaemon(true);
+            return t;
+        });
         this.shutdownLatch = new CountDownLatch(1);
     }
 
@@ -89,7 +104,9 @@ public class GatewayService {
         if (channelManager != null) {
             channelManager.startAll();
             logger.info("Channel services started");
+            printChannelStartReport();
         }
+        startInboundWorker();
 
         // 4. 注册关闭钩子
         registerShutdownHook();
@@ -128,7 +145,8 @@ public class GatewayService {
         stopService("Channels", () -> {
             if (channelManager != null) channelManager.stopAll();
         }, channelManager != null);
-
+        inboundWorkerRunning = false;
+        inboundExecutor.shutdownNow();
         shutdownLatch.countDown();
         started = false;
         logger.info("Gateway stopped");
@@ -141,10 +159,7 @@ public class GatewayService {
         if (channelManager == null) {
             return List.of();
         }
-        return channelManager.getAllChannels().stream()
-                .filter(io.jobclaw.channels.Channel::isConnected)
-                .map(io.jobclaw.channels.Channel::getName)
-                .toList();
+        return channelManager.getLastStartReport().getStartedChannels();
     }
 
     /**
@@ -187,5 +202,79 @@ public class GatewayService {
             stop();
             System.out.println("✓ 网关已停止");
         }));
+    }
+
+    private void startInboundWorker() {
+        if (inboundWorkerRunning) {
+            return;
+        }
+
+        inboundWorkerRunning = true;
+        inboundExecutor.submit(() -> {
+            logger.info("Inbound message worker started");
+            while (inboundWorkerRunning && !Thread.currentThread().isInterrupted()) {
+                try {
+                    InboundMessage inbound = messageBus.consumeInbound(1, TimeUnit.SECONDS);
+                    if (inbound == null) {
+                        continue;
+                    }
+                    handleInboundMessage(inbound);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } catch (Exception e) {
+                    logger.error("Failed to process inbound message", e);
+                }
+            }
+            logger.info("Inbound message worker stopped");
+        });
+    }
+
+    private void handleInboundMessage(InboundMessage inbound) {
+        String sessionKey = inbound.getSessionKey() != null && !inbound.getSessionKey().isBlank()
+                ? inbound.getSessionKey()
+                : inbound.getChannel() + ":" + inbound.getChatId();
+
+        String response;
+        if (InboundMessage.COMMAND_NEW_SESSION.equals(inbound.getCommand())) {
+            response = "Started a new session. Continue in this chat.";
+        } else {
+            logger.info("Processing inbound message via agent: channel={}, chatId={}, sessionKey={}",
+                    inbound.getChannel(), inbound.getChatId(), sessionKey);
+            response = agentOrchestrator.process(sessionKey, inbound.getContent());
+        }
+
+        if (response == null || response.isBlank()) {
+            logger.debug("Agent returned empty response for session {}", sessionKey);
+            return;
+        }
+
+        messageBus.publishOutbound(new OutboundMessage(
+                inbound.getChannel(),
+                inbound.getChatId(),
+                response
+        ));
+    }
+
+    private void printChannelStartReport() {
+        if (channelManager == null) {
+            return;
+        }
+
+        var report = channelManager.getLastStartReport();
+        if (!report.getStartedChannels().isEmpty()) {
+            System.out.println("✓ 已启动通道：" + String.join(", ", report.getStartedChannels()));
+        } else {
+            System.out.println("⚠ 警告：没有启动任何通道");
+        }
+
+        if (!report.getSkippedChannels().isEmpty()) {
+            System.out.println("• 跳过通道：" + String.join(", ", report.getSkippedChannels()));
+        }
+
+        if (!report.getFailedChannels().isEmpty()) {
+            System.out.println("⚠ 启动失败通道：");
+            report.getFailedChannels().forEach((name, reason) ->
+                    System.out.println("  - " + name + ": " + reason));
+        }
     }
 }

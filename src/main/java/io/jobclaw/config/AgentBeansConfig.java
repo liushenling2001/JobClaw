@@ -57,6 +57,12 @@ public class AgentBeansConfig {
 
     @Bean
     @ConditionalOnMissingBean
+    public ChannelsConfig channelsConfig(Config config) {
+        return config.getChannels();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
     public SkillsLoader skillsLoader(Config config) {
         return new SkillsLoader(config.getWorkspacePath(), null, null);
     }

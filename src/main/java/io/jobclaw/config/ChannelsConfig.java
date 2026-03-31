@@ -1,15 +1,10 @@
 package io.jobclaw.config;
 
-import org.springframework.boot.context.properties.ConfigurationProperties;
-import org.springframework.stereotype.Component;
-
 import java.util.*;
 
 /**
  * 消息通道配置
  */
-@Component
-@ConfigurationProperties(prefix = "channels")
 public class ChannelsConfig {
 
     private TelegramConfig telegram;

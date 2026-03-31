@@ -81,9 +81,6 @@ public class GatewayCommand extends CliCommand {
      * @param config 配置对象
      */
     private void printStartupInfo(GatewayService gateway, Config config) {
-        // 打印通道信息
-        printChannelInfo(gateway);
-
         // 打印网关基本信息
         printGatewayBasicInfo(config);
 
@@ -92,20 +89,6 @@ public class GatewayCommand extends CliCommand {
 
         // 打印 Web Console 信息
         printWebConsoleInfo(gateway);
-    }
-
-    /**
-     * 打印通道信息。
-     *
-     * @param gateway 网关实例
-     */
-    private void printChannelInfo(GatewayService gateway) {
-        List<String> enabledChannels = gateway.getEnabledChannels();
-        if (!enabledChannels.isEmpty()) {
-            System.out.println("✓ 已启用通道：" + String.join(", ", enabledChannels));
-        } else {
-            System.out.println("⚠ 警告：没有启用任何通道");
-        }
     }
 
     /**

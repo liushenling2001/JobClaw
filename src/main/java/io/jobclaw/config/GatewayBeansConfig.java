@@ -1,5 +1,6 @@
 package io.jobclaw.config;
 
+import io.jobclaw.agent.AgentOrchestrator;
 import io.jobclaw.bus.MessageBus;
 import io.jobclaw.channels.Channel;
 import io.jobclaw.channels.ChannelManager;
@@ -35,13 +36,15 @@ public class GatewayBeansConfig {
                                          MessageBus messageBus,
                                          io.jobclaw.cron.CronService cronService,
                                          ChannelManager channelManager,
-                                         io.jobclaw.heartbeat.HeartbeatService heartbeatService) {
+                                         io.jobclaw.heartbeat.HeartbeatService heartbeatService,
+                                         AgentOrchestrator agentOrchestrator) {
         return new GatewayService(
                 config,
                 messageBus,
                 cronService,
                 channelManager,
-                heartbeatService
+                heartbeatService,
+                agentOrchestrator
         );
     }
 }
