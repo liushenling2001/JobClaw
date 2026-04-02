@@ -1,0 +1,38 @@
+# Compiled class files
+target/
+build/
+out/
+
+# Log files
+*.log
+logs/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.project
+.classpath
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Configuration (optional - user specific)
+*.local.json
+
+# Environment
+.env
+*.env
+
+# Sessions
+**/sessions/*.json
+
+# Package files
+*.jar
+*.war
+*.ear
+ui/node_modules/
+ui/package-lock.json
+ui/

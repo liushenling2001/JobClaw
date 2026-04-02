@@ -1,0 +1,2139 @@
+warning: LF will be replaced by CRLF in src/main/java/io/jobclaw/agent/AgentLoop.java.
+The file will have its original line endings in your working directory
+warning: LF will be replaced by CRLF in src/main/java/io/jobclaw/agent/ExecutionEvent.java.
+The file will have its original line endings in your working directory
+warning: LF will be replaced by CRLF in src/main/resources/static/index.html.
+The file will have its original line endings in your working directory
+diff --git a/pom.xml b/pom.xml
+index 3e6388f..110f752 100644
+--- a/pom.xml
++++ b/pom.xml
+@@ -7,7 +7,7 @@
+     <parent>
+         <groupId>org.springframework.boot</groupId>
+         <artifactId>spring-boot-starter-parent</artifactId>
+-        <version>3.3.0</version>
++        <version>3.4.0</version>
+         <relativePath/>
+     </parent>
+ 
+@@ -34,7 +34,7 @@
+         <cron-utils.version>9.2.1</cron-utils.version>
+         <dotenv.version>3.0.0</dotenv.version>
+         <jline.version>3.25.0</jline.version>
+-        <spring-ai.version>1.0.0-SNAPSHOT</spring-ai.version>
++        <spring-ai.version>1.1.0</spring-ai.version>
+         <poi.version>5.2.5</poi.version>
+         <commons-io.version>2.15.1</commons-io.version>
+     </properties>
+diff --git a/src/main/java/io/jobclaw/agent/AgentLoop.java b/src/main/java/io/jobclaw/agent/AgentLoop.java
+index e3bb91e..2c3dca6 100644
+--- a/src/main/java/io/jobclaw/agent/AgentLoop.java
++++ b/src/main/java/io/jobclaw/agent/AgentLoop.java
+@@ -18,8 +18,11 @@ import reactor.core.publisher.Flux;
+ 
+ import java.time.Instant;
+ import java.util.HashMap;
++import java.util.LinkedList;
+ import java.util.List;
+ import java.util.Map;
++import java.util.Queue;
++import java.util.concurrent.ConcurrentHashMap;
+ import java.util.function.Consumer;
+ 
+ /**
+@@ -47,6 +50,9 @@ public class AgentLoop {
+ 
+     // 无工具调用的专用 ChatClient（用于摘要生成）
+     private final ChatClient simpleChatClient;
++    
++    // 工具调用期间的 THINK_STREAM 缓冲区（按 sessionKey 分组）
++    private final Map<String, Queue<String>> thinkStreamBuffer;
+ 
+     public AgentLoop(Config config, SessionManager sessionManager, FileTools fileTools) {
+         this(config, sessionManager, fileTools, null, null);
+@@ -120,7 +126,10 @@ public class AgentLoop {
+                 memoryStore,
+                 memoryEvolver
+         );
+-
++        
++        // 初始化 THINK_STREAM 缓冲区
++        this.thinkStreamBuffer = new ConcurrentHashMap<>();
++        
+         logger.info("AgentLoop initialized with Spring AI OpenAI Compatible (model: {})", this.model);
+     }
+ 
+@@ -210,7 +219,8 @@ public class AgentLoop {
+                     buildSystemPromptWithDefinition(definition) : buildSystemPrompt(sessionKey, userContent);
+ 
+             // 创建工具回调（支持工具过滤）
+-            ToolCallback[] tools = filterToolsByDefinition(definition);
++            ToolCallback[] rawTools = filterToolsByDefinition(definition);
++            ToolCallback[] tools = wrapToolCallbacks(rawTools, sessionKey, eventCallback);
+ 
+             // 调用 ChatClient（带工具）- 使用配置中的 maxTokens 和 temperature
+             OpenAiChatOptions options = OpenAiChatOptions.builder()
+@@ -231,16 +241,25 @@ public class AgentLoop {
+                     .content();
+ 
+             // 阻塞等待流完成，同时收集所有响应内容
++            // 如果工具正在执行，THINK_STREAM 会被缓冲，等工具完成后再发送
+             contentStream.toStream().forEach(content -> {
+                 if (content != null && !content.isEmpty()) {
+                     fullResponse.append(content);
+                     // 实时推送 LLM 返回的真实内容
+                     if (eventCallback != null) {
+-                        eventCallback.accept(new ExecutionEvent(
+-                                sessionKey,
+-                                ExecutionEvent.EventType.THINK_STREAM,
+-                                content  // 这是 LLM 实时返回的内容片段
+-                        ));
++                        // 检查是否在工具执行中
++                        if (isToolExecuting(sessionKey)) {
++                            // 工具执行中，缓冲 THINK_STREAM
++                            bufferThinkStream(sessionKey, content);
++                            logger.debug("Buffering THINK_STREAM during tool execution for session: {}", sessionKey);
++                        } else {
++                            // 直接发送 THINK_STREAM
++                            eventCallback.accept(new ExecutionEvent(
++                                    sessionKey,
++                                    ExecutionEvent.EventType.THINK_STREAM,
++                                    content  // 这是 LLM 实时返回的内容片段
++                            ));
++                        }
+                     }
+                 }
+             });
+@@ -254,8 +273,9 @@ public class AgentLoop {
+             if (eventCallback != null) {
+                 eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.THINK_END,
+                         "思考完成，耗时：" + elapsed + "ms"));
++                // FINAL_RESPONSE 包含完整的 AI 回复内容，前端会在工具卡片之后显示
+                 eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.FINAL_RESPONSE,
+-                        response));
++                        response));  // 完整内容
+             }
+ 
+             // 保存会话历史
+@@ -393,6 +413,162 @@ public class AgentLoop {
+         return sb.toString();
+     }
+ 
++    /**
++     * 包装 ToolCallback，使其在执行前后分别发布
++     * TOOL_START、TOOL_OUTPUT、TOOL_ERROR 事件（通过传进来的 eventCallback）。
++     * 如果 eventCallback 为 null，则直接返回原始 ToolCallback（不产生任何事件）。
++     *
++     * @param rawCallbacks  原始 ToolCallback 数组（来自 MethodToolCallbackProvider）
++     * @param sessionKey    当前会话 key，用于事件里标记会话
++     * @param eventCallback 来自 Web Console（或其它调用方）的事件回调，可为 null
++     * @return 包装后的 ToolCallback 数组，数量和顺序与 rawCallbacks 完全一致
++     */
++    private ToolCallback[] wrapToolCallbacks(ToolCallback[] rawCallbacks,
++                                             String sessionKey,
++                                             Consumer<ExecutionEvent> eventCallback) {
++        // 如果外部没有传事件回调，就没必要做额外包装——直接返回原始数组，
++        // 这样可以节省不必要的对象创建。
++        if (eventCallback == null || rawCallbacks == null) {
++            return rawCallbacks;
++        }
++
++        logger.info("工具事件追踪功能：包装 {} 个工具回调以支持事件追踪", rawCallbacks.length);
++
++        // 包装每个 ToolCallback，使其在执行时发布事件
++        return java.util.Arrays.stream(rawCallbacks)
++                .map(callback -> wrapSingleCallback(callback, sessionKey, eventCallback))
++                .toArray(ToolCallback[]::new);
++    }
++
++    /**
++     * 包装单个 ToolCallback，在工具执行时发布事件
++     *
++     * @param callback 原始 ToolCallback
++     * @param sessionKey 会话 key
++     * @param eventCallback 事件回调
++     * @return 包装后的 ToolCallback
++     */
++    private ToolCallback wrapSingleCallback(ToolCallback callback,
++                                            String sessionKey,
++                                            Consumer<ExecutionEvent> eventCallback) {
++        return new ToolCallback() {
++            @Override
++            public org.springframework.ai.tool.definition.ToolDefinition getToolDefinition() {
++                return callback.getToolDefinition();
++            }
++
++            @Override
++            public String call(String request) {
++                String toolName = getToolDefinition().name();
++                String toolId = toolName + "_" + System.currentTimeMillis();
++                
++                // 构建 metadata
++                Map<String, Object> startMetadata = new HashMap<>();
++                startMetadata.put("toolName", toolName);
++                startMetadata.put("toolId", toolId);
++                
++                // 标记工具执行中，THINK_STREAM 需要缓冲
++                setToolExecuting(sessionKey, true);
++                
++                // 发布 TOOL_START 事件（包含 metadata）
++                eventCallback.accept(new ExecutionEvent(
++                    sessionKey,
++                    ExecutionEvent.EventType.TOOL_START,
++                    "正在调用工具：" + toolName ,
++                    startMetadata
++                ));
++
++                try {
++                    // 调用原始工具
++                    String response = callback.call(request);
++                    
++                    // 构建 metadata
++                    Map<String, Object> endMetadata = new HashMap<>();
++                    endMetadata.put("toolName", toolName);
++                    endMetadata.put("toolId", toolId);
++                    
++                    // 发布 TOOL_END 事件（包含 metadata）
++                    eventCallback.accept(new ExecutionEvent(
++                        sessionKey,
++                        ExecutionEvent.EventType.TOOL_END,
++                        "工具调用完成：" + toolName,
++                        endMetadata
++                    ));
++                    
++                    // 限制工具返回结果的长度
++                    String resultData = truncateOutput(response, toolName);
++                    
++                    // 发布 TOOL_OUTPUT 事件（显示工具返回结果，包含 metadata）
++                    eventCallback.accept(new ExecutionEvent(
++                        sessionKey,
++                        ExecutionEvent.EventType.TOOL_OUTPUT,
++                        resultData,
++                        endMetadata  // 使用相同的 metadata
++                    ));
++                    
++                    // 工具调用完成，标记为非执行中
++                    setToolExecuting(sessionKey, false);
++                    
++                    // 刷新缓冲的 THINK_STREAM
++                    flushThinkStreamBuffer(sessionKey, eventCallback);
++                    
++                    return response;
++                    
++                } catch (Exception e) {
++                    // 构建 error metadata
++                    Map<String, Object> errorMetadata = new HashMap<>();
++                    errorMetadata.put("toolName", toolName);
++                    errorMetadata.put("toolId", toolId);
++                    
++                    // 发布 TOOL_ERROR 事件
++                    eventCallback.accept(new ExecutionEvent(
++                        sessionKey,
++                        ExecutionEvent.EventType.TOOL_ERROR,
++                        "工具执行失败：" + toolName + " - " + e.getMessage(),
++                        errorMetadata
++                    ));
++                    
++                    // 工具调用失败，标记为非执行中
++                    setToolExecuting(sessionKey, false);
++                    
++                    // 清空缓冲（不再需要）
++                    clearThinkStreamBuffer(sessionKey);
++                    
++                    throw e;
++                }
++            }
++            
++            /**
++             * 截断工具输出结果，避免超长反馈
++             *
++             * @param output 原始输出
++             * @param toolName 工具名称
++             * @return 截断后的输出（带提示信息）
++             */
++            private String truncateOutput(String output, String toolName) {
++                if (output == null) {
++                    return "无返回数据";
++                }
++                
++                int maxLength = config.getAgent().getMaxToolOutputLength();
++                
++                if (output.length() <= maxLength) {
++                    return output;
++                }
++                
++                // 截断并添加提示信息
++                String truncated = output.substring(0, maxLength);
++                String truncateNotice = "\n\n[... 返回结果已截断，共 " + output.length() + 
++                                       " 字符，显示前 " + maxLength + " 字符 ...]";
++                
++                logger.info("工具 {} 输出超长 ({} 字符)，已截断至 {} 字符", 
++                           toolName, output.length(), maxLength);
++                
++                return truncated + truncateNotice;
++            }
++        };
++    }
++
+     /**
+      * 根据 Agent 定义过滤工具
+      *
+@@ -423,7 +599,65 @@ public class AgentLoop {
+     public String getStatus() {
+         return "Spring AI initialized (model: " + config.getAgent().getModel() + ")";
+     }
+-
++    
++    /**
++     * 缓冲 THINK_STREAM 事件（工具执行期间）
++     */
++    private void bufferThinkStream(String sessionKey, String content) {
++        thinkStreamBuffer.computeIfAbsent(sessionKey, k -> new LinkedList<>()).offer(content);
++    }
++    
++    /**
++     * 刷新缓冲的 THINK_STREAM 事件
++     */
++    private void flushThinkStreamBuffer(String sessionKey, Consumer<ExecutionEvent> eventCallback) {
++        Queue<String> buffer = thinkStreamBuffer.get(sessionKey);
++        if (buffer != null && !buffer.isEmpty()) {
++            logger.debug("Flushing {} buffered THINK_STREAM events for session: {}", buffer.size(), sessionKey);
++            String content;
++            while ((content = buffer.poll()) != null) {
++                eventCallback.accept(new ExecutionEvent(
++                        sessionKey,
++                        ExecutionEvent.EventType.THINK_STREAM,
++                        content
++                ));
++            }
++        }
++    }
++    
++    /**
++     * 清空 THINK_STREAM 缓冲区
++     */
++    private void clearThinkStreamBuffer(String sessionKey) {
++        thinkStreamBuffer.remove(sessionKey);
++    }
++    
++    /**
++     * 检查是否正在执行工具
++     */
++    private boolean isToolExecuting(String sessionKey) {
++        // 简单实现：检查缓冲区是否存在（存在表示工具正在执行）
++        // 更精确的实现可以使用 ConcurrentHashMap<String, Boolean> 来跟踪状态
++        Queue<String> buffer = thinkStreamBuffer.get(sessionKey);
++        return buffer != null && !buffer.isEmpty();
++    }
++    
++    /**
++     * 设置工具执行状态
++     */
++    private void setToolExecuting(String sessionKey, boolean executing) {
++        if (executing) {
++            // 开始执行工具，初始化缓冲区
++            thinkStreamBuffer.putIfAbsent(sessionKey, new LinkedList<>());
++        } else {
++            // 工具执行完成，如果缓冲区为空则移除
++            Queue<String> buffer = thinkStreamBuffer.get(sessionKey);
++            if (buffer != null && buffer.isEmpty()) {
++                thinkStreamBuffer.remove(sessionKey);
++            }
++        }
++    }
++    
+     /**
+      * 调用 LLM 生成响应（用于摘要生成，不带工具调用）。
+      *
+diff --git a/src/main/java/io/jobclaw/agent/AgentOrchestrator.java b/src/main/java/io/jobclaw/agent/AgentOrchestrator.java
+index 9f93411..edbf945 100644
+--- a/src/main/java/io/jobclaw/agent/AgentOrchestrator.java
++++ b/src/main/java/io/jobclaw/agent/AgentOrchestrator.java
+@@ -7,6 +7,7 @@ import org.slf4j.LoggerFactory;
+ import org.springframework.stereotype.Component;
+ 
+ import java.util.List;
++import java.util.function.Consumer;
+ 
+ import java.util.ArrayList;
+ import java.util.Arrays;
+@@ -67,8 +68,8 @@ public class AgentOrchestrator {
+     }
+ 
+     /**
+-     * 处理用户请求
+-     * 
++     * 处理用户请求（不带回调，兼容原有调用）
++     *
+      * @param sessionKey 会话密钥
+      * @param userContent 用户输入
+      * @return Agent 响应
+@@ -80,7 +81,7 @@ public class AgentOrchestrator {
+         // 如果 sessionKey 包含 "spawn-" 或 "subagent-" 前缀，说明是子 Agent 调用
+         // 强制使用单 Agent 模式，避免无限递归
+         boolean isSubAgent = sessionKey.startsWith("spawn-") || sessionKey.startsWith("subagent-");
+-        
++
+         if (isSubAgent) {
+             logger.debug("Sub-agent detected, forcing single-agent mode to prevent recursion");
+             // 子 Agent 默认使用 ASSISTANT 角色
+@@ -106,6 +107,39 @@ public class AgentOrchestrator {
+         return handleSingleAgentDefault(sessionKey, userContent);
+     }
+ 
++    /**
++     * 处理用户请求（带执行过程回调，用于 SSE 流式输出）
++     *
++     * @param sessionKey 会话密钥
++     * @param userContent 用户输入
++     * @param eventCallback 执行事件回调
++     * @return Agent 响应
++     */
++    public String process(String sessionKey, String userContent, Consumer<ExecutionEvent> eventCallback) {
++        logger.info("Orchestrator processing request with callback for session {}", sessionKey);
++
++        boolean isSubAgent = sessionKey.startsWith("spawn-") || sessionKey.startsWith("subagent-");
++
++        if (isSubAgent) {
++            logger.debug("Sub-agent detected, forcing single-agent mode to prevent recursion");
++            return handleSingleAgentDefault(sessionKey, userContent, eventCallback);
++        }
++
++        if (isTeamModeRequest(userContent)) {
++            logger.info("Team mode detected");
++            return handleTeamMode(sessionKey, userContent, eventCallback);
++        }
++
++        AgentRole specifiedRole = extractSpecifiedRole(userContent);
++        if (specifiedRole != null) {
++            logger.info("Specified role detected: {}", specifiedRole.getDisplayName());
++            return handleSingleAgentWithRole(sessionKey, userContent, specifiedRole, eventCallback);
++        }
++
++        logger.info("Single-agent mode (Agent can use spawn tool if needed)");
++        return handleSingleAgentDefault(sessionKey, userContent, eventCallback);
++    }
++
+     /**
+      * 判断是否为团队模式请求
+      */
+@@ -136,34 +170,70 @@ public class AgentOrchestrator {
+     }
+ 
+     /**
+-     * 处理单 Agent 请求（默认模式）
++     * 处理单 Agent 请求（默认模式，不带回调）
+      */
+     private String handleSingleAgentDefault(String sessionKey, String userContent) {
++        return handleSingleAgentDefault(sessionKey, userContent, null);
++    }
++
++    /**
++     * 处理单 Agent 请求（默认模式，带回调）
++     */
++    private String handleSingleAgentDefault(String sessionKey, String userContent, Consumer<ExecutionEvent> eventCallback) {
+         try {
+             AgentLoop agent = agentRegistry.getOrCreateAgent(AgentRole.ASSISTANT, sessionKey);
++            if (eventCallback != null) {
++                return agent.process(sessionKey, userContent, eventCallback);
++            }
+             return agent.process(sessionKey, userContent);
+         } catch (Exception e) {
+             logger.error("Error in single-agent mode", e);
++            if (eventCallback != null) {
++                eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.ERROR,
++                    "Error: " + e.getMessage()));
++            }
+             return "Error: " + e.getMessage();
+         }
+     }
+ 
+     /**
+-     * 处理单 Agent 请求（指定角色）
++     * 处理单 Agent 请求（指定角色，不带回调）
+      */
+     private String handleSingleAgentWithRole(String sessionKey, String userContent, AgentRole role) {
++        return handleSingleAgentWithRole(sessionKey, userContent, role, null);
++    }
++
++    /**
++     * 处理单 Agent 请求（指定角色，带回调）
++     */
++    private String handleSingleAgentWithRole(String sessionKey, String userContent, AgentRole role,
++                                             Consumer<ExecutionEvent> eventCallback) {
+         try {
+             AgentLoop agent = agentRegistry.getOrCreateAgent(role, sessionKey);
++            if (eventCallback != null) {
++                return agent.process(sessionKey, userContent, role, eventCallback);
++            }
+             return agent.process(sessionKey, userContent, role);
+         } catch (Exception e) {
+             logger.error("Error in single-agent mode with role", e);
++            if (eventCallback != null) {
++                eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.ERROR,
++                    "Error: " + e.getMessage()));
++            }
+             return "Error: " + e.getMessage();
+         }
+     }
+ 
+     /**
+-     * 处理团队模式请求
+-     * 
++     * 处理团队模式请求（不带回调）
++     */
++    private String handleTeamMode(String sessionKey, String userContent) {
++        return handleTeamMode(sessionKey, userContent, null);
++    }
++
++    /**
++     * 处理团队模式请求（带回调）
++     *
+      * 流程：
+      * 1. 创建 Agent 团队
+      * 2. 主智能体分析任务
+@@ -171,12 +241,16 @@ public class AgentOrchestrator {
+      * 4. 分配任务给子智能体
+      * 5. 汇总结果
+      */
+-    private String handleTeamMode(String sessionKey, String userContent) {
++    private String handleTeamMode(String sessionKey, String userContent, Consumer<ExecutionEvent> eventCallback) {
+         try {
+             StringBuilder result = new StringBuilder();
+             result.append("## 🤖 Agent 团队模式\n\n");
+ 
+             // Step 1: 创建团队
++            if (eventCallback != null) {
++                eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.CUSTOM,
++                    "正在创建 Agent 团队..."));
++            }
+             logger.info("Step 1: Creating agent team");
+             AgentDefinition masterDef = AgentDefinition.fromRole(AgentRole.PLANNER);
+             AgentTeam team = teamManager.createTeam("临时团队", masterDef, sessionKey);
+@@ -186,6 +260,10 @@ public class AgentOrchestrator {
+             result.append("**主智能体**: ").append(team.getMasterAgent().getDisplayName()).append("\n\n");
+ 
+             // Step 2: 主智能体分析任务并决定需要的子智能体
++            if (eventCallback != null) {
++                eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.CUSTOM,
++                    "主智能体正在分析任务..."));
++            }
+             logger.info("Step 2: Master agent analyzing task");
+             result.append("### 2️⃣ 任务分析\n\n");
+ 
+@@ -195,6 +273,10 @@ public class AgentOrchestrator {
+             result.append(analysis).append("\n\n");
+ 
+             // Step 3: 动态创建子智能体
++            if (eventCallback != null) {
++                eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.CUSTOM,
++                    "正在创建子智能体..."));
++            }
+             logger.info("Step 3: Creating sub-agents dynamically");
+             result.append("### 3️⃣ 子智能体创建\n\n");
+ 
+@@ -213,6 +295,10 @@ public class AgentOrchestrator {
+             result.append("\n");
+ 
+             // Step 4: 分配任务给子智能体
++            if (eventCallback != null) {
++                eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.CUSTOM,
++                    "正在分配任务给子智能体..."));
++            }
+             logger.info("Step 4: Assigning tasks to sub-agents");
+             result.append("### 4️⃣ 任务执行\n\n");
+ 
+@@ -220,34 +306,46 @@ public class AgentOrchestrator {
+                 AgentLoop agent = agentRegistry.getOrCreateAgent(subAgent, sessionKey);
+                 String taskContent = userContent + "\n\n请从你的专业角度完成这个任务。";
+                 String subResult = agent.processWithDefinition(sessionKey, taskContent, subAgent);
+-                
++
+                 result.append("**").append(subAgent.getDisplayName()).append("**:\n")
+                       .append(subResult).append("\n\n");
+-                
++
+                 // 添加到共享记忆
+                 team.addToSharedMemory(subAgent.getDisplayName() + ": " + subResult.substring(0, Math.min(200, subResult.length())));
+             }
+ 
+             // Step 5: 汇总结果
++            if (eventCallback != null) {
++                eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.CUSTOM,
++                    "正在汇总结果..."));
++            }
+             logger.info("Step 5: Summarizing results");
+             result.append("### 5️⃣ 最终总结\n\n");
+ 
+             AgentLoop summarizer = agentRegistry.getOrCreateAgent(AgentRole.WRITER, sessionKey);
+-            String summaryContent = "请综合以下所有子智能体的工作成果，提供一个清晰、完整的最终答案：\n\n" + 
++            String summaryContent = "请综合以下所有子智能体的工作成果，提供一个清晰、完整的最终答案：\n\n" +
+                 team.getSharedMemory().stream().map(m -> "- " + m).reduce((a, b) -> a + "\n" + b).orElse("");
+-            String summary = summarizer.processWithDefinition(sessionKey, summaryContent, 
++            String summary = summarizer.processWithDefinition(sessionKey, summaryContent,
+                 AgentDefinition.fromRole(AgentRole.WRITER));
+             result.append(summary);
+ 
+             // 保存团队信息到共享记忆
+             team.addToSharedMemory("最终总结：" + summary.substring(0, Math.min(200, summary.length())));
+ 
+-            logger.info("Team mode completed: {} ({} sub-agents)", 
++            if (eventCallback != null) {
++                eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.FINAL_RESPONSE,
++                    "团队模式完成"));
++            }
++            logger.info("Team mode completed: {} ({} sub-agents)",
+                 team.getTeamName(), team.getSubAgentCount());
+             return result.toString();
+ 
+         } catch (Exception e) {
+             logger.error("Error in team mode", e);
++            if (eventCallback != null) {
++                eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.ERROR,
++                    "Error: " + e.getMessage()));
++            }
+             return "Error: " + e.getMessage();
+         }
+     }
+diff --git a/src/main/java/io/jobclaw/agent/ExecutionEvent.java b/src/main/java/io/jobclaw/agent/ExecutionEvent.java
+index dec541a..705f40e 100644
+--- a/src/main/java/io/jobclaw/agent/ExecutionEvent.java
++++ b/src/main/java/io/jobclaw/agent/ExecutionEvent.java
+@@ -22,6 +22,8 @@ public class ExecutionEvent {
+         TOOL_END,
+         /** 工具输出 */
+         TOOL_OUTPUT,
++        /** 工具执行错误 */
++        TOOL_ERROR,
+         /** 错误事件 */
+         ERROR,
+         /** 最终响应 */
+diff --git a/src/main/java/io/jobclaw/config/AgentConfig.java b/src/main/java/io/jobclaw/config/AgentConfig.java
+index bf68fd0..a9166d5 100644
+--- a/src/main/java/io/jobclaw/config/AgentConfig.java
++++ b/src/main/java/io/jobclaw/config/AgentConfig.java
+@@ -19,6 +19,7 @@ public class AgentConfig {
+     private boolean feedbackEnabled;
+     private boolean promptOptimizationEnabled;
+     private boolean collaborationEnabled;
++    private int maxToolOutputLength;
+     private List<String> commandBlacklist;
+ 
+     public AgentConfig() {
+@@ -33,6 +34,7 @@ public class AgentConfig {
+         this.feedbackEnabled = false;
+         this.promptOptimizationEnabled = false;
+         this.collaborationEnabled = true;
++        this.maxToolOutputLength = 10000; // 默认限制工具返回 10000 字符
+         this.commandBlacklist = new ArrayList<>();
+     }
+ 
+@@ -124,6 +126,14 @@ public class AgentConfig {
+         this.collaborationEnabled = collaborationEnabled;
+     }
+ 
++    public int getMaxToolOutputLength() {
++        return maxToolOutputLength;
++    }
++
++    public void setMaxToolOutputLength(int maxToolOutputLength) {
++        this.maxToolOutputLength = maxToolOutputLength;
++    }
++
+     public List<String> getCommandBlacklist() {
+         return commandBlacklist;
+     }
+diff --git a/src/main/java/io/jobclaw/config/JobClawConfig.java b/src/main/java/io/jobclaw/config/JobClawConfig.java
+index 9931b17..0a941c1 100644
+--- a/src/main/java/io/jobclaw/config/JobClawConfig.java
++++ b/src/main/java/io/jobclaw/config/JobClawConfig.java
+@@ -47,11 +47,11 @@ public class JobClawConfig {
+ 
+     @Bean
+     @ConditionalOnMissingBean
+-    public ToolRegistry toolRegistry(SecurityGuard securityGuard) {
++    public ToolRegistry toolRegistry(SecurityGuard securityGuard, PathResolver pathResolver) {
+         ToolRegistry registry = new ToolRegistry();
+-        registry.register(new ReadFileTool());
+-        registry.register(new WriteFileTool());
+-        registry.register(new ListDirTool());
++        registry.register(new ReadFileTool(pathResolver));
++        registry.register(new WriteFileTool(pathResolver));
++        registry.register(new ListDirTool(pathResolver));
+         return registry;
+     }
+ 
+diff --git a/src/main/java/io/jobclaw/tools/ListDirTool.java b/src/main/java/io/jobclaw/tools/ListDirTool.java
+index 28fa504..8e3b6a5 100644
+--- a/src/main/java/io/jobclaw/tools/ListDirTool.java
++++ b/src/main/java/io/jobclaw/tools/ListDirTool.java
+@@ -1,5 +1,7 @@
+ package io.jobclaw.tools;
+ 
++import org.springframework.stereotype.Component;
++
+ import java.nio.file.Files;
+ import java.nio.file.Paths;
+ import java.util.ArrayList;
+@@ -7,8 +9,15 @@ import java.util.HashMap;
+ import java.util.List;
+ import java.util.Map;
+ 
++@Component
+ public class ListDirTool implements Tool {
+ 
++    private final PathResolver pathResolver;
++
++    public ListDirTool(PathResolver pathResolver) {
++        this.pathResolver = pathResolver;
++    }
++
+     @Override
+     public String getName() {
+         return "list_dir";
+@@ -28,7 +37,7 @@ public class ListDirTool implements Tool {
+ 
+         Map<String, Object> pathProp = new HashMap<>();
+         pathProp.put("type", "string");
+-        pathProp.put("description", "The path of the directory to list");
++        pathProp.put("description", "The path of the directory to list (relative to workspace or absolute)");
+         properties.put("path", pathProp);
+ 
+         params.put("properties", properties);
+@@ -47,8 +56,10 @@ public class ListDirTool implements Tool {
+         }
+ 
+         try {
++            // 使用 PathResolver 解析路径
++            String resolvedPath = pathResolver.resolve(path);
+             List<String> entries = new ArrayList<>();
+-            Files.list(Paths.get(path)).forEach(p -> {
++            Files.list(Paths.get(resolvedPath)).forEach(p -> {
+                 String type = Files.isDirectory(p) ? "[DIR]  " : "[FILE] ";
+                 entries.add(type + p.getFileName());
+             });
+diff --git a/src/main/java/io/jobclaw/tools/ReadFileTool.java b/src/main/java/io/jobclaw/tools/ReadFileTool.java
+index 7e40e16..f034316 100644
+--- a/src/main/java/io/jobclaw/tools/ReadFileTool.java
++++ b/src/main/java/io/jobclaw/tools/ReadFileTool.java
+@@ -1,13 +1,22 @@
+ package io.jobclaw.tools;
+ 
++import org.springframework.stereotype.Component;
++
+ import java.io.IOException;
+ import java.nio.file.Files;
+ import java.nio.file.Paths;
+ import java.util.HashMap;
+ import java.util.Map;
+ 
++@Component
+ public class ReadFileTool implements Tool {
+ 
++    private final PathResolver pathResolver;
++
++    public ReadFileTool(PathResolver pathResolver) {
++        this.pathResolver = pathResolver;
++    }
++
+     @Override
+     public String getName() {
+         return "read_file";
+@@ -27,7 +36,7 @@ public class ReadFileTool implements Tool {
+ 
+         Map<String, Object> pathProp = new HashMap<>();
+         pathProp.put("type", "string");
+-        pathProp.put("description", "The path of the file to read");
++        pathProp.put("description", "The path of the file to read (relative to workspace or absolute)");
+         properties.put("path", pathProp);
+ 
+         params.put("properties", properties);
+@@ -46,7 +55,9 @@ public class ReadFileTool implements Tool {
+         }
+ 
+         try {
+-            String content = Files.readString(Paths.get(path));
++            // 使用 PathResolver 解析路径
++            String resolvedPath = pathResolver.resolve(path);
++            String content = Files.readString(Paths.get(resolvedPath));
+             return content;
+         } catch (IOException e) {
+             return "Error reading file: " + e.getMessage();
+diff --git a/src/main/java/io/jobclaw/tools/WriteFileTool.java b/src/main/java/io/jobclaw/tools/WriteFileTool.java
+index dda8bbd..6e1cb2c 100644
+--- a/src/main/java/io/jobclaw/tools/WriteFileTool.java
++++ b/src/main/java/io/jobclaw/tools/WriteFileTool.java
+@@ -1,12 +1,21 @@
+ package io.jobclaw.tools;
+ 
++import org.springframework.stereotype.Component;
++
+ import java.nio.file.Files;
+ import java.nio.file.Paths;
+ import java.util.HashMap;
+ import java.util.Map;
+ 
++@Component
+ public class WriteFileTool implements Tool {
+ 
++    private final PathResolver pathResolver;
++
++    public WriteFileTool(PathResolver pathResolver) {
++        this.pathResolver = pathResolver;
++    }
++
+     @Override
+     public String getName() {
+         return "write_file";
+@@ -26,7 +35,7 @@ public class WriteFileTool implements Tool {
+ 
+         Map<String, Object> pathProp = new HashMap<>();
+         pathProp.put("type", "string");
+-        pathProp.put("description", "The path of the file to write");
++        pathProp.put("description", "The path of the file to write (relative to workspace or absolute)");
+         properties.put("path", pathProp);
+ 
+         Map<String, Object> contentProp = new HashMap<>();
+@@ -55,8 +64,10 @@ public class WriteFileTool implements Tool {
+         }
+ 
+         try {
+-            Files.createDirectories(Paths.get(path).getParent());
+-            Files.writeString(Paths.get(path), content);
++            // 使用 PathResolver 解析路径
++            String resolvedPath = pathResolver.resolve(path);
++            Files.createDirectories(Paths.get(resolvedPath).getParent());
++            Files.writeString(Paths.get(resolvedPath), content);
+             return "Successfully wrote to " + path;
+         } catch (Exception e) {
+             return "Error writing file: " + e.getMessage();
+diff --git a/src/main/resources/application.yml b/src/main/resources/application.yml
+index 60eab93..477a12f 100644
+--- a/src/main/resources/application.yml
++++ b/src/main/resources/application.yml
+@@ -20,6 +20,8 @@ server:
+ jobclaw:
+   config-path: ~/.jobclaw/config.json
+   workspace-path: ~/.jobclaw/workspace
++  # 工具返回结果最大长度（字符数），默认 10000，避免超长输出
++  max-tool-output-length: 200
+ 
+ # Logging
+ logging:
+diff --git a/src/main/resources/static/index.html b/src/main/resources/static/index.html
+index 3ffffea..85c2180 100644
+--- a/src/main/resources/static/index.html
++++ b/src/main/resources/static/index.html
+@@ -1,114 +1,1220 @@
+ <!DOCTYPE html>
+-<html lang="en">
++<html class="dark" lang="en">
+ <head>
+     <meta charset="UTF-8">
+     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+     <title>JobClaw - AI Agent Console</title>
++
++    <!-- Tailwind CSS -->
++    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
++
++    <!-- Vue 3 -->
++    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
++
++    <!-- Google Fonts -->
++    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
++    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
++
++    <!-- Tailwind Config -->
++    <script id="tailwind-config">
++        tailwind.config = {
++            darkMode: "class",
++            theme: {
++                extend: {
++                    colors: {
++                        "surface-container-lowest": "#000000",
++                        "secondary": "#53ddfc",
++                        "error-dim": "#d7383b",
++                        "surface-container-low": "#0c1326",
++                        "surface-container-highest": "#1c253e",
++                        "secondary-fixed-dim": "#48d4f3",
++                        "on-primary-fixed": "#000000",
++                        "on-background": "#dfe4fe",
++                        "surface-bright": "#222b47",
++                        "tertiary-container": "#dae6fe",
++                        "background": "#070d1f",
++                        "secondary-fixed": "#65e1ff",
++                        "on-primary-container": "#2b006e",
++                        "inverse-primary": "#6e3bd7",
++                        "surface-container": "#11192e",
++                        "on-secondary-fixed": "#003a45",
++                        "outline-variant": "#41475b",
++                        "primary-fixed": "#ae8dff",
++                        "on-tertiary-fixed-variant": "#535e72",
++                        "secondary-dim": "#40ceed",
++                        "surface-variant": "#1c253e",
++                        "on-error": "#490006",
++                        "on-tertiary-fixed": "#374155",
++                        "error": "#ff716c",
++                        "surface-container-high": "#171f36",
++                        "on-tertiary-container": "#495468",
++                        "inverse-surface": "#faf8ff",
++                        "surface-tint": "#ba9eff",
++                        "tertiary-dim": "#ccd7ef",
++                        "on-surface": "#dfe4fe",
++                        "on-surface-variant": "#a5aac2",
++                        "tertiary-fixed": "#dae6fe",
++                        "on-tertiary": "#515c70",
++                        "inverse-on-surface": "#4f5469",
++                        "surface": "#070d1f",
++                        "primary": "#ba9eff",
++                        "outline": "#6f758b",
++                        "on-error-container": "#ffa8a3",
++                        "surface-dim": "#070d1f",
++                        "on-secondary-fixed-variant": "#005969",
++                        "on-primary-fixed-variant": "#370086",
++                        "primary-dim": "#8455ef",
++                        "tertiary": "#f0f3ff",
++                        "primary-fixed-dim": "#a27cff",
++                        "on-primary": "#39008c",
++                        "tertiary-fixed-dim": "#ccd7ef",
++                        "primary-container": "#ae8dff",
++                        "on-secondary": "#004b58",
++                        "error-container": "#9f0519",
++                        "on-secondary-container": "#ecfaff",
++                        "secondary-container": "#00687a"
++                    },
++                    fontFamily: {
++                        "headline": ["Space Grotesk"],
++                        "body": ["Inter"],
++                        "label": ["Inter"],
++                        "mono": ["JetBrains Mono"]
++                    },
++                    borderRadius: {"DEFAULT": "0.125rem", "lg": "0.25rem", "xl": "0.5rem", "full": "0.75rem"},
++                },
++            },
++        }
++    </script>
++
+     <style>
+-        * { box-sizing: border-box; margin: 0; padding: 0; }
+-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #1a1a2e; color: #eee; min-height: 100vh; }
+-        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+-        header { text-align: center; padding: 20px 0; border-bottom: 1px solid #333; margin-bottom: 20px; }
+-        header h1 { color: #00d9ff; font-size: 2em; }
+-        header p { color: #888; margin-top: 10px; }
+-        .chat-container { display: flex; flex-direction: column; height: 70vh; background: #16213e; border-radius: 10px; overflow: hidden; }
+-        .messages { flex: 1; overflow-y: auto; padding: 20px; }
+-        .message { margin-bottom: 15px; padding: 12px 16px; border-radius: 8px; max-width: 80%; }
+-        .message.user { background: #0f3460; margin-left: auto; border-bottom-right-radius: 0; }
+-        .message.assistant { background: #1a1a2e; border-bottom-left-radius: 0; }
+-        .message.system { background: #2d4a22; width: 100%; text-align: center; color: #8f8; }
+-        .input-area { display: flex; padding: 15px; border-top: 1px solid #333; background: #1a1a2e; }
+-        .input-area input { flex: 1; padding: 12px 16px; border: none; border-radius: 6px; background: #0f3460; color: #fff; font-size: 14px; }
+-        .input-area input::placeholder { color: #666; }
+-        .input-area button { margin-left: 10px; padding: 12px 24px; background: #00d9ff; color: #000; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; }
+-        .input-area button:hover { background: #00b8d4; }
+-        .input-area button:disabled { background: #444; cursor: not-allowed; }
+-        .status-bar { display: flex; justify-content: space-between; padding: 10px 20px; background: #0f3460; font-size: 12px; color: #888; }
+-        .loading { display: inline-block; width: 20px; height: 20px; border: 2px solid #00d9ff; border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite; }
+-        @keyframes spin { to { transform: rotate(360deg); } }
++        .material-symbols-outlined {
++            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
++        }
++        .glass-panel {
++            background: rgba(23, 31, 54, 0.4);
++            backdrop-filter: blur(20px);
++            -webkit-backdrop-filter: blur(20px);
++        }
++        .scanline-overlay {
++            background: linear-gradient(to bottom, transparent 50%, rgba(83, 221, 252, 0.02) 50%);
++            background-size: 100% 4px;
++            pointer-events: none;
++        }
++        .terminal-cursor {
++            display: inline-block;
++            width: 8px;
++            height: 18px;
++            background-color: #53ddfc;
++            margin-left: 4px;
++            vertical-align: middle;
++        }
++        @keyframes pulse {
++            0%, 100% { opacity: 1; }
++            50% { opacity: 0; }
++        }
++        .animate-pulse-fast {
++            animation: pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite;
++        }
++        @keyframes bounce-subtle {
++            0%, 100% { transform: translateY(0); }
++            50% { transform: translateY(-4px); }
++        }
++        .animate-bounce-subtle {
++            animation: bounce-subtle 2s ease-in-out infinite;
++        }
++        /* 折叠面板过渡动画 */
++        .collapse-enter-active,
++        .collapse-leave-active {
++            transition: all 0.2s ease-out;
++        }
++        .collapse-enter-from,
++        .collapse-leave-to {
++            opacity: 0;
++            transform: translateY(-10px);
++        }
++        /* 自定义滚动条 */
++        ::-webkit-scrollbar {
++            width: 8px;
++            height: 8px;
++        }
++        ::-webkit-scrollbar-track {
++            background: rgba(17, 25, 46, 0.5);
++        }
++        ::-webkit-scrollbar-thumb {
++            background: rgba(111, 117, 139, 0.5);
++            border-radius: 4px;
++        }
++        ::-webkit-scrollbar-thumb:hover {
++            background: rgba(111, 117, 139, 0.7);
++        }
+     </style>
+ </head>
+-<body>
+-    <div class="container">
+-        <header>
+-            <h1>JobClaw</h1>
+-            <p>AI Agent Console - Built with Spring Boot 3.3 + Java 17</p>
+-        </header>
+-        <div class="status-bar">
+-            <span id="status">Status: <span id="status-value">Connecting...</span></span>
+-            <span id="model">Model: <span id="model-value">-</span></span>
+-            <span id="sessions">Sessions: <span id="sessions-count">0</span></span>
++<body class="bg-background text-on-background font-body min-h-screen overflow-hidden">
++    <div id="jobclaw-app">
++        <!-- Global Background Elements -->
++        <div class="fixed inset-0 z-0">
++            <div class="absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,rgba(132,85,239,0.05),transparent_70%)]"></div>
++            <div class="absolute inset-0 scanline-overlay opacity-20"></div>
+         </div>
+-        <div class="chat-container">
+-            <div class="messages" id="messages"></div>
+-            <div class="input-area">
+-                <input type="text" id="messageInput" placeholder="Type your message..." onkeypress="handleKeyPress(event)">
+-                <button id="sendBtn" onclick="sendMessage()">Send</button>
++
++        <!-- Top Navigation Bar -->
++        <nav class="fixed top-0 w-full z-50 bg-[#070d1f]/80 backdrop-blur-xl border-b border-[#41475b]/20 shadow-[0_8px_32px_0_rgba(132,85,239,0.1)] flex justify-between items-center px-6 h-16">
++            <div class="flex items-center gap-8">
++                <span class="text-2xl font-bold bg-gradient-to-r from-[#8455ef] to-[#ba9eff] bg-clip-text text-transparent font-headline tracking-tight">JobClaw</span>
++                <div class="hidden md:flex gap-6 font-headline tracking-tight">
++                    <a class="text-[#dfe4fe]/60 hover:text-[#53ddfc] transition-colors duration-300 scale-95 active:scale-90 transition-transform cursor-pointer" href="#">Network</a>
++                    <a class="text-[#dfe4fe]/60 hover:text-[#53ddfc] transition-colors duration-300 scale-95 active:scale-90 transition-transform cursor-pointer" href="#">Nodes</a>
++                    <a class="text-[#dfe4fe]/60 hover:text-[#53ddfc] transition-colors duration-300 scale-95 active:scale-90 transition-transform cursor-pointer" href="#">Logs</a>
++                </div>
++            </div>
++            <div class="flex items-center gap-4">
++                <div class="relative hidden sm:block">
++                    <input class="bg-surface-container-high border-none text-sm px-4 py-1.5 rounded-full w-64 focus:ring-1 focus:ring-secondary/50 placeholder:text-outline-variant" placeholder="Search archive..." type="text" v-model="searchQuery"/>
++                </div>
++                <button class="material-symbols-outlined text-[#dfe4fe]/60 hover:text-[#53ddfc] transition-colors cursor-pointer">notifications</button>
++                <button class="material-symbols-outlined text-[#dfe4fe]/60 hover:text-[#53ddfc] transition-colors cursor-pointer">settings_input_component</button>
++                <img alt="Operator Avatar" class="w-8 h-8 rounded-full border border-primary/30 cursor-pointer" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBfY-DfXhCEGL4Uq_LyIRvYFgBEJO_5os8c0qrjattoYornl1SI_ofMRlifDLY9h9AxuVkqOpo_8_NHpcfKosQovls6iQXxLFSuB-g5vZ0Pd0nUKMTsC2kDdOxcUOL_NJuBIo44AVrnqAQ9ac_KVdLQWzjZRIWgUZyozjgZNgbVIeos6Ct57GJU4fXvtWO0AzmPf2FNrgDPRq_7zpe3q1qkA6TRpHZAAr0pW0spE6jl0B_x5hWnPBH6sXY0KhueS1BMpaSXxxP4Xs0"/>
+             </div>
++        </nav>
++
++        <!-- Side Navigation Bar -->
++        <aside class="fixed left-0 top-16 h-[calc(100vh-64px)] w-64 bg-[#0c1326]/90 backdrop-blur-lg border-r border-[#41475b]/15 flex flex-col py-8 gap-4 z-40">
++            <div class="px-6 mb-4">
++                <div class="flex items-center gap-3">
++                    <div class="w-10 h-10 rounded-lg bg-primary/20 flex items-center justify-center border border-primary/30">
++                        <span class="material-symbols-outlined text-primary">hub</span>
++                    </div>
++                    <div>
++                        <h3 class="text-sm font-bold text-on-surface font-headline leading-tight">JobClaw System</h3>
++                        <p class="text-[10px] font-mono tracking-widest uppercase">
++                            <span :class="{'animate-pulse': isConnected}">{{ isConnected ? '● Online' : '● Offline' }}</span>
++                        </p>
++                    </div>
++                </div>
++            </div>
++            <nav class="flex-1 space-y-1">
++                <a class="flex items-center gap-4 px-6 py-3 text-[#dfe4fe]/50 hover:bg-[#171f36]/60 hover:text-[#dfe4fe] transition-all duration-200 ease-in-out font-medium text-sm font-body cursor-pointer" href="#">
++                    <span class="material-symbols-outlined">dashboard</span>
++                    Dashboard
++                </a>
++                <a class="flex items-center gap-4 px-6 py-3 text-[#ba9eff] border-l-2 border-[#53ddfc] bg-[#171f36]/40 transition-all duration-200 ease-in-out font-medium text-sm font-body cursor-pointer" href="#">
++                    <span class="material-symbols-outlined">forum</span>
++                    Chat
++                </a>
++                <a class="flex items-center gap-4 px-6 py-3 text-[#dfe4fe]/50 hover:bg-[#171f36]/60 hover:text-[#dfe4fe] transition-all duration-200 ease-in-out font-medium text-sm font-body cursor-pointer" href="#">
++                    <span class="material-symbols-outlined">smart_toy</span>
++                    Agents
++                </a>
++                <a class="flex items-center gap-4 px-6 py-3 text-[#dfe4fe]/50 hover:bg-[#171f36]/60 hover:text-[#dfe4fe] transition-all duration-200 ease-in-out font-medium text-sm font-body cursor-pointer" href="#">
++                    <span class="material-symbols-outlined">settings</span>
++                    Settings
++                </a>
++            </nav>
++            <div class="px-6 mt-auto space-y-4">
++                <button class="w-full py-2.5 px-4 bg-gradient-to-r from-primary-dim to-primary text-on-primary-fixed font-bold rounded-lg shadow-[0_0_15px_rgba(132,85,239,0.3)] hover:brightness-110 transition-all font-headline text-sm cursor-pointer">
++                    Deploy Agent
++                </button>
++                <div class="space-y-1 border-t border-outline-variant/20 pt-4">
++                    <a class="flex items-center gap-4 py-2 text-[#dfe4fe]/50 hover:text-[#dfe4fe] text-xs font-mono cursor-pointer" href="#">
++                        <span class="material-symbols-outlined text-sm">help_outline</span>
++                        Support
++                    </a>
++                    <a class="flex items-center gap-4 py-2 text-[#dfe4fe]/50 hover:text-[#dfe4fe] text-xs font-mono cursor-pointer" href="#">
++                        <span class="material-symbols-outlined text-sm">terminal</span>
++                        Terminal
++                    </a>
++                </div>
++            </div>
++        </aside>
++
++        <!-- Main Content -->
++        <main class="ml-64 mt-16 h-[calc(100vh-64px)] grid grid-cols-12 relative" style="overflow: hidden;">
++            <!-- Chat History Column -->
++            <section class="col-span-3 bg-surface-container/30 border-r border-outline-variant/10 overflow-y-auto">
++                <div class="p-4 border-b border-outline-variant/10 flex justify-between items-center">
++                    <span class="text-xs font-mono text-secondary uppercase tracking-[0.2em]">History_Log</span>
++                    <span class="material-symbols-outlined text-sm text-outline cursor-pointer hover:text-secondary">add_comment</span>
++                </div>
++                <div class="p-2 space-y-2">
++                    <div v-for="chat in chatHistory" :key="chat.id"
++                         @click="selectChat(chat.id)"
++                         :class="['group relative glass-panel p-4 rounded-lg cursor-pointer transition-all duration-200',
++                                  currentChatId === chat.id ? 'border border-secondary/30 shadow-[0_0_20px_rgba(83,221,252,0.05)]' : 'border border-transparent hover:border-outline-variant/20']">
++                        <div v-if="currentChatId === chat.id" class="absolute left-0 top-0 bottom-0 w-1 bg-secondary rounded-full shadow-[0_0_8px_#53ddfc]"></div>
++                        <div class="flex justify-between mb-1">
++                            <span class="text-sm font-bold text-on-surface">{{ chat.title }}</span>
++                            <span class="text-[10px] font-mono text-outline">{{ chat.time }}</span>
++                        </div>
++                        <p class="text-xs text-on-surface-variant line-clamp-1">{{ chat.preview }}</p>
++                    </div>
++                </div>
++            </section>
++
++            <!-- Message Window -->
++            <section class="col-span-9 flex flex-col relative bg-surface-dim/20" style="overflow: hidden;">
++                <!-- Chat Header -->
++                <div class="h-16 flex items-center justify-between px-8 border-b border-outline-variant/10 glass-panel">
++                    <div class="flex items-center gap-4">
++                        <div class="w-3 h-3 rounded-full" :class="isConnected ? 'bg-secondary shadow-[0_0_10px_#53ddfc] animate-pulse' : 'bg-error-dim'"></div>
++                        <div>
++                            <h2 class="font-headline font-bold text-lg leading-none">{{ currentChatTitle }}</h2>
++                            <span class="text-[10px] font-mono text-secondary tracking-widest uppercase">
++                                Mode: {{ currentMode === 'stream' ? 'SSE Streaming' : 'Normal' }}
++                            </span>
++                        </div>
++                    </div>
++                    <div class="flex gap-4">
++                        <button class="material-symbols-outlined text-outline hover:text-primary transition-colors cursor-pointer">videocam</button>
++                        <button class="material-symbols-outlined text-outline hover:text-primary transition-colors cursor-pointer">info</button>
++                        <button class="material-symbols-outlined text-outline hover:text-primary transition-colors cursor-pointer">more_vert</button>
++                    </div>
++                </div>
++
++                <!-- Messages Area -->
++                <div class="flex-1 overflow-y-auto p-8 space-y-6"
++                     ref="messagesContainer"
++                     style="min-height: 0; overflow-y: auto; height: 100%;"
++                     id="messages-area">
++                    <!-- System Timestamp -->
++                    <div class="flex justify-center">
++                        <span class="text-[10px] font-mono py-1 px-3 rounded bg-surface-container-highest/40 text-outline border border-outline-variant/10 uppercase tracking-widest">
++                            Temporal Anchor: {{ currentDate }}
++                        </span>
++                    </div>
++
++                    <!-- Messages -->
++                    <div v-for="msg in messages" :key="msg.id">
++                        <!-- User Message -->
++                        <div v-if="msg.role === 'user'" class="flex flex-row-reverse items-start gap-4 max-w-2xl ml-auto">
++                            <div class="w-8 h-8 rounded bg-primary/20 border border-primary/40 flex items-center justify-center shrink-0 shadow-[0_0_10px_rgba(132,85,239,0.2)]">
++                                <span class="material-symbols-outlined text-sm text-primary">person</span>
++                            </div>
++                            <div class="space-y-2 text-right">
++                                <div class="bg-primary/10 backdrop-blur-md p-4 rounded-xl rounded-tr-none border border-primary/30 text-sm leading-relaxed text-on-surface shadow-[inset_0_1px_4px_rgba(186,158,255,0.1)]">
++                                    <p class="whitespace-pre-wrap">{{ msg.content }}</p>
++                                </div>
++                                <span class="text-[10px] font-mono text-outline">OPERATOR // {{ formatTime(msg.timestamp) }}</span>
++                            </div>
++                        </div>
++
++                        <!-- Assistant Message -->
++                        <div v-else-if="msg.role === 'assistant'" class="flex items-start gap-4 max-w-2xl">
++                            <div class="w-8 h-8 rounded bg-surface-container-highest border border-outline-variant/30 flex items-center justify-center shrink-0">
++                                <span class="material-symbols-outlined text-sm text-secondary">memory</span>
++                            </div>
++                            <div class="space-y-2">
++                                <div class="glass-panel p-4 rounded-xl rounded-tl-none border border-outline-variant/20 text-sm leading-relaxed shadow-[inset_0_1px_4px_rgba(255,255,255,0.05)]">
++                                    <p v-if="msg.content" class="whitespace-pre-wrap">{{ msg.content }}</p>
++
++                                    <!-- Tool Call Result Panel (内联) -->
++                                    <div v-if="msg.toolCall" class="tool-result-panel my-3">
++                                        <!-- 折叠头部 -->
++                                        <div
++                                            @click="msg.toolCall._expanded = !msg.toolCall._expanded"
++                                            class="flex items-center justify-between px-4 py-2 bg-surface-container-high/60 cursor-pointer hover:bg-surface-container-high/80 transition-colors rounded-t-lg border border-secondary/20">
++                                            <div class="flex items-center gap-2">
++                                                <span class="material-symbols-outlined text-sm" :class="msg.toolCall.status === 'success' ? 'text-secondary' : msg.toolCall.status === 'error' ? 'text-error' : 'text-secondary animate-spin'">
++                                                    {{ msg.toolCall._expanded ? 'keyboard_arrow_up' : 'keyboard_arrow_down' }}
++                                                </span>
++                                                <span class="text-xs font-bold text-on-surface">
++                                                    {{ msg.toolCall.status === 'success' ? '✅' : msg.toolCall.status === 'error' ? '❌' : '⏳' }}
++                                                    {{ msg.toolCall.status === 'running' ? '正在调用' : '工具结果' }}：{{ msg.toolCall.toolName }}
++                                                </span>
++                                                <span v-if="msg.toolCall.duration" class="text-[10px] font-mono text-outline">
++                                                    ({{ (msg.toolCall.duration / 1000).toFixed(1) }}s)
++                                                </span>
++                                            </div>
++                                            <button
++                                                v-if="msg.toolCall.result"
++                                                @click.stop="copyToolResult(msg.toolCall)"
++                                                class="material-symbols-outlined text-sm text-outline hover:text-on-surface transition-colors"
++                                                title="复制结果">
++                                                {{ msg.toolCall._copied ? 'check' : 'content_copy' }}
++                                            </button>
++                                        </div>
++
++                                        <!-- 折叠内容 -->
++                                        <div v-show="msg.toolCall._expanded" class="p-4 border-t border-secondary/10 space-y-3 bg-surface-container/40">
++                                            <!-- 状态栏 -->
++                                            <div class="flex items-center justify-between text-[10px] font-mono">
++                                                <div class="flex items-center gap-3">
++                                                    <span :class="msg.toolCall.status === 'success' ? 'text-secondary' : msg.toolCall.status === 'error' ? 'text-error' : 'text-secondary'">
++                                                        ● {{ msg.toolCall.status === 'success' ? '执行成功' : msg.toolCall.status === 'error' ? '执行失败' : '执行中...' }}
++                                                    </span>
++                                                    <span v-if="msg.toolCall.result?.type" class="text-outline">
++                                                        | 类型：{{ msg.toolCall.result.type }}
++                                                    </span>
++                                                </div>
++                                                <span class="text-outline" v-if="msg.toolCall.duration">
++                                                    耗时：{{ (msg.toolCall.duration / 1000).toFixed(2) }}s
++                                                </span>
++                                            </div>
++
++                                            <!-- 调用参数（如果有） -->
++                                            <div v-if="msg.toolCall.parameters" class="text-[10px] font-mono">
++                                                <div class="text-outline mb-1">调用参数：</div>
++                                                <pre class="bg-surface-container-lowest/50 p-2 rounded text-xs text-secondary overflow-x-auto">{{ msg.toolCall.parameters }}</pre>
++                                            </div>
++
++                                            <!-- 结果内容 -->
++                                            <div v-if="msg.toolCall.result" class="text-sm">
++                                                <div class="text-outline mb-2 text-[10px] font-mono">返回结果：</div>
++                                                <!-- Table -->
++                                                <div v-if="msg.toolCall.result.type === 'table' && Array.isArray(msg.toolCall.result.data)" class="overflow-x-auto">
++                                                    <table class="w-full text-xs font-mono">
++                                                        <thead class="bg-surface-container-high">
++                                                            <tr>
++                                                                <th v-for="key in Object.keys(msg.toolCall.result.data[0] || {})" :key="key" class="px-3 py-2 text-left text-on-surface-variant font-medium">
++                                                                    {{ key }}
++                                                                </th>
++                                                            </tr>
++                                                        </thead>
++                                                        <tbody>
++                                                            <tr v-for="(row, i) in msg.toolCall.result.data" :key="i" class="border-t border-outline-variant/10 hover:bg-surface-container-high/30">
++                                                                <td v-for="key in Object.keys(msg.toolCall.result.data[0] || {})" :key="key" class="px-3 py-2 text-on-surface">
++                                                                    {{ row[key] }}
++                                                                </td>
++                                                            </tr>
++                                                        </tbody>
++                                                    </table>
++                                                </div>
++                                                <!-- TSV/CSV -->
++                                                <div v-else-if="msg.toolCall.result.type === 'tsv'" class="overflow-x-auto">
++                                                    <table class="w-full text-xs font-mono border-collapse">
++                                                        <thead>
++                                                            <tr class="bg-surface-container-high">
++                                                                <th v-for="header in parseTSV(msg.toolCall.result.data)[0] ? Object.keys(parseTSV(msg.toolCall.result.data)[0]) : []"
++                                                                    :key="header"
++                                                                    class="px-3 py-2 text-left text-on-surface-variant font-medium border-b border-outline-variant/30 whitespace-nowrap">
++                                                                    {{ header }}
++                                                                </th>
++                                                            </tr>
++                                                        </thead>
++                                                        <tbody>
++                                                            <tr v-for="(row, i) in parseTSV(msg.toolCall.result.data)" :key="i"
++                                                                class="border-b border-outline-variant/10 hover:bg-surface-container-high/30 transition-colors">
++                                                                <td v-for="header in Object.keys(row)"
++                                                                    :key="header"
++                                                                    class="px-3 py-2 text-on-surface whitespace-nowrap">
++                                                                    {{ row[header] }}
++                                                                </td>
++                                                            </tr>
++                                                        </tbody>
++                                                    </table>
++                                                </div>
++                                                <!-- JSON -->
++                                                <pre v-else-if="msg.toolCall.result.type === 'json'" class="bg-surface-container-lowest p-3 rounded text-xs font-mono text-secondary overflow-x-auto border border-secondary/20">{{ JSON.stringify(msg.toolCall.result.data, null, 2) }}</pre>
++                                                <!-- List -->
++                                                <ul v-else-if="msg.toolCall.result.type === 'list' && Array.isArray(msg.toolCall.result.data)" class="space-y-1 text-xs">
++                                                    <li v-for="(item, i) in msg.toolCall.result.data" :key="i" class="flex items-start gap-2 text-on-surface">
++                                                        <span class="material-symbols-outlined text-sm text-secondary">circle</span>
++                                                        <span>{{ item }}</span>
++                                                    </li>
++                                                </ul>
++                                                <!-- Code -->
++                                                <pre v-else-if="msg.toolCall.result.type === 'code'" class="bg-surface-container-lowest p-3 rounded text-xs font-mono text-on-surface overflow-x-auto border border-outline-variant/20"><code>{{ msg.toolCall.result.data }}</code></pre>
++                                                <!-- Text -->
++                                                <pre v-else class="bg-surface-container-lowest/50 p-3 rounded text-xs font-mono text-on-surface overflow-x-auto whitespace-pre-wrap">{{ msg.toolCall.result.data }}</pre>
++                                            </div>
++
++                                            <!-- 运行中提示 -->
++                                            <div v-if="!msg.toolCall.result && msg.toolCall.status === 'running'" class="text-center py-4">
++                                                <span class="text-secondary animate-pulse">工具执行中，请稍候...</span>
++                                            </div>
++                                        </div>
++
++                                        <!-- 折叠提示 -->
++                                        <div v-if="!msg.toolCall._expanded && msg.toolCall.status === 'running'" class="px-4 py-1 bg-surface-container-low/40 text-[10px] text-secondary text-center rounded-b-lg animate-pulse">
++                                            ⏳ 工具执行中...
++                                        </div>
++                                        <div v-else-if="!msg.toolCall._expanded" class="px-4 py-1 bg-surface-container-low/40 text-[10px] text-outline text-center rounded-b-lg">
++                                            点击展开查看结果
++                                        </div>
++                                    </div>
++                                </div>
++                                <span class="text-[10px] font-mono text-outline">AI_AGENT // {{ formatTime(msg.timestamp) }}</span>
++                            </div>
++                        </div>
++
++                        <!-- System Message -->
++                        <div v-else-if="msg.role === 'system'" class="flex justify-center">
++                            <span class="text-[10px] font-mono py-1 px-3 rounded bg-surface-container-highest/40 text-outline border border-outline-variant/10">
++                                {{ msg.content }}
++                            </span>
++                        </div>
++
++                        <!-- Trace Event -->
++                        <div v-if="msg.type === 'trace'" :class="['trace-event mx-4 my-2 p-3 rounded-lg text-xs border-l-4', getTraceClass(msg.traceType)]">
++                            <div class="text-[10px] text-outline mb-1">{{ msg.traceType }} - {{ formatTime(msg.timestamp) }}</div>
++                            <div class="text-on-surface font-mono text-xs">{{ msg.content }}</div>
++                        </div>
++                    </div>
++
++                    <!-- Loading Indicator -->
++                    <div v-if="isStreaming" class="flex items-start gap-4 max-w-2xl">
++                        <div class="w-8 h-8 rounded bg-surface-container-highest border border-outline-variant/30 flex items-center justify-center shrink-0">
++                            <span class="material-symbols-outlined text-sm text-secondary animate-spin">sync</span>
++                        </div>
++                        <div class="glass-panel p-4 rounded-xl rounded-tl-none border border-outline-variant/20 text-sm">
++                            <span class="text-secondary">AI 正在思考</span>
++                            <span class="terminal-cursor animate-pulse-fast"></span>
++                        </div>
++                    </div>
++                </div>
++
++                <!-- Terminal Input Area -->
++                <div class="p-6 glass-panel border-t border-outline-variant/10">
++                    <div class="relative group">
++                        <div class="absolute -inset-0.5 bg-gradient-to-r from-secondary/30 to-primary/30 rounded-lg blur opacity-20 group-focus-within:opacity-50 transition duration-500"></div>
++                        <div class="relative flex bg-surface-container-lowest border-b border-secondary/50 p-4 font-mono text-sm gap-4 items-center rounded-t-lg">
++                            <span class="text-secondary opacity-70">root@jobclaw:~$</span>
++                            <input
++                                ref="messageInput"
++                                v-model="inputMessage"
++                                @keypress="handleKeyPress"
++                                :disabled="isStreaming"
++                                class="flex-1 bg-transparent text-on-surface outline-none placeholder:text-outline-variant"
++                                placeholder="Type your command..."
++                                type="text"
++                            />
++                            <div class="flex gap-4">
++                                <button class="material-symbols-outlined text-outline hover:text-on-surface cursor-pointer">attach_file</button>
++                                <button class="material-symbols-outlined text-outline hover:text-on-surface cursor-pointer">mood</button>
++                            </div>
++                        </div>
++                        <div class="flex justify-between items-center bg-surface-container-high/40 px-4 py-2 rounded-b-lg">
++                            <span class="text-[10px] font-mono text-outline uppercase tracking-wider italic">
++                                Session Active: {{ sessionTime }}
++                            </span>
++                            <button
++                                @click="sendMessage"
++                                :disabled="isStreaming || !inputMessage.trim()"
++                                class="flex items-center gap-2 py-1.5 px-6 bg-secondary text-surface-container-lowest font-bold rounded shadow-[0_0_15px_rgba(83,221,252,0.4)] hover:shadow-[0_0_25px_rgba(83,221,252,0.6)] transition-all uppercase tracking-tighter text-xs disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none">
++                                <span class="material-symbols-outlined text-sm">send</span>
++                                {{ isStreaming ? 'Sending...' : 'Transmit' }}
++                            </button>
++                        </div>
++                    </div>
++
++                    <!-- Mode Selector -->
++                    <div class="mt-4 flex gap-2">
++                        <button
++                            @click="setMode('normal')"
++                            :class="['mode-btn px-4 py-2 rounded text-xs font-bold transition-all',
++                                     currentMode === 'normal' ? 'bg-primary text-on-primary-fixed' : 'bg-surface-container-high text-outline hover:bg-surface-container-highest']">
++                            普通模式
++                        </button>
++                        <button
++                            @click="setMode('stream')"
++                            :class="['mode-btn px-4 py-2 rounded text-xs font-bold transition-all',
++                                     currentMode === 'stream' ? 'bg-secondary text-surface-container-lowest' : 'bg-surface-container-high text-outline hover:bg-surface-container-highest']">
++                            流式输出 (SSE)
++                        </button>
++                    </div>
++                </div>
++            </section>
++        </main>
++
++        <!-- System Notifications Overlay -->
++        <div class="absolute top-20 right-6 w-72 space-y-3 z-50 pointer-events-none">
++            <transition-group name="collapse">
++                <div v-for="notif in notifications" :key="notif.id"
++                     :class="['glass-panel p-4 border-l-4 rounded-r-lg shadow-xl animate-bounce-subtle',
++                              notif.type === 'error' ? 'border-error/80' : 'border-secondary/80']">
++                    <div class="flex gap-3">
++                        <span :class="['material-symbols-outlined', notif.type === 'error' ? 'text-error' : 'text-secondary']">
++                            {{ notif.type === 'error' ? 'priority_high' : 'verified_user' }}
++                        </span>
++                        <div>
++                            <h4 class="text-xs font-bold text-on-surface">{{ notif.title }}</h4>
++                            <p class="text-[10px] text-outline">{{ notif.message }}</p>
++                        </div>
++                    </div>
++                </div>
++            </transition-group>
+         </div>
+     </div>
++
+     <script>
+-        const messagesEl = document.getElementById('messages');
+-        const inputEl = document.getElementById('messageInput');
+-        const sendBtn = document.getElementById('sendBtn');
+-        let sessionKey = 'web:' + Date.now();
+-
+-        async function loadStatus() {
+-            try {
+-                const res = await fetch('/api/status');
+-                const data = await res.json();
+-                document.getElementById('status-value').textContent = data.status;
+-                document.getElementById('model-value').textContent = data.model;
+-                document.getElementById('sessions-count').textContent = data.sessions;
+-            } catch (e) {
+-                document.getElementById('status-value').textContent = 'Error';
+-            }
+-        }
++        const { createApp, ref, computed, onMounted, onUnmounted, watch } = Vue;
+ 
+-        function addMessage(role, content) {
+-            const div = document.createElement('div');
+-            div.className = 'message ' + role;
+-            div.textContent = content;
+-            messagesEl.appendChild(div);
+-            messagesEl.scrollTop = messagesEl.scrollHeight;
+-        }
++        // ==================== Main App ====================
++        createApp({
++            setup() {
++                // State
++                const messages = ref([]);
++                const inputMessage = ref('');
++                const currentMode = ref('stream');
++                const isStreaming = ref(false);
++                const isConnected = ref(false);
++                const sessionKey = ref('web:' + Date.now());
++                const sessionStartTime = ref(Date.now());
++                const sessionTime = ref('00:00:00');
++                const searchQuery = ref('');
++                const messageInput = ref(null);
++                const messagesContainer = ref(null);
++
++                // 当前正在流式输出的 assistant 消息 ID
++                let currentStreamingMessageId = null;
+ 
+-        async function sendMessage() {
+-            const message = inputEl.value.trim();
+-            if (!message) return;
++                // 监听消息变化，自动滚动到底部
++                watch(() => messages.value.length, () => {
++                    // 消息数量变化时滚动到底部
++                    setTimeout(() => {
++                        if (messagesContainer.value) {
++                            messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight;
++                        }
++                    }, 20);
++                });
++
++                // Chat History (Mock Data)
++                const chatHistory = ref([
++                    { id: 'chat_001', title: 'Neural_Sync_04', time: '12:44', preview: 'Buffer overflow detected in sector 7G. Awaiting protocol...' },
++                    { id: 'chat_002', title: 'Fleet_Comms_X9', time: '09:12', preview: 'Encryption keys rotated for all active nodes.' },
++                    { id: 'chat_003', title: 'Archivist_Bot', time: 'Yesterday', preview: 'Metadata cleanup complete. 4.2TB released.' },
++                    { id: 'chat_004', title: 'Job_Search_Alpha', time: 'Yesterday', preview: 'Found 15 matching positions in Shanghai area.' },
++                ]);
++                const currentChatId = ref('chat_001');
+ 
+-            addMessage('user', message);
+-            inputEl.value = '';
+-            sendBtn.disabled = true;
+-            sendBtn.innerHTML = '<span class="loading"></span>';
++                // Notifications
++                const notifications = ref([]);
+ 
+-            try {
+-                const res = await fetch('/api/chat', {
+-                    method: 'POST',
+-                    headers: { 'Content-Type': 'application/json' },
+-                    body: JSON.stringify({ message, sessionKey })
++                // Computed
++                const currentChatTitle = computed(() => {
++                    const chat = chatHistory.value.find(c => c.id === currentChatId.value);
++                    return chat ? chat.title : 'Unknown Chat';
+                 });
+-                const data = await res.json();
+-                if (data.success) {
+-                    addMessage('assistant', data.message);
+-                } else {
+-                    addMessage('system', 'Error: ' + data.error);
+-                }
+-            } catch (e) {
+-                addMessage('system', 'Error: ' + e.message);
+-            } finally {
+-                sendBtn.disabled = false;
+-                sendBtn.textContent = 'Send';
+-                loadStatus();
+-            }
+-        }
+ 
+-        function handleKeyPress(e) {
+-            if (e.key === 'Enter') sendMessage();
+-        }
++                const currentDate = computed(() => {
++                    const now = new Date();
++                    return now.toISOString().split('T')[0].replace(/-/g, '.');
++                });
++
++                // Methods
++                const formatTime = (timestamp) => {
++                    if (!timestamp) return '--:--';
++                    const date = new Date(timestamp);
++                    return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
++                };
++
++                const getTraceClass = (type) => {
++                    const classes = {
++                        'THINK_START': 'bg-[#1a3a5c] border-[#00d9ff]',
++                        'THINK_STREAM': 'bg-[#1a3a5c] border-[#00b8d4]',
++                        'THINK_END': 'bg-[#1a3a5c] border-[#00d9ff]',
++                        'TOOL_START': 'bg-[#2a1a3c] border-[#a855f7]',
++                        'TOOL_END': 'bg-[#2a1a3c] border-[#a855f7]',
++                        'TOOL_OUTPUT': 'bg-[#1a1a2e] border-[#666]',
++                        'ERROR': 'bg-[#3c1a1a] border-[#f44]',
++                        'FINAL': 'bg-[#1a3a2c] border-[#4a4]',
++                    };
++                    return classes[type] || 'bg-[#2a2a4a] border-[#88a]';
++                };
++
++                const setMode = (mode) => {
++                    currentMode.value = mode;
++                };
++
++                const selectChat = (chatId) => {
++                    currentChatId.value = chatId;
++                    // TODO: Load chat messages from backend
++                    addSystemMessage(`切换到会话：${chatId}`);
++                };
++
++                const addMessage = (role, content, toolCall = null) => {
++                    console.log('addMessage called:', { role, content: content?.substring(0, 50), toolCall: !!toolCall });
++
++                    // 如果有 toolCall，添加内部状态属性
++                    if (toolCall) {
++                        toolCall._expanded = false; // 默认折叠
++                        toolCall._copied = false;
++                        console.log('Tool call initialized:', { toolId: toolCall.toolId, toolName: toolCall.toolName });
++                    }
++                    const msg = {
++                        id: 'msg_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
++                        role,
++                        content,
++                        timestamp: new Date().toISOString(),
++                        toolCall
++                    };
++                    console.log('Message created:', { id: msg.id, role: msg.role, hasToolCall: !!msg.toolCall });
++                    messages.value.push(msg);
++                    console.log('Message pushed, total messages:', messages.value.length);
++                    scrollToBottom();
++                    return msg;
++                };
++
++                // 复制工具结果
++                const copyToolResult = async (toolCall) => {
++                    try {
++                        const text = toolCall?.result?.data ? JSON.stringify(toolCall.result.data, null, 2) : '';
++                        await navigator.clipboard.writeText(text);
++                        toolCall._copied = true;
++                        setTimeout(() => { toolCall._copied = false; }, 2000);
++                    } catch (e) {
++                        console.error('Copy failed:', e);
++                    }
++                };
++
++                const addSystemMessage = (content) => {
++                    addMessage('system', content);
++                };
++
++                const addTraceEvent = (traceType, content) => {
++                    messages.value.push({
++                        id: 'trace_' + Date.now(),
++                        type: 'trace',
++                        traceType,
++                        content,
++                        timestamp: new Date().toISOString()
++                    });
++                    scrollToBottom();
++                };
++
++                const scrollToBottom = () => {
++                    // 多次尝试滚动，确保在 DOM 完全渲染后也能工作
++                    const doScroll = () => {
++                        if (messagesContainer.value) {
++                            const container = messagesContainer.value;
++                            console.log('Scroll container:', {
++                                scrollTop: container.scrollTop,
++                                scrollHeight: container.scrollHeight,
++                                clientHeight: container.clientHeight,
++                                offsetHeight: container.offsetHeight
++                            });
++                            container.scrollTop = container.scrollHeight;
++                        } else {
++                            console.log('messagesContainer is null');
++                        }
++                    };
++
++                    // 立即尝试一次
++                    doScroll();
++
++                    // 再延迟尝试一次（处理 Vue 异步更新的情况）
++                    setTimeout(doScroll, 50);
++                    setTimeout(doScroll, 100);
++                };
++
++                const appendToLastAssistantMessage = (content) => {
++                    // 优先使用当前流式消息 ID（确保流式内容追加到正确的消息）
++                    if (currentStreamingMessageId) {
++                        const existingMsg = messages.value.find(m => m.id === currentStreamingMessageId);
++                        if (existingMsg) {
++                            existingMsg.content += content;
++                            scrollToBottom();
++                            return;
++                        }
++                    }
++
++                    // 查找最后一个没有 toolCall 的 assistant 消息
++                    const lastAssistantMsg = messages.value.slice().reverse().find(m =>
++                        m.role === 'assistant' && !m.toolCall
++                    );
++                    if (lastAssistantMsg) {
++                        lastAssistantMsg.content += content;
++                    } else {
++                        const newMsg = addMessage('assistant', content);
++                        if (currentStreamingMessageId === null) {
++                            currentStreamingMessageId = newMsg.id;
++                        }
++                    }
++                    scrollToBottom();
++                };
++
++                const addNotification = (title, message, type = 'success') => {
++                    const id = 'notif_' + Date.now();
++                    notifications.value.push({ id, title, message, type });
++                    setTimeout(() => {
++                        notifications.value = notifications.value.filter(n => n.id !== id);
++                    }, 5000);
++                };
+ 
+-        loadStatus();
+-        addMessage('system', 'Welcome to JobClaw! Start chatting with the AI agent.');
++                const sendMessage = async () => {
++                    const message = inputMessage.value.trim();
++                    if (!message || isStreaming.value) return;
++
++                    addMessage('user', message);
++                    inputMessage.value = '';
++                    isStreaming.value = true;
++
++                    if (currentMode.value === 'stream') {
++                        sendStream(message);
++                    } else {
++                        sendNormal(message);
++                    }
++                };
++
++                const sendNormal = async (message) => {
++                    try {
++                        const res = await fetch('/api/chat', {
++                            method: 'POST',
++                            headers: { 'Content-Type': 'application/json' },
++                            body: JSON.stringify({ message, sessionKey: sessionKey.value })
++                        });
++                        const data = await res.json();
++                        if (data.success) {
++                            addMessage('assistant', data.message);
++                        } else {
++                            addMessage('system', 'Error: ' + data.error);
++                        }
++                    } catch (e) {
++                        addMessage('system', 'Error: ' + e.message);
++                    } finally {
++                        isStreaming.value = false;
++                    }
++                };
++
++                const sendStream = (message) => {
++                    addSystemMessage('Connecting to execution stream...');
++
++                    fetch('/api/execute/stream', {
++                        method: 'POST',
++                        headers: { 'Content-Type': 'application/json' },
++                        body: JSON.stringify({ message, sessionKey: sessionKey.value })
++                    })
++                    .then(response => {
++                        if (!response.ok) {
++                            throw new Error('Network response was not ok: ' + response.status);
++                        }
++                        isConnected.value = true;
++                        addNotification('STREAM CONNECTED', 'Connected to execution stream');
++
++                        const reader = response.body.getReader();
++                        const decoder = new TextDecoder('utf-8');
++                        let buffer = '';
++
++                        const pump = () => {
++                            return reader.read().then(({ done, value }) => {
++                                if (done) {
++                                    console.log('Stream completed');
++                                    isStreaming.value = false;
++                                    isConnected.value = false;
++                                    return;
++                                }
++
++                                const chunk = decoder.decode(value, { stream: false });
++                                console.log('Raw chunk:', chunk);
++                                buffer += chunk;
++
++                                // 按行处理 SSE 格式
++                                const lines = buffer.split('\n');
++                                buffer = lines.pop() || ''; // 保留未完成的最后一行
++
++                                let currentEvent = null;
++
++                                for (const line of lines) {
++                                    console.log('Processing line:', line);
++
++                                    // 跳过空行和注释
++                                    if (!line.trim() || line.trim().startsWith(':')) {
++                                        continue;
++                                    }
++
++                                    // 解析 event: 行
++                                    if (line.startsWith('event:')) {
++                                        currentEvent = line.slice(6).trim();
++                                        console.log('Event type:', currentEvent);
++                                        continue;
++                                    }
++
++                                    // 解析 data: 行
++                                    if (line.startsWith('data:')) {
++                                        const dataStr = line.slice(5).trim();
++                                        console.log('Data:', dataStr);
++
++                                        try {
++                                            const data = JSON.parse(dataStr);
++                                            handleStreamData(data, currentEvent);
++                                        } catch (e) {
++                                            console.error('JSON parse error:', e, 'Data:', dataStr);
++                                        }
++                                        currentEvent = null; // 重置事件类型
++                                    }
++                                }
++
++                                pump();
++                            });
++                        };
++
++                        return pump();
++                    })
++                    .catch(err => {
++                        console.error('Fetch error:', err);
++                        addMessage('system', 'Stream error: ' + err.message);
++                        isStreaming.value = false;
++                        isConnected.value = false;
++                        addNotification('STREAM ERROR', err.message, 'error');
++                    });
++                };
++
++                const handleStreamData = (data, eventType) => {
++                    console.log('=== Received stream data ===', { data, eventType });
++
++                    // 处理 connected 事件
++                    if (eventType === 'connected' || data.subscriberId) {
++                        console.log('Connected to stream:', data.subscriberId || data.sessionId);
++                        isConnected.value = true;
++                        return;
++                    }
++
++                    // 处理 complete 事件（后端已不再发送，保留以防兼容）
++                    if (eventType === 'complete' || data.result !== undefined) {
++                        console.log('Stream complete, result:', data.result);
++                        isStreaming.value = false;
++                        return;
++                    }
++
++                    // 处理 error 事件
++                    if (eventType === 'error' || data.error) {
++                        console.error('Stream error:', data.error);
++                        addMessage('system', 'Error: ' + (data.error || 'Unknown error'));
++                        isStreaming.value = false;
++                        isConnected.value = false;
++                        return;
++                    }
++
++                    // 处理 execution-event 事件（主要事件类型）
++                    if (data.sessionId && data.type && data.content !== undefined) {
++                        const eventType_str = data.type;
++                        const content = data.content || '';
++
++                        console.log('Processing execution event:', eventType_str, 'content length:', content.length);
++
++                        // THINK_STREAM - 流式输出 AI 回复内容
++                        if (eventType_str === 'THINK_STREAM') {
++                            appendToLastAssistantMessage(content);
++                            return;
++                        }
++
++                        // THINK_START - 思考开始（创建初始 assistant 消息）
++                        if (eventType_str === 'THINK_START') {
++                            // 创建一个新的 assistant 消息用于接收后续的 THINK_STREAM 内容
++                            const newMsg = addMessage('assistant', '');
++                            currentStreamingMessageId = newMsg.id;
++                            return;
++                        }
++
++                        // FINAL_RESPONSE - 最终响应（不创建新消息，THINK_STREAM 已包含完整内容）
++                        if (eventType_str === 'FINAL_RESPONSE') {
++                            // 清理流式消息 ID
++                            currentStreamingMessageId = null;
++                            // 设置流式状态为 false
++                            isStreaming.value = false;
++                            // 不再创建新消息，避免与 THINK_STREAM 内容重复
++                            return;
++                        }
++
++                        // THINK_END - 思考结束（只显示为 trace）
++                        if (eventType_str === 'THINK_END') {
++                            addTraceEvent(eventType_str, content);
++                            return;
++                        }
++
++                        // TOOL_START - 工具调用开始（创建工具卡片，插入到 THINK_STREAM 消息之前）
++                        if (eventType_str === 'TOOL_START') {
++                            console.log('TOOL_START event received');
++                            console.log('data:', data);
++                            console.log('data.metadata:', data?.metadata);
++
++                            try {
++                                const toolName = (data && data.metadata && data.metadata.toolName) || 'unknown_tool';
++                                const toolId = (data && data.metadata && data.metadata.toolId) || ('read_word_' + Date.now());
++
++                                console.log('Extracted toolName:', toolName);
++                                console.log('Extracted toolId:', toolId);
++
++                                // 创建工具卡片消息
++                                const toolMsg = addMessage('assistant', '', {
++                                    toolId: toolId,
++                                    toolName: toolName,
++                                    status: 'running',
++                                    duration: 0,
++                                    result: null,
++                                    parameters: data?.content || ''
++                                });
++
++                                // 将工具卡片消息移动到 THINK_STREAM 消息之前
++                                if (currentStreamingMessageId) {
++                                    const streamingIndex = messages.value.findIndex(m => m.id === currentStreamingMessageId);
++                                    const toolIndex = messages.value.findIndex(m => m.id === toolMsg.id);
++                                    if (streamingIndex !== -1 && toolIndex !== -1 && toolIndex > streamingIndex) {
++                                        // 将工具卡片移动到 THINK_STREAM 消息之前
++                                        messages.value.splice(toolIndex, 1);
++                                        messages.value.splice(streamingIndex, 0, toolMsg);
++                                    }
++                                }
++
++                                console.log('Tool card created successfully');
++                            } catch (e) {
++                                console.error('TOOL_START error:', e);
++                                console.error('Error stack:', e.stack);
++                            }
++                            return;
++                        }
++
++                        // TOOL_END - 工具调用完成（更新工具卡片）
++                        if (eventType_str === 'TOOL_END') {
++                            const toolName = data.metadata?.toolName || 'unknown_tool';
++                            const toolId = data.metadata?.toolId;
++
++                            console.log('TOOL_END:', { toolName, toolId });
++
++                            // 优先使用 toolId 精确匹配
++                            let targetMsg = null;
++
++                            if (toolId) {
++                                // 使用 toolId 精确匹配
++                                targetMsg = messages.value.find(m => m.toolCall && m.toolCall.toolId === toolId);
++                                console.log('Found by toolId:', targetMsg ? 'YES' : 'NO');
++                            }
++
++                            // 如果没找到，尝试用 toolName 匹配最新的
++                            if (!targetMsg) {
++                                targetMsg = messages.value.slice().reverse().find(m =>
++                                    m.toolCall &&
++                                    m.toolCall.toolName === toolName &&
++                                    m.toolCall.status === 'running'
++                                );
++                                console.log('Found by toolName:', targetMsg ? 'YES' : 'NO');
++                            }
++
++                            if (targetMsg) {
++                                targetMsg.toolCall.status = 'success';
++                                targetMsg.toolCall.duration = data.metadata?.durationMs || 0;
++                                // 尝试从 metadata 或 content 中解析结果
++                                try {
++                                    const resultData = data.metadata?.result || (content ? JSON.parse(content) : {});
++                                    targetMsg.toolCall.result = {
++                                        type: determineResultType(resultData),
++                                        data: resultData
++                                    };
++                                } catch (e) {
++                                    targetMsg.toolCall.result = {
++                                        type: 'text',
++                                        data: content
++                                    };
++                                }
++                                console.log('Updated tool card status to success with result');
++                            } else {
++                                console.warn('TOOL_END: 未找到对应的工具调用消息', { toolName, toolId });
++                            }
++                            // 不显示为 trace event
++                            return;
++                        }
++
++                        // TOOL_OUTPUT - 工具输出结果（更新到工具卡片）
++                        if (eventType_str === 'TOOL_OUTPUT') {
++                            console.log('TOOL_OUTPUT received');
++
++                            // 使用 toolId 精确匹配（不管状态）
++                            const toolId = data.metadata?.toolId;
++                            console.log('Looking for toolId:', toolId);
++
++                            const targetMsg = messages.value.find(m => m.toolCall && m.toolCall.toolId === toolId);
++
++                            console.log('Found target message:', targetMsg ? 'YES' : 'NO');
++                            if (targetMsg) {
++                                console.log('Current tool status:', targetMsg.toolCall.status);
++
++                                try {
++                                    // 尝试解析 JSON
++                                    const resultData = JSON.parse(content);
++                                    console.log('Parsed result, type:', typeof resultData);
++                                    targetMsg.toolCall.result = {
++                                        type: determineResultType(resultData),
++                                        data: resultData
++                                    };
++                                    console.log('Result set, type:', targetMsg.toolCall.result.type);
++                                } catch (e) {
++                                    console.log('Parse failed, using text');
++                                    // 解析失败，作为文本处理
++                                    targetMsg.toolCall.result = {
++                                        type: 'text',
++                                        data: content
++                                    };
++                                }
++                            } else {
++                                console.warn('TOOL_OUTPUT: Message not found');
++                                console.log('Available messages:', messages.value.length);
++                                messages.value.forEach((m, i) => {
++                                    console.log(`  [${i}] role=${m.role}, hasTool=${!!m.toolCall}, toolId=${m.toolCall?.toolId}, status=${m.toolCall?.status}`);
++                                });
++                            }
++                            return;
++                        }
++
++                        // TOOL_ERROR - 工具执行错误
++                        if (eventType_str === 'TOOL_ERROR') {
++                            const toolName = data.metadata?.toolName || 'unknown_tool';
++                            const toolId = data.metadata?.toolId;
++
++                            // 优先使用 toolId 精确匹配
++                            let targetMsg = null;
++
++                            if (toolId) {
++                                targetMsg = messages.value.find(m => m.toolCall && m.toolCall.toolId === toolId);
++                            }
++
++                            if (!targetMsg) {
++                                targetMsg = messages.value.slice().reverse().find(m => m.toolCall && m.toolCall.status === 'running');
++                            }
++
++                            if (targetMsg) {
++                                targetMsg.toolCall.status = 'error';
++                                targetMsg.toolCall.result = {
++                                    type: 'text',
++                                    data: content
++                                };
++                            }
++                            // 不显示为 trace event
++                            return;
++                        }
++
++                        // 其他事件类型 - 显示为轨迹
++                        addTraceEvent(eventType_str, content);
++                        return;
++                    }
++
++                    // 未知数据格式
++                    console.log('Unknown data format:', data);
++                };
++
++                // 根据数据类型自动判断结果类型
++                const determineResultType = (data) => {
++                    if (Array.isArray(data)) {
++                        return 'table'; // 数组默认用表格显示
++                    }
++                    if (typeof data === 'object' && data !== null) {
++                        // 检查是否是简单的键值对
++                        const keys = Object.keys(data);
++                        if (keys.length <= 5 && keys.every(k => typeof data[k] !== 'object')) {
++                            return 'list'; // 简单对象用列表显示
++                        }
++                        return 'json'; // 复杂对象用 JSON 显示
++                    }
++                    // 如果是字符串，尝试判断是否为 TSV/CSV 表格格式
++                    if (typeof data === 'string') {
++                        const lines = data.trim().split(/\r?\n/);
++                        if (lines.length >= 2) {
++                            // 检查是否包含制表符（TSV）或逗号（CSV）
++                            if (lines[0].includes('\t') || lines[0].includes(',')) {
++                                return 'tsv'; // TSV/CSV 格式，用表格显示
++                            }
++                        }
++                    }
++                    return 'text'; // 其他用文本显示
++                };
++
++                // 解析 TSV/CSV 字符串为数组对象
++                const parseTSV = (data) => {
++                    if (typeof data !== 'string') return [];
++
++                    const lines = data.trim().split(/\r?\n/);
++                    if (lines.length < 2) return [];
++
++                    // 判断分隔符（制表符或逗号）
++                    const delimiter = lines[0].includes('\t') ? '\t' : ',';
++
++                    // 第一行是表头
++                    const headers = lines[0].split(delimiter).map(h => h.trim());
++
++                    // 剩余行是数据
++                    const result = [];
++                    for (let i = 1; i < lines.length; i++) {
++                        const values = lines[i].split(delimiter).map(v => v.trim());
++                        const row = {};
++                        headers.forEach((header, index) => {
++                            row[header] = values[index] || '';
++                        });
++                        result.push(row);
++                    }
++
++                    return result;
++                };
++
++                const handleKeyPress = (e) => {
++                    if (e.key === 'Enter' && !isStreaming.value) {
++                        sendMessage();
++                    }
++                };
++
++                // Session timer
++                let sessionTimer = null;
++                const startSessionTimer = () => {
++                    sessionTimer = setInterval(() => {
++                        const elapsed = Date.now() - sessionStartTime.value;
++                        const hours = Math.floor(elapsed / 3600000);
++                        const minutes = Math.floor((elapsed % 3600000) / 60000);
++                        const seconds = Math.floor((elapsed % 60000) / 1000);
++                        sessionTime.value =
++                            String(hours).padStart(2, '0') + ':' +
++                            String(minutes).padStart(2, '0') + ':' +
++                            String(seconds).padStart(2, '0');
++                    }, 1000);
++                };
++
++                // Lifecycle
++                onMounted(() => {
++                    startSessionTimer();
++                    addSystemMessage('Welcome to JobClaw! Start chatting with the AI agent.');
++                    addSystemMessage('Switch to "流式输出 (SSE)" mode to see real-time execution trace.');
++
++                    // Add mock tool call demo
++                    setTimeout(() => {
++                        const mockToolMsg = addMessage('assistant', '正在为您查询职位信息...', {
++                            toolName: 'job_search',
++                            status: 'running',
++                            duration: 0,
++                            result: null
++                        });
++
++                        setTimeout(() => {
++                            mockToolMsg.toolCall.status = 'success';
++                            mockToolMsg.toolCall.duration = 1234;
++                            mockToolMsg.toolCall.result = {
++                                type: 'table',
++                                data: [
++                                    { title: 'Java 开发工程师', company: '某科技公司', salary: '20-40K', location: '上海' },
++                                    { title: '前端工程师', company: '某互联网公司', salary: '15-30K', location: '北京' },
++                                    { title: '全栈工程师', company: '某创业公司', salary: '25-45K', location: '深圳' }
++                                ]
++                            };
++                            addNotification('TOOL COMPLETE', 'job_search completed successfully');
++                        }, 2000);
++                    }, 1500);
++                });
++
++                onUnmounted(() => {
++                    if (sessionTimer) clearInterval(sessionTimer);
++                });
++
++                return {
++                    messages,
++                    inputMessage,
++                    currentMode,
++                    isStreaming,
++                    isConnected,
++                    searchQuery,
++                    chatHistory,
++                    currentChatId,
++                    currentChatTitle,
++                    currentDate,
++                    sessionTime,
++                    notifications,
++                    messageInput,
++                    messagesContainer,
++                    formatTime,
++                    getTraceClass,
++                    setMode,
++                    selectChat,
++                    sendMessage,
++                    handleKeyPress,
++                    copyToolResult,
++                    parseTSV
++                };
++            }
++        }).mount('#jobclaw-app');
+     </script>
+ </body>
+ </html>

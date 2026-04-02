@@ -1,0 +1,36 @@
+# JobClaw Application Configuration
+spring:
+  application:
+    name: JobClaw
+  ai:
+    openai:
+      # 使用 DashScope Coding Plan 的 API Key（从 config.json 读取，这里是占位符）
+      api-key: ${DASHSCOPE_API_KEY:sk-placeholder}
+      # Spring AI 会自动追加/v1，所以这里不需要/v1
+      base-url: ${DASHSCOPE_BASE_URL:https://coding.dashscope.aliyuncs.com}
+      chat:
+        options:
+          model: ${DASHSCOPE_MODEL:qwen3.5-plus}
+
+# Server Configuration
+server:
+  port: 18791
+
+# JobClaw Configuration
+jobclaw:
+  config-path: ~/.jobclaw/config.json
+  workspace-path: ~/.jobclaw/workspace
+  # 工具返回结果最大长度（字符数），默认 10000，避免超长输出
+  max-tool-output-length: 10000
+
+# Logging
+logging:
+  level:
+    root: INFO
+    io.jobclaw: DEBUG
+    org.springframework.ai: DEBUG
+  pattern:
+    console: '%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n'
+    file: '%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n'
+  file:
+    name: logs/jobclaw.log
