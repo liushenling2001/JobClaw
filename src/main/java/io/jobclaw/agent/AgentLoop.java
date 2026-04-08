@@ -7,6 +7,7 @@ import io.jobclaw.context.ContextAssembler;
 import io.jobclaw.context.ContextAssemblyOptions;
 import io.jobclaw.context.ContextAssemblyPolicy;
 import io.jobclaw.config.Config;
+import io.jobclaw.config.ProvidersConfig;
 import io.jobclaw.session.Session;
 import io.jobclaw.session.SessionManager;
 import io.jobclaw.summary.SummaryService;
@@ -100,15 +101,27 @@ public class AgentLoop {
         this.sessionManager = sessionManager;
         this.allToolCallbacks = allToolCallbacks;
 
-        // 从配置获取 API Key、模型和 API 地址
-        String apiKey = config.getProviders().getDashscope().getApiKey();
+        // 从当前选中的 provider 配置获取 API Key、模型和 API 地址
+        String providerName = config.getAgent() != null ? config.getAgent().getProvider() : null;
+        String effectiveProviderName = providerName;
+        ProvidersConfig.ProviderConfig providerConfig = config.getProviderConfigByName(providerName);
+        if (providerConfig == null) {
+            providerConfig = config.getProviders().getFirstValidProvider().orElse(null);
+            if (providerConfig != null) {
+                effectiveProviderName = config.getProviders().getProviderName(providerConfig);
+            }
+        }
+        if (providerConfig == null) {
+            throw new IllegalStateException("No valid provider configuration found");
+        }
+        String apiKey = providerConfig.getApiKey();
         this.model = model != null ? model : config.getAgent().getModel();
-        String apiBase = config.getProviders().getDashscope().getApiBase();
+        String apiBase = providerConfig.getApiBase();
 
         // 如果 apiBase 为空，使用默认值
         if (apiBase == null || apiBase.isEmpty()) {
-            apiBase = "https://dashscope.aliyuncs.com/compatible-mode/v1";
-            logger.warn("apiBase not configured, using default: {}", apiBase);
+            apiBase = ProvidersConfig.getDefaultApiBase(effectiveProviderName);
+            logger.warn("apiBase not configured for provider '{}', using default: {}", effectiveProviderName, apiBase);
         }
 
         // Spring AI OpenAI 兼容模式会自动追加/v1，所以去掉配置中的/v1 后缀
