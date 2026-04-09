@@ -7,7 +7,13 @@ import io.jobclaw.context.ContextAssembler;
 import io.jobclaw.context.ContextAssemblyOptions;
 import io.jobclaw.context.ContextAssemblyPolicy;
 import io.jobclaw.config.Config;
-import io.jobclaw.config.ProvidersConfig;
+import io.jobclaw.runtime.provider.ProviderRuntime;
+import io.jobclaw.runtime.provider.ResolvedProviderConfig;
+import io.jobclaw.runtime.tool.DefaultToolExecutionStateTracker;
+import io.jobclaw.runtime.tool.ToolExecutionRequest;
+import io.jobclaw.runtime.tool.ToolExecutionResult;
+import io.jobclaw.runtime.tool.ToolExecutionStateTracker;
+import io.jobclaw.runtime.tool.ToolRuntime;
 import io.jobclaw.session.Session;
 import io.jobclaw.session.SessionManager;
 import io.jobclaw.summary.SummaryService;
@@ -28,17 +34,10 @@ import reactor.core.publisher.Flux;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
-import java.util.Queue;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
 
 /**
@@ -65,17 +64,14 @@ public class AgentLoop {
     private final ContextAssembler contextAssembler;
     private final ContextAssemblyPolicy contextAssemblyPolicy;
     private final SessionSummarizer sessionSummarizer;
+    private final ProviderRuntime providerRuntime;
+    private final ToolRuntime toolRuntime;
+    private final ToolExecutionStateTracker toolExecutionStateTracker;
 
     // 无工具调用的专用 ChatClient（用于摘要生成）
     private final ChatClient simpleChatClient;
 
-    // 工具调用期间的 THINK_STREAM 缓冲区（按 sessionKey 分组）
-    private final Map<String, Queue<String>> thinkStreamBuffer;
-
-    // 工具执行状态跟踪（独立的布尔状态，精确跟踪每个 session 是否在工具执行中）
-    private final Map<String, Boolean> toolExecutingState;
     private final ExecutorService toolExecutionExecutor;
-    private static final long DEFAULT_TOOL_CALL_TIMEOUT_SECONDS = 120L;
 
     public AgentLoop(Config config, SessionManager sessionManager,
                      ToolCallback[] allToolCallbacks,
@@ -84,7 +80,7 @@ public class AgentLoop {
                      ContextAssemblyPolicy contextAssemblyPolicy,
                      SummaryService summaryService) {
         this(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler, contextAssemblyPolicy,
-                summaryService, null, null);
+                summaryService, null, null, new ProviderRuntime());
     }
 
     /**
@@ -97,44 +93,40 @@ public class AgentLoop {
                      ContextAssemblyPolicy contextAssemblyPolicy,
                      SummaryService summaryService,
                      ChatClient chatClient, String model) {
+        this(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler, contextAssemblyPolicy,
+                summaryService, chatClient, model, new ProviderRuntime());
+    }
+
+    AgentLoop(Config config, SessionManager sessionManager,
+                     ToolCallback[] allToolCallbacks,
+                     ContextBuilder contextBuilder,
+                     ContextAssembler contextAssembler,
+                     ContextAssemblyPolicy contextAssemblyPolicy,
+                     SummaryService summaryService,
+                     ChatClient chatClient, String model,
+                     ProviderRuntime providerRuntime) {
         this.config = config;
         this.sessionManager = sessionManager;
         this.allToolCallbacks = allToolCallbacks;
+        this.providerRuntime = providerRuntime;
 
-        // 从当前选中的 provider 配置获取 API Key、模型和 API 地址
-        String providerName = config.getAgent() != null ? config.getAgent().getProvider() : null;
-        String effectiveProviderName = providerName;
-        ProvidersConfig.ProviderConfig providerConfig = config.getProviderConfigByName(providerName);
-        if (providerConfig == null) {
-            providerConfig = config.getProviders().getFirstValidProvider().orElse(null);
-            if (providerConfig != null) {
-                effectiveProviderName = config.getProviders().getProviderName(providerConfig);
-            }
-        }
-        if (providerConfig == null) {
-            throw new IllegalStateException("No valid provider configuration found");
-        }
-        String apiKey = providerConfig.getApiKey();
-        this.model = model != null ? model : config.getAgent().getModel();
-        String apiBase = providerConfig.getApiBase();
+        ResolvedProviderConfig resolvedProvider = providerRuntime.resolve(config, model);
+        this.model = resolvedProvider.model();
 
-        // 如果 apiBase 为空，使用默认值
-        if (apiBase == null || apiBase.isEmpty()) {
-            apiBase = ProvidersConfig.getDefaultApiBase(effectiveProviderName);
-            logger.warn("apiBase not configured for provider '{}', using default: {}", effectiveProviderName, apiBase);
+        if (resolvedProvider.fallbackUsed()) {
+            logger.warn("requested provider not available, falling back to provider '{}'", resolvedProvider.providerName());
         }
-
-        // Spring AI OpenAI 兼容模式会自动追加/v1，所以去掉配置中的/v1 后缀
-        String baseUrlForSpringAi = apiBase.replaceAll("/v1$", "");
 
         logger.info("Spring AI OpenAI Compatible config - apiKey: {}***, model: {}, apiBase: {} -> using: {}",
-                apiKey != null && apiKey.length() > 4 ? apiKey.substring(0, 4) : "null",
-                this.model, apiBase, baseUrlForSpringAi);
+                resolvedProvider.apiKey() != null && resolvedProvider.apiKey().length() > 4
+                        ? resolvedProvider.apiKey().substring(0, 4)
+                        : "null",
+                this.model, resolvedProvider.apiBase(), resolvedProvider.springAiBaseUrl());
 
         // 创建 OpenAI API 客户端（支持自定义 baseUrl，兼容 DashScope Coding Plan）
         OpenAiApi openAiApi = OpenAiApi.builder()
-                .apiKey(apiKey)
-                .baseUrl(baseUrlForSpringAi)
+                .apiKey(resolvedProvider.apiKey())
+                .baseUrl(resolvedProvider.springAiBaseUrl())
                 .build();
 
         // 创建 ChatModel（带工具调用）
@@ -177,13 +169,13 @@ public class AgentLoop {
         );
 
         // 初始化 THINK_STREAM 缓冲区
-        this.thinkStreamBuffer = new ConcurrentHashMap<>();
-        this.toolExecutingState = new ConcurrentHashMap<>();
         this.toolExecutionExecutor = Executors.newCachedThreadPool(r -> {
             Thread thread = new Thread(r, "jobclaw-tool-call");
             thread.setDaemon(true);
             return thread;
         });
+        this.toolExecutionStateTracker = new DefaultToolExecutionStateTracker();
+        this.toolRuntime = new ToolRuntime(config, sessionManager, toolExecutionExecutor, toolExecutionStateTracker);
 
         logger.info("AgentLoop initialized with {} tools from Spring context", this.allToolCallbacks.length);
         for (ToolCallback callback : this.allToolCallbacks) {
@@ -318,8 +310,8 @@ public class AgentLoop {
                 if (content != null && !content.isEmpty()) {
                     fullResponse.append(content);
                     if (eventCallback != null) {
-                        if (isToolExecuting(sessionKey)) {
-                            bufferThinkStream(sessionKey, content);
+                        if (toolExecutionStateTracker.isExecuting(sessionKey)) {
+                            toolExecutionStateTracker.bufferThink(sessionKey, content);
                         } else {
                             eventCallback.accept(new ExecutionEvent(
                                     sessionKey,
@@ -567,170 +559,14 @@ public class AgentLoop {
 
             @Override
             public String call(String request) {
-                String toolName = getToolDefinition().name();
-                String toolId = toolName + "_" + System.currentTimeMillis();
-                long toolStartAt = System.currentTimeMillis();
-
-                // 构建 metadata（使用 Map.of 节省内存）
-                Map<String, Object> startMetadata = Map.of(
-                    "toolName", toolName,
-                    "toolId", toolId,
-                    "request", truncateToolRequest(request)
-                );
-
-                io.jobclaw.providers.Message assistantToolMessage =
-                        io.jobclaw.providers.Message.assistant("");
-                assistantToolMessage.setToolCalls(List.of(
-                        new io.jobclaw.providers.ToolCall(toolId, toolName, request)
+                ToolExecutionResult result = toolRuntime.execute(new ToolExecutionRequest(
+                        sessionKey,
+                        getToolDefinition().name(),
+                        request,
+                        callback,
+                        eventCallback
                 ));
-                sessionManager.addFullMessage(sessionKey, assistantToolMessage);
-
-                // 标记工具执行中，THINK_STREAM 需要缓冲
-                setToolExecuting(sessionKey, true);
-
-                // 发布 TOOL_START 事件（包含 metadata）
-                if (eventCallback != null) eventCallback.accept(new ExecutionEvent(
-                    sessionKey,
-                    ExecutionEvent.EventType.TOOL_START,
-                    "正在调用工具：" + toolName ,
-                    startMetadata
-                ));
-
-                String response = null;
-                Throwable throwable = null;
-                try {
-                    // 调用原始工具（带统一超时，避免单个工具阻塞导致整条执行链卡死）
-                    response = callToolWithTimeout(callback, request, toolName);
-                    sessionManager.addFullMessage(sessionKey,
-                            io.jobclaw.providers.Message.tool(toolId, response));
-
-                    // 构建 metadata（使用 Map.of 节省内存）
-                    Map<String, Object> endMetadata = Map.of(
-                        "toolName", toolName,
-                        "toolId", toolId,
-                        "request", truncateToolRequest(request),
-                        "durationMs", System.currentTimeMillis() - toolStartAt
-                    );
-                    
-                    // 发布 TOOL_END 事件（包含 metadata）
-                    if (eventCallback != null) eventCallback.accept(new ExecutionEvent(
-                        sessionKey,
-                        ExecutionEvent.EventType.TOOL_END,
-                        "工具调用完成：" + toolName,
-                        endMetadata
-                    ));
-                    
-                    // 限制工具返回结果的长度
-                    String resultData = truncateOutput(response, toolName);
-                    
-                    // 发布 TOOL_OUTPUT 事件（显示工具返回结果，包含 metadata）
-                    if (eventCallback != null) eventCallback.accept(new ExecutionEvent(
-                        sessionKey,
-                        ExecutionEvent.EventType.TOOL_OUTPUT,
-                        resultData,
-                        endMetadata  // 使用相同的 metadata
-                    ));
-
-                    return response;
-
-                } catch (Throwable e) {
-                    throwable = e;
-                    // 构建 error metadata（使用 Map.of 节省内存）
-                    sessionManager.addFullMessage(sessionKey,
-                            io.jobclaw.providers.Message.tool(toolId, "ERROR: " + e.getMessage()));
-                    Map<String, Object> errorMetadata = Map.of(
-                        "toolName", toolName,
-                        "toolId", toolId,
-                        "request", truncateToolRequest(request),
-                        "durationMs", System.currentTimeMillis() - toolStartAt
-                    );
-
-                    // 发布 TOOL_ERROR 事件
-                    if (eventCallback != null) eventCallback.accept(new ExecutionEvent(
-                        sessionKey,
-                        ExecutionEvent.EventType.TOOL_ERROR,
-                        "工具执行失败：" + toolName + " - " + e.getMessage(),
-                        errorMetadata
-                    ));
-                    throw asRuntimeException(e);
-                } finally {
-                    // 无论成功、失败、超时或中断，都必须收敛执行态，避免“工具执行中”状态残留
-                    setToolExecuting(sessionKey, false);
-                    if (throwable == null) {
-                        if (eventCallback != null) {
-                            flushThinkStreamBuffer(sessionKey, eventCallback);
-                        } else {
-                            clearThinkStreamBuffer(sessionKey);
-                        }
-                    } else {
-                        clearThinkStreamBuffer(sessionKey);
-                    }
-                }
-            }
-            
-            /**
-             * 截断工具输出结果，避免超长反馈
-             *
-             * @param output 原始输出
-             * @param toolName 工具名称
-             * @return 截断后的输出（带提示信息）
-             */
-            private String truncateOutput(String output, String toolName) {
-                if (output == null) {
-                    return "无返回数据";
-                }
-                
-                int maxLength = config.getAgent().getMaxToolOutputLength();
-                
-                if (output.length() <= maxLength) {
-                    return output;
-                }
-                
-                // 截断并添加提示信息
-                String truncated = output.substring(0, maxLength);
-                String truncateNotice = "\n\n[... 返回结果已截断，共 " + output.length() + 
-                                       " 字符，显示前 " + maxLength + " 字符 ...]";
-                
-                logger.info("工具 {} 输出超长 ({} 字符)，已截断至 {} 字符", 
-                           toolName, output.length(), maxLength);
-                
-                return truncated + truncateNotice;
-            }
-
-            private String truncateToolRequest(String request) {
-                if (request == null || request.isBlank()) {
-                    return "";
-                }
-                int maxLength = Math.min(500, config.getAgent().getMaxToolOutputLength());
-                if (request.length() <= maxLength) {
-                    return request;
-                }
-                return request.substring(0, maxLength) + "\n[request truncated]";
-            }
-
-            private String callToolWithTimeout(ToolCallback callback, String request, String toolName) {
-                Future<String> future = toolExecutionExecutor.submit(() -> callback.call(request));
-                try {
-                    return future.get(DEFAULT_TOOL_CALL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-                } catch (TimeoutException e) {
-                    future.cancel(true);
-                    throw new RuntimeException("Tool '" + toolName + "' timed out after "
-                            + DEFAULT_TOOL_CALL_TIMEOUT_SECONDS + " seconds", e);
-                } catch (InterruptedException e) {
-                    future.cancel(true);
-                    Thread.currentThread().interrupt();
-                    throw new RuntimeException("Tool '" + toolName + "' execution interrupted", e);
-                } catch (ExecutionException e) {
-                    Throwable cause = e.getCause();
-                    throw cause != null ? asRuntimeException(cause) : new RuntimeException(e);
-                }
-            }
-
-            private RuntimeException asRuntimeException(Throwable throwable) {
-                if (throwable instanceof RuntimeException runtimeException) {
-                    return runtimeException;
-                }
-                return new RuntimeException(throwable);
+                return result.response();
             }
         };
     }
@@ -758,58 +594,6 @@ public class AgentLoop {
      */
     public String getStatus() {
         return "Spring AI initialized (model: " + config.getAgent().getModel() + ")";
-    }
-    
-    /**
-     * 缓冲 THINK_STREAM 事件（工具执行期间）
-     */
-    private void bufferThinkStream(String sessionKey, String content) {
-        thinkStreamBuffer.computeIfAbsent(sessionKey, k -> new LinkedList<>()).offer(content);
-    }
-    
-    /**
-     * 刷新缓冲的 THINK_STREAM 事件
-     */
-    private void flushThinkStreamBuffer(String sessionKey, Consumer<ExecutionEvent> eventCallback) {
-        Queue<String> buffer = thinkStreamBuffer.get(sessionKey);
-        if (buffer != null && !buffer.isEmpty()) {
-            logger.debug("Flushing {} buffered THINK_STREAM events for session: {}", buffer.size(), sessionKey);
-            String content;
-            while ((content = buffer.poll()) != null) {
-                eventCallback.accept(new ExecutionEvent(
-                        sessionKey,
-                        ExecutionEvent.EventType.THINK_STREAM,
-                        content
-                ));
-            }
-        }
-    }
-    
-    /**
-     * 清空 THINK_STREAM 缓冲区
-     */
-    private void clearThinkStreamBuffer(String sessionKey) {
-        thinkStreamBuffer.remove(sessionKey);
-    }
-    
-    /**
-     * 检查是否正在执行工具
-     */
-    private boolean isToolExecuting(String sessionKey) {
-        return toolExecutingState.getOrDefault(sessionKey, false);
-    }
-
-    /**
-     * 设置工具执行状态
-     */
-    private void setToolExecuting(String sessionKey, boolean executing) {
-        if (executing) {
-            toolExecutingState.put(sessionKey, true);
-            thinkStreamBuffer.computeIfAbsent(sessionKey, k -> new LinkedList<>());
-        } else {
-            toolExecutingState.put(sessionKey, false);
-            toolExecutingState.remove(sessionKey);
-        }
     }
     
     /**

@@ -32,7 +32,7 @@ public class DefaultContextAssembler implements ContextAssembler {
 
     @Override
     public List<Message> assemble(String sessionId, String currentUserInput, ContextAssemblyOptions options) {
-        List<Message> history = new ArrayList<>(sessionManager.getHistory(sessionId));
+        List<Message> history = filterHistoricalMessages(sessionManager.getHistory(sessionId));
         int recentLimit = options != null && options.recentMessageLimit() > 0
                 ? options.recentMessageLimit()
                 : defaultRecentLimit;
@@ -108,6 +108,9 @@ public class DefaultContextAssembler implements ContextAssembler {
 
         int consumed = 0;
         for (StoredMessage storedMessage : retrievedHistory) {
+            if (isToolMessage(storedMessage.role())) {
+                continue;
+            }
             if (isAlreadyPresent(storedMessage, recentHistory)) {
                 continue;
             }
@@ -146,6 +149,25 @@ public class DefaultContextAssembler implements ContextAssembler {
             case "tool" -> Message.tool(storedMessage.toolCallId(), storedMessage.content());
             default -> Message.user(storedMessage.content());
         };
+    }
+
+    private List<Message> filterHistoricalMessages(List<Message> messages) {
+        if (messages == null || messages.isEmpty()) {
+            return new ArrayList<>();
+        }
+
+        List<Message> filtered = new ArrayList<>();
+        for (Message message : messages) {
+            if (message == null || isToolMessage(message.getRole())) {
+                continue;
+            }
+            filtered.add(message);
+        }
+        return filtered;
+    }
+
+    private boolean isToolMessage(String role) {
+        return "tool".equals(role);
     }
 
     private String buildMemoryFactContext(List<MemoryFact> memoryFacts, int tokenBudget) {

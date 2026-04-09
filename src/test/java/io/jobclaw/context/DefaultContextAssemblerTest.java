@@ -52,6 +52,55 @@ class DefaultContextAssemblerTest {
         assertTrue(maxContentLength < 1800);
     }
 
+    @Test
+    void shouldExcludeToolMessagesFromRecentHistory() {
+        SessionManager sessionManager = new SessionManager();
+        sessionManager.addMessage("ctx-test", "user", "请分析 excel");
+        sessionManager.addMessage("ctx-test", "assistant", "我先读取文件");
+        sessionManager.addFullMessage("ctx-test", Message.tool("tool-1", "A1:B999 的原始表格输出"));
+        sessionManager.addMessage("ctx-test", "assistant", "分析结果：销量最高的是三月");
+
+        DefaultContextAssembler assembler = new DefaultContextAssembler(sessionManager, 10, new StubRetrievalService());
+
+        List<Message> messages = assembler.assemble(
+                "ctx-test",
+                "继续总结",
+                new ContextAssemblyOptions(10, 4, 3, 4, 4096)
+        );
+
+        assertFalse(messages.stream().anyMatch(message -> "tool".equals(message.getRole())));
+        assertTrue(messages.stream().anyMatch(message -> "assistant".equals(message.getRole())
+                && message.getContent().contains("分析结果")));
+    }
+
+    @Test
+    void shouldExcludeToolMessagesFromRetrievedHistory() {
+        SessionManager sessionManager = new SessionManager();
+        sessionManager.addMessage("ctx-test", "user", "继续分析");
+
+        RetrievalService retrievalService = new StubRetrievalService() {
+            @Override
+            public List<StoredMessage> searchHistory(SearchQuery query) {
+                return List.of(
+                        new StoredMessage("h-tool", "ctx-test", 1, "tool", "旧工具输出", null, "tool-1", null, null, Map.of(), Instant.now()),
+                        new StoredMessage("h-assistant", "ctx-test", 2, "assistant", "旧分析结论", null, null, null, null, Map.of(), Instant.now())
+                );
+            }
+        };
+
+        DefaultContextAssembler assembler = new DefaultContextAssembler(sessionManager, 10, retrievalService);
+
+        List<Message> messages = assembler.assemble(
+                "ctx-test",
+                "继续分析",
+                new ContextAssemblyOptions(10, 4, 3, 4, 4096)
+        );
+
+        assertFalse(messages.stream().anyMatch(message -> "tool".equals(message.getRole())));
+        assertTrue(messages.stream().anyMatch(message -> "assistant".equals(message.getRole())
+                && message.getContent().contains("旧分析结论")));
+    }
+
     private static String repeat(String seed, int times) {
         return seed.repeat(Math.max(1, times));
     }
