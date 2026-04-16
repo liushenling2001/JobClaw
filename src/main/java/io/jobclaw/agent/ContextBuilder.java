@@ -247,12 +247,14 @@ public class ContextBuilder {
         sb.append("4. To create a reusable specialized agent, use `agent_catalog` to persist the definition.\n");
         sb.append("5. To run an existing persistent agent, use `spawn(agent='agent-name', task='...')`.\n");
         sb.append("6. Do not invent a parallel agent execution flow when `spawn` already fits the task.\n");
+        sb.append("7. For batch work with independent items (for example multiple files, links, or records), first use `subtasks(action='plan', items='id|title\\n...')` to register the worklist, then execute each item in isolation and mark it complete. Do not finish the parent task while pending subtasks remain.\n");
         sb.append("\n");
         sb.append("## Persistent Agents\n\n");
         sb.append("- Use `agent_catalog(action='create', ...)` to create a reusable agent.\n");
         sb.append("- Use `agent_catalog(action='list')` or `agent_catalog(action='get', name='...')` to inspect saved agents.\n");
         sb.append("- Use `spawn(agent='saved-agent-name', task='...')` to execute a saved agent.\n");
         sb.append("- Use `spawn(role='coder', task='...')` only for built-in role agents.\n");
+        sb.append("- When a spawned child corresponds to a tracked work item, pass `subtaskId='...'` so the runtime can keep the parent task open until all planned subtasks finish.\n");
         return sb.toString();
     }
 

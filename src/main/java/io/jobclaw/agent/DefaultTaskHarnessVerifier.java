@@ -21,6 +21,6 @@ public class DefaultTaskHarnessVerifier implements TaskHarnessVerifierRule {
         if (finalResponse.startsWith("Error:")) {
             return TaskHarnessVerificationResult.fail("ERROR_RESPONSE", finalResponse);
         }
-        return TaskHarnessVerificationResult.ok("Final response accepted");
+        return TaskHarnessVerificationResult.ok("No explicit failure detected in final response");
     }
 }

@@ -2,6 +2,7 @@ package io.jobclaw.agent;
 
 import org.springframework.stereotype.Component;
 
+import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
@@ -113,6 +114,55 @@ public class TaskHarnessService {
         return runs.get(runId);
     }
 
+    public TaskHarnessSubtask planSubtask(String runId,
+                                          String subtaskId,
+                                          String title,
+                                          Map<String, Object> metadata,
+                                          Consumer<ExecutionEvent> eventCallback) {
+        TaskHarnessRun run = runs.get(runId);
+        if (run == null || subtaskId == null || subtaskId.isBlank()) {
+            return null;
+        }
+        TaskHarnessSubtask subtask = run.upsertPlannedSubtask(subtaskId, title, metadata);
+        publishSubtask(run, subtask, "planned", "subtask_planned",
+                "Subtask planned: " + titleOrId(subtask), eventCallback);
+        return subtask;
+    }
+
+    public TaskHarnessSubtask startSubtask(String runId,
+                                           String subtaskId,
+                                           String title,
+                                           String childSessionId,
+                                           Map<String, Object> metadata,
+                                           Consumer<ExecutionEvent> eventCallback) {
+        TaskHarnessRun run = runs.get(runId);
+        if (run == null || subtaskId == null || subtaskId.isBlank()) {
+            return null;
+        }
+        TaskHarnessSubtask subtask = run.markSubtaskRunning(subtaskId, title, childSessionId, metadata);
+        publishSubtask(run, subtask, "running", "subtask_started",
+                "Subtask started: " + titleOrId(subtask), eventCallback);
+        return subtask;
+    }
+
+    public TaskHarnessSubtask completeSubtask(String runId,
+                                              String subtaskId,
+                                              String summary,
+                                              boolean success,
+                                              Map<String, Object> metadata,
+                                              Consumer<ExecutionEvent> eventCallback) {
+        TaskHarnessRun run = runs.get(runId);
+        if (run == null || subtaskId == null || subtaskId.isBlank()) {
+            return null;
+        }
+        TaskHarnessSubtask subtask = run.markSubtaskCompleted(subtaskId, summary, success, metadata);
+        publishSubtask(run, subtask, success ? "success" : "failed",
+                success ? "subtask_completed" : "subtask_failed",
+                summary != null && !summary.isBlank() ? summary : "Subtask finished: " + titleOrId(subtask),
+                eventCallback);
+        return subtask;
+    }
+
     private void recordFromEvent(TaskHarnessRun run, ExecutionEvent event) {
         TaskHarnessPhase phase = mapPhase(event.getType());
         Map<String, Object> metadata = new java.util.HashMap<>(event.getMetadata());
@@ -173,5 +223,26 @@ public class TaskHarnessService {
             metadata.put("kind", kind);
         }
         return metadata;
+    }
+
+    private void publishSubtask(TaskHarnessRun run,
+                                TaskHarnessSubtask subtask,
+                                String status,
+                                String label,
+                                String detail,
+                                Consumer<ExecutionEvent> eventCallback) {
+        HashMap<String, Object> metadata = new HashMap<>();
+        metadata.put("subtaskId", subtask.id());
+        metadata.put("subtaskTitle", titleOrId(subtask));
+        metadata.put("subtaskStatus", subtask.status().name());
+        metadata.put("pendingSubtasks", run.getPendingSubtaskCount());
+        if (subtask.childSessionId() != null) {
+            metadata.put("childSessionId", subtask.childSessionId());
+        }
+        transition(run, TaskHarnessPhase.OBSERVE, status, label, detail, metadata, eventCallback);
+    }
+
+    private String titleOrId(TaskHarnessSubtask subtask) {
+        return subtask.title() != null && !subtask.title().isBlank() ? subtask.title() : subtask.id();
     }
 }

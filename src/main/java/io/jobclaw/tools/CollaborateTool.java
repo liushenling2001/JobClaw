@@ -12,6 +12,7 @@ import io.jobclaw.agent.catalog.AgentCatalogService;
 import io.jobclaw.board.BoardEntry;
 import io.jobclaw.board.BoardRecord;
 import io.jobclaw.board.SharedBoardService;
+import io.jobclaw.config.Config;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
@@ -41,17 +42,20 @@ public class CollaborateTool {
     private final SharedBoardService sharedBoardService;
     private final ExecutionTraceService executionTraceService;
     private final BoardEventSummarizer boardEventSummarizer;
+    private final Config config;
 
     public CollaborateTool(@Lazy AgentRegistry agentRegistry,
                            AgentCatalogService agentCatalogService,
                            SharedBoardService sharedBoardService,
                            ExecutionTraceService executionTraceService,
-                           BoardEventSummarizer boardEventSummarizer) {
+                           BoardEventSummarizer boardEventSummarizer,
+                           Config config) {
         this.agentRegistry = agentRegistry;
         this.agentCatalogService = agentCatalogService;
         this.sharedBoardService = sharedBoardService;
         this.executionTraceService = executionTraceService;
         this.boardEventSummarizer = boardEventSummarizer;
+        this.config = config;
     }
 
     @Tool(
@@ -76,7 +80,7 @@ public class CollaborateTool {
             CollaborationMode collabMode = parseMode(mode);
             List<AgentDefinition> agentDefs = parseRoles(roles);
             int rounds = maxRounds != null ? maxRounds : (collabMode == CollaborationMode.DEBATE ? 3 : 1);
-            long timeout = timeoutMs != null ? timeoutMs : 60000L;
+            long timeout = timeoutMs != null ? timeoutMs : config.getAgent().getSubtaskTimeoutMs();
             String collabSessionKey = "collab-" + System.currentTimeMillis();
 
             logger.info("Starting collaboration: mode={}, agents={}, sessionKey={}",

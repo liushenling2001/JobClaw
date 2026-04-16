@@ -25,6 +25,8 @@ public class AgentConfig {
     private boolean promptOptimizationEnabled;
     private boolean collaborationEnabled;
     private int maxToolOutputLength;
+    private int toolCallTimeoutSeconds;
+    private long subtaskTimeoutMs;
     private List<String> commandBlacklist;
 
     // ==================== 上下文管理配置 ====================
@@ -73,6 +75,8 @@ public class AgentConfig {
         this.promptOptimizationEnabled = false;
         this.collaborationEnabled = true;
         this.maxToolOutputLength = 10000; // 默认限制工具返回 10000 字符
+        this.toolCallTimeoutSeconds = 120;
+        this.subtaskTimeoutMs = 300_000L;
         this.commandBlacklist = new ArrayList<>();
         // 上下文管理默认值（参考 TinyClaw）
         this.contextWindow = 128_000;
@@ -224,6 +228,22 @@ public class AgentConfig {
 
     public void setMaxToolOutputLength(int maxToolOutputLength) {
         this.maxToolOutputLength = maxToolOutputLength;
+    }
+
+    public int getToolCallTimeoutSeconds() {
+        return toolCallTimeoutSeconds;
+    }
+
+    public void setToolCallTimeoutSeconds(int toolCallTimeoutSeconds) {
+        this.toolCallTimeoutSeconds = toolCallTimeoutSeconds;
+    }
+
+    public long getSubtaskTimeoutMs() {
+        return subtaskTimeoutMs;
+    }
+
+    public void setSubtaskTimeoutMs(long subtaskTimeoutMs) {
+        this.subtaskTimeoutMs = subtaskTimeoutMs;
     }
 
     public List<String> getCommandBlacklist() {

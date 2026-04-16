@@ -224,6 +224,7 @@ public class AgentBeansConfig {
             ExecTool execTool,
             SharedBoardTool sharedBoardTool,
             AgentCatalogTool agentCatalogTool,
+            SubtasksTool subtasksTool,
             SpawnTool spawnTool,
             CollaborateTool collaborateTool) {
 
@@ -233,7 +234,7 @@ public class AgentBeansConfig {
                 .toolObjects(fileTools, runCommandTool, skillsTools, messageTool, cronTool,
                             mcpTool, tokenUsageTool, webSearchTool, webFetchTool, execTool,
                             sharedBoardTool,
-                            agentCatalogTool, spawnTool, collaborateTool)
+                            agentCatalogTool, subtasksTool, spawnTool, collaborateTool)
                 .build()
                 .getToolCallbacks();
     }

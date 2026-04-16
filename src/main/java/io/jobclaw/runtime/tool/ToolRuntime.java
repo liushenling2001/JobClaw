@@ -1,5 +1,6 @@
 package io.jobclaw.runtime.tool;
 
+import io.jobclaw.agent.AgentExecutionContext;
 import io.jobclaw.config.Config;
 import io.jobclaw.providers.Message;
 import io.jobclaw.providers.ToolCall;
@@ -18,7 +19,7 @@ import java.util.concurrent.TimeoutException;
 public class ToolRuntime {
 
     private static final Logger logger = LoggerFactory.getLogger(ToolRuntime.class);
-    private static final long DEFAULT_TOOL_CALL_TIMEOUT_SECONDS = 120L;
+    private static final long MIN_TIMEOUT_MILLIS = 1_000L;
 
     private final Config config;
     private final SessionManager sessionManager;
@@ -111,13 +112,29 @@ public class ToolRuntime {
     }
 
     private String callWithTimeout(ToolCallback callback, String request, String toolName) {
-        Future<String> future = toolExecutionExecutor.submit(() -> callback.call(request));
+        AgentExecutionContext.ExecutionScope capturedScope = AgentExecutionContext.getCurrentScope();
+        Future<String> future = toolExecutionExecutor.submit(() -> {
+            AgentExecutionContext.ExecutionScope previousScope = AgentExecutionContext.getCurrentScope();
+            if (capturedScope != null) {
+                AgentExecutionContext.setCurrentContext(capturedScope);
+            }
+            try {
+                return callback.call(request);
+            } finally {
+                if (previousScope != null) {
+                    AgentExecutionContext.setCurrentContext(previousScope);
+                } else {
+                    AgentExecutionContext.clear();
+                }
+            }
+        });
+        long timeoutMillis = resolveTimeoutMillis(toolName);
         try {
-            return future.get(DEFAULT_TOOL_CALL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            return future.get(timeoutMillis, TimeUnit.MILLISECONDS);
         } catch (TimeoutException e) {
             future.cancel(true);
             throw new RuntimeException("Tool '" + toolName + "' timed out after "
-                    + DEFAULT_TOOL_CALL_TIMEOUT_SECONDS + " seconds", e);
+                    + timeoutMillis + " ms", e);
         } catch (InterruptedException e) {
             future.cancel(true);
             Thread.currentThread().interrupt();
@@ -164,5 +181,12 @@ public class ToolRuntime {
             return runtimeException;
         }
         return new RuntimeException(throwable);
+    }
+
+    private long resolveTimeoutMillis(String toolName) {
+        if ("spawn".equals(toolName) || "collaborate".equals(toolName)) {
+            return Math.max(MIN_TIMEOUT_MILLIS, config.getAgent().getSubtaskTimeoutMs());
+        }
+        return Math.max(MIN_TIMEOUT_MILLIS, config.getAgent().getToolCallTimeoutSeconds() * 1_000L);
     }
 }

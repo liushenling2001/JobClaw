@@ -5,9 +5,11 @@ import io.jobclaw.agent.AgentExecutionContext;
 import io.jobclaw.agent.AgentOrchestrator;
 import io.jobclaw.agent.ExecutionEvent;
 import io.jobclaw.agent.ExecutionTraceService;
+import io.jobclaw.agent.TaskHarnessService;
 import io.jobclaw.agent.catalog.AgentCatalogService;
 import io.jobclaw.agent.catalog.SqliteAgentCatalogStore;
 import io.jobclaw.bus.MessageBus;
+import io.jobclaw.config.Config;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -52,8 +54,8 @@ class SpawnToolAgentCatalogIntegrationTest {
             return "handled by " + definition.getDisplayName();
         }).when(orchestrator).processWithDefinition(anyString(), anyString(), any(AgentDefinition.class));
 
-        SpawnTool spawnTool = new SpawnTool(orchestrator, catalogService, new MessageBus(), new ExecutionTraceService());
-        String response = spawnTool.spawn("analyze this jd", "JD Task", false, null, "jd analyst");
+        SpawnTool spawnTool = new SpawnTool(orchestrator, catalogService, new MessageBus(), new ExecutionTraceService(), new TaskHarnessService(), Config.defaultConfig());
+        String response = spawnTool.spawn("analyze this jd", "JD Task", false, null, "jd analyst", null, null);
 
         assertTrue(response.contains("jd analyst"));
         assertTrue(response.contains("handled by jd analyst"));
@@ -89,7 +91,7 @@ class SpawnToolAgentCatalogIntegrationTest {
             return "async done";
         }).when(orchestrator).processWithDefinition(anyString(), anyString(), any(AgentDefinition.class), any());
 
-        SpawnTool spawnTool = new SpawnTool(orchestrator, catalogService, new MessageBus(), traceService);
+        SpawnTool spawnTool = new SpawnTool(orchestrator, catalogService, new MessageBus(), traceService, new TaskHarnessService(), Config.defaultConfig());
         AgentExecutionContext.setCurrentContext(new AgentExecutionContext.ExecutionScope(
                 "web:parent",
                 null,
@@ -99,7 +101,7 @@ class SpawnToolAgentCatalogIntegrationTest {
                 "Assistant"
         ));
 
-        String response = spawnTool.spawn("investigate company", "Research Task", true, null, "research helper");
+        String response = spawnTool.spawn("investigate company", "Research Task", true, null, "research helper", null, null);
         assertTrue(response.contains("Run ID"));
 
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);

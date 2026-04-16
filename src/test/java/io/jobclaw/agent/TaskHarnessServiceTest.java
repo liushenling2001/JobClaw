@@ -82,4 +82,20 @@ class TaskHarnessServiceTest {
 
         assertNull(run.getLastFailure());
     }
+
+    @Test
+    void shouldTrackPendingSubtasksUntilCompleted() {
+        TaskHarnessService service = new TaskHarnessService();
+        TaskHarnessRun run = service.startRun("session-a", "run-4", "review multiple files", null);
+
+        service.planSubtask(run.getRunId(), "a.txt", "File A", java.util.Map.of(), null);
+        service.planSubtask(run.getRunId(), "b.txt", "File B", java.util.Map.of(), null);
+        service.startSubtask(run.getRunId(), "a.txt", "File A", "spawn-1", java.util.Map.of(), null);
+        service.completeSubtask(run.getRunId(), "a.txt", "done", true, java.util.Map.of(), null);
+
+        assertEquals(1, run.getPendingSubtaskCount());
+        assertEquals(2, run.getSubtasks().size());
+        assertTrue(run.getSubtasks().stream().anyMatch(subtask -> subtask.id().equals("a.txt")
+                && subtask.status() == TaskHarnessSubtaskStatus.COMPLETED));
+    }
 }

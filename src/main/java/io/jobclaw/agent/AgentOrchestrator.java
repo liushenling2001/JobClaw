@@ -198,6 +198,17 @@ public class AgentOrchestrator {
                 effectiveCallback
         );
 
+        AgentExecutionContext.ExecutionScope previousScope = AgentExecutionContext.getCurrentScope();
+        AgentExecutionContext.ExecutionScope harnessScope = new AgentExecutionContext.ExecutionScope(
+                sessionKey,
+                effectiveCallback,
+                runId,
+                previousScope != null ? previousScope.runId() : null,
+                previousScope != null ? previousScope.agentId() : "task_harness",
+                previousScope != null ? previousScope.agentName() : "Task Harness"
+        );
+        AgentExecutionContext.setCurrentContext(harnessScope);
+
         try {
             String currentResponse = action.run(userContent, effectiveCallback);
             TaskHarnessVerificationResult currentResult =
@@ -244,6 +255,12 @@ public class AgentOrchestrator {
             );
             taskHarnessService.complete(harnessRun, false, failedResult.reason(), effectiveCallback);
             return "Error: " + e.getMessage();
+        } finally {
+            if (previousScope != null) {
+                AgentExecutionContext.setCurrentContext(previousScope);
+            } else {
+                AgentExecutionContext.clear();
+            }
         }
     }
 

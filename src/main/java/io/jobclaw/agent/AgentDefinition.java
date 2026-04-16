@@ -158,7 +158,7 @@ public class AgentDefinition {
             role.getCode(),
             role.getDisplayName(),
             role.getSystemPrompt(),
-            role.getAllowedTools(),
+            null,
             null // Skills 暂不设置
         );
     }
