@@ -42,14 +42,24 @@ public class AgentDefinition {
      * Agent 专属配置
      */
     public static class AgentConfig {
+        private String provider;
         private String model;
         private Double temperature;
         private Integer maxTokens;
+        private Long timeoutMs;
         private String apiBase;
         private Map<String, Object> customSettings;
 
         public AgentConfig() {
             this.customSettings = new HashMap<>();
+        }
+
+        public String getProvider() {
+            return provider;
+        }
+
+        public void setProvider(String provider) {
+            this.provider = provider;
         }
 
         public String getModel() {
@@ -74,6 +84,14 @@ public class AgentDefinition {
 
         public void setMaxTokens(Integer maxTokens) {
             this.maxTokens = maxTokens;
+        }
+
+        public Long getTimeoutMs() {
+            return timeoutMs;
+        }
+
+        public void setTimeoutMs(Long timeoutMs) {
+            this.timeoutMs = timeoutMs;
         }
 
         public String getApiBase() {
@@ -158,7 +176,7 @@ public class AgentDefinition {
             role.getCode(),
             role.getDisplayName(),
             role.getSystemPrompt(),
-            role.getAllowedTools(),
+            null,
             null // Skills 暂不设置
         );
     }

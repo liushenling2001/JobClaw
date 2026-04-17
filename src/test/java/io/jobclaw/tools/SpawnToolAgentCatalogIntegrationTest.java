@@ -5,9 +5,12 @@ import io.jobclaw.agent.AgentExecutionContext;
 import io.jobclaw.agent.AgentOrchestrator;
 import io.jobclaw.agent.ExecutionEvent;
 import io.jobclaw.agent.ExecutionTraceService;
+import io.jobclaw.agent.TaskHarnessService;
+import io.jobclaw.agent.profile.AgentProfileService;
 import io.jobclaw.agent.catalog.AgentCatalogService;
-import io.jobclaw.agent.catalog.SqliteAgentCatalogStore;
+import io.jobclaw.agent.catalog.FileAgentCatalogStore;
 import io.jobclaw.bus.MessageBus;
+import io.jobclaw.config.Config;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -33,8 +36,10 @@ class SpawnToolAgentCatalogIntegrationTest {
     @Test
     void shouldInvokePersistentAgentViaSpawnSync() throws Exception {
         Path tempDir = Files.createTempDirectory("spawn-agent-sync");
+        Config config = Config.defaultConfig();
+        config.getAgent().setWorkspace(tempDir.toString());
         AgentCatalogService catalogService = new AgentCatalogService(
-                new SqliteAgentCatalogStore(tempDir.resolve("agents.db").toString())
+                new FileAgentCatalogStore(tempDir.resolve(".jobclaw").resolve("agents").toString())
         );
         AgentCatalogTool catalogTool = new AgentCatalogTool(catalogService);
         catalogTool.agentCatalog(
@@ -52,8 +57,8 @@ class SpawnToolAgentCatalogIntegrationTest {
             return "handled by " + definition.getDisplayName();
         }).when(orchestrator).processWithDefinition(anyString(), anyString(), any(AgentDefinition.class));
 
-        SpawnTool spawnTool = new SpawnTool(orchestrator, catalogService, new MessageBus(), new ExecutionTraceService());
-        String response = spawnTool.spawn("analyze this jd", "JD Task", false, null, "jd analyst");
+        SpawnTool spawnTool = new SpawnTool(orchestrator, new AgentProfileService(config, catalogService), new MessageBus(), new ExecutionTraceService(), new TaskHarnessService(), config);
+        String response = spawnTool.spawn("analyze this jd", "JD Task", false, null, "jd analyst", null, null);
 
         assertTrue(response.contains("jd analyst"));
         assertTrue(response.contains("handled by jd analyst"));
@@ -63,8 +68,10 @@ class SpawnToolAgentCatalogIntegrationTest {
     @Test
     void shouldPublishObservedEventsForPersistentAgentAsync() throws Exception {
         Path tempDir = Files.createTempDirectory("spawn-agent-async");
+        Config config = Config.defaultConfig();
+        config.getAgent().setWorkspace(tempDir.toString());
         AgentCatalogService catalogService = new AgentCatalogService(
-                new SqliteAgentCatalogStore(tempDir.resolve("agents.db").toString())
+                new FileAgentCatalogStore(tempDir.resolve(".jobclaw").resolve("agents").toString())
         );
         AgentCatalogTool catalogTool = new AgentCatalogTool(catalogService);
         catalogTool.agentCatalog(
@@ -89,17 +96,18 @@ class SpawnToolAgentCatalogIntegrationTest {
             return "async done";
         }).when(orchestrator).processWithDefinition(anyString(), anyString(), any(AgentDefinition.class), any());
 
-        SpawnTool spawnTool = new SpawnTool(orchestrator, catalogService, new MessageBus(), traceService);
+        SpawnTool spawnTool = new SpawnTool(orchestrator, new AgentProfileService(config, catalogService), new MessageBus(), traceService, new TaskHarnessService(), config);
         AgentExecutionContext.setCurrentContext(new AgentExecutionContext.ExecutionScope(
                 "web:parent",
                 null,
                 "run-parent",
                 null,
                 "assistant",
-                "Assistant"
+                "Assistant",
+                null
         ));
 
-        String response = spawnTool.spawn("investigate company", "Research Task", true, null, "research helper");
+        String response = spawnTool.spawn("investigate company", "Research Task", true, null, "research helper", null, null);
         assertTrue(response.contains("Run ID"));
 
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
@@ -113,5 +121,85 @@ class SpawnToolAgentCatalogIntegrationTest {
         assertTrue(events.stream().anyMatch(event -> "phase one".equals(event.getContent())));
         assertTrue(events.stream().allMatch(event -> "run-parent".equals(event.getParentRunId()) || event.getParentRunId() == null));
         assertTrue(childSessionRef.get() != null && childSessionRef.get().startsWith("spawn-"));
+    }
+
+    @Test
+    void shouldInheritParentAgentDefinitionWhenSpawnRunsWithoutRoleOrAgent() throws Exception {
+        AgentOrchestrator orchestrator = mock(AgentOrchestrator.class);
+        doAnswer(invocation -> {
+            AgentDefinition definition = invocation.getArgument(2);
+            return definition.getConfig().getModel() + "|" + definition.getConfig().getProvider();
+        }).when(orchestrator).processWithDefinition(anyString(), anyString(), any(AgentDefinition.class));
+
+        Config config = Config.defaultConfig();
+        Path tempDir = Files.createTempDirectory("spawn-inherit");
+        config.getAgent().setWorkspace(tempDir.toString());
+        SpawnTool spawnTool = new SpawnTool(
+                orchestrator,
+                new AgentProfileService(config, new AgentCatalogService(new FileAgentCatalogStore(tempDir.resolve(".jobclaw").resolve("agents").toString()))),
+                new MessageBus(),
+                new ExecutionTraceService(),
+                new TaskHarnessService(),
+                config
+        );
+
+        AgentDefinition.AgentConfig parentConfig = new AgentDefinition.AgentConfig();
+        parentConfig.setModel("parent-model");
+        parentConfig.setProvider("openai");
+        AgentDefinition parentDefinition = AgentDefinition.builder()
+                .code("parent-agent")
+                .displayName("Parent Agent")
+                .systemPrompt("parent prompt")
+                .config(parentConfig)
+                .build();
+
+        AgentExecutionContext.setCurrentContext(new AgentExecutionContext.ExecutionScope(
+                "web:parent",
+                null,
+                "run-parent",
+                null,
+                "parent-agent",
+                "Parent Agent",
+                parentDefinition
+        ));
+
+        String response = spawnTool.spawn("keep working", "Inherited Task", false, null, null, null, null);
+
+        assertTrue(response.contains("parent-model|openai"));
+        verify(orchestrator).processWithDefinition(anyString(), anyString(), any(AgentDefinition.class));
+    }
+
+    @Test
+    void explicitTimeoutShouldOverrideAgentConfigTimeout() throws Exception {
+        AgentOrchestrator orchestrator = mock(AgentOrchestrator.class);
+        doAnswer(invocation -> {
+            Thread.sleep(50);
+            return "done";
+        }).when(orchestrator).processWithDefinition(anyString(), anyString(), any(AgentDefinition.class));
+
+        Path tempDir = Files.createTempDirectory("spawn-timeout");
+        Config config = Config.defaultConfig();
+        config.getAgent().setWorkspace(tempDir.toString());
+        AgentCatalogService catalogService = new AgentCatalogService(
+                new FileAgentCatalogStore(tempDir.resolve(".jobclaw").resolve("agents").toString())
+        );
+        catalogService.createAgent(
+                "slow-agent",
+                "Slow Agent",
+                "slow",
+                "prompt",
+                java.util.List.of(),
+                null,
+                null,
+                java.util.Map.of("timeoutMs", 10L),
+                null
+        );
+
+        SpawnTool spawnTool = new SpawnTool(orchestrator, new AgentProfileService(config, catalogService), new MessageBus(),
+                new ExecutionTraceService(), new TaskHarnessService(), config);
+
+        String response = spawnTool.spawn("wait", "Slow Task", false, null, "slow-agent", null, 200L);
+
+        assertTrue(response.contains("done"));
     }
 }

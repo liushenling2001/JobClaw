@@ -3,7 +3,7 @@ package io.jobclaw.config;
 import io.jobclaw.agent.AgentLoop;
 import io.jobclaw.agent.catalog.AgentCatalogService;
 import io.jobclaw.agent.catalog.AgentCatalogStore;
-import io.jobclaw.agent.catalog.SqliteAgentCatalogStore;
+import io.jobclaw.agent.catalog.FileAgentCatalogStore;
 import io.jobclaw.board.SharedBoardService;
 import io.jobclaw.board.file.FileSharedBoardService;
 import io.jobclaw.bus.MessageBus;
@@ -110,8 +110,8 @@ public class AgentBeansConfig {
     @Bean
     @ConditionalOnMissingBean
     public AgentCatalogStore agentCatalogStore(Config config) {
-        return new SqliteAgentCatalogStore(
-                Paths.get(config.getWorkspacePath(), "sessions", "conversation", "agents.db").toString()
+        return new FileAgentCatalogStore(
+                Paths.get(config.getWorkspacePath(), ".jobclaw", "agents").toString()
         );
     }
 
@@ -224,6 +224,7 @@ public class AgentBeansConfig {
             ExecTool execTool,
             SharedBoardTool sharedBoardTool,
             AgentCatalogTool agentCatalogTool,
+            SubtasksTool subtasksTool,
             SpawnTool spawnTool,
             CollaborateTool collaborateTool) {
 
@@ -233,7 +234,7 @@ public class AgentBeansConfig {
                 .toolObjects(fileTools, runCommandTool, skillsTools, messageTool, cronTool,
                             mcpTool, tokenUsageTool, webSearchTool, webFetchTool, execTool,
                             sharedBoardTool,
-                            agentCatalogTool, spawnTool, collaborateTool)
+                            agentCatalogTool, subtasksTool, spawnTool, collaborateTool)
                 .build()
                 .getToolCallbacks();
     }

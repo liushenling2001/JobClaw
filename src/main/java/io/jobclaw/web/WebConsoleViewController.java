@@ -10,4 +10,26 @@ public class WebConsoleViewController {
     public String index() {
         return "forward:/index.html";
     }
+
+    @GetMapping({
+            "/login",
+            "/dashboard",
+            "/chat",
+            "/sessions",
+            "/sessions/{id}",
+            "/channels",
+            "/providers",
+            "/models",
+            "/agent",
+            "/agents",
+            "/cron",
+            "/skills",
+            "/mcp",
+            "/files",
+            "/stats",
+            "/settings"
+    })
+    public String spaRoutes() {
+        return "forward:/index.html";
+    }
 }

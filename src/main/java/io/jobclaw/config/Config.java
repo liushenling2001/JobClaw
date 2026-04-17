@@ -205,6 +205,8 @@ public class Config {
         config.getAgent().setMaxTestCommandRepairAttempts(1);
         config.getAgent().setMaxCommandExitRepairAttempts(1);
         config.getAgent().setMaxToolOutputLength(10000);
+        config.getAgent().setToolCallTimeoutSeconds(120);
+        config.getAgent().setSubtaskTimeoutMs(300_000L);
         // 上下文管理默认值（参考 TinyClaw）
         config.getAgent().setContextWindow(128_000);
         config.getAgent().setSummarizeMessageThreshold(200);

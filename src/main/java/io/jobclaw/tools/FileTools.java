@@ -1,36 +1,39 @@
 package io.jobclaw.tools;
 
 import io.jobclaw.config.Config;
-import org.apache.poi.hssf.usermodel.HSSFWorkbook;
-import org.apache.poi.hwpf.HWPFDocument;
-import org.apache.poi.hwpf.extractor.WordExtractor;
-import org.apache.poi.ss.usermodel.Row;
-import org.apache.poi.ss.usermodel.Sheet;
-import org.apache.poi.ss.usermodel.Workbook;
-import org.apache.poi.xssf.usermodel.XSSFSheet;
-import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.text.PDFTextStripper;
+import org.apache.tika.Tika;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.apache.poi.xwpf.usermodel.XWPFParagraph;
+import org.apache.poi.xwpf.usermodel.XWPFRun;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
 
-import java.io.FileInputStream;
-import java.nio.file.Path;
+import java.io.InputStream;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * 文件操作工具集合 - 基于 Spring AI @Tool 注解
  */
 @Component
 public class FileTools {
+    private static final int ESTIMATED_WORD_PAGE_CHAR_COUNT = 1800;
 
     private final Config config;
+    private final Tika tika;
 
     public FileTools(Config config) {
         this.config = config;
+        this.tika = new Tika();
     }
 
     @Tool(name = "read_file", description = "Read the contents of a file")
@@ -90,22 +93,18 @@ public class FileTools {
 
     @Tool(name = "read_word", description = "Read the contents of a Word document (.doc or .docx)")
     public String readWord(
-        @ToolParam(description = "The path of the Word document (.doc or .docx)") String path
+        @ToolParam(description = "The path of the Word document (.doc or .docx)") String path,
+        @ToolParam(description = "Number of pages to read from the beginning (optional)") String frontPages,
+        @ToolParam(description = "Number of random middle pages to read (optional)") String randomPages,
+        @ToolParam(description = "Number of pages to read from the end (optional)") String tailPages
     ) {
-        if (path == null || path.isEmpty()) {
-            return "Error: path is required";
-        }
-
-        String resolvedPath = resolvePath(path).toString();
-        String lowerPath = resolvedPath.toLowerCase();
         try {
-            if (lowerPath.endsWith(".docx")) {
-                return readDocx(resolvedPath);
-            } else if (lowerPath.endsWith(".doc")) {
-                return readDoc(resolvedPath);
-            } else {
-                return "Error: file must be a .doc or .docx file, got: " + path;
+            Path resolvedPath = requireReadablePath(path, ".doc", ".docx");
+            PageSelection selection = parsePageSelection(frontPages, randomPages, tailPages);
+            if (!selection.isActive()) {
+                return extractDocumentText(resolvedPath, null);
             }
+            return extractWordSample(resolvedPath, selection);
         } catch (Exception e) {
             return "Error reading Word document: " + e.getMessage();
         }
@@ -116,22 +115,37 @@ public class FileTools {
         @ToolParam(description = "The path of the Excel workbook (.xls or .xlsx)") String path,
         @ToolParam(description = "Sheet name or index (0-based, optional, default: 0)") String sheet
     ) {
-        if (path == null || path.isEmpty()) {
-            return "Error: path is required";
-        }
-
-        String resolvedPath = resolvePath(path).toString();
-        String lowerPath = resolvedPath.toLowerCase();
         try {
-            if (lowerPath.endsWith(".xlsx")) {
-                return readXlsx(resolvedPath, sheet);
-            } else if (lowerPath.endsWith(".xls")) {
-                return readXls(resolvedPath, sheet);
-            } else {
-                return "Error: file must be a .xls or .xlsx file, got: " + path;
+            Path resolvedPath = requireReadablePath(path, ".xls", ".xlsx");
+            String extraction = extractDocumentText(
+                    resolvedPath,
+                    "Note: Apache Tika currently returns workbook text for all sheets; the sheet parameter is ignored."
+            );
+            if (sheet == null || sheet.isBlank()) {
+                return extraction;
             }
+            return extraction;
         } catch (Exception e) {
             return "Error reading Excel workbook: " + e.getMessage();
+        }
+    }
+
+    @Tool(name = "read_pdf", description = "Read the contents of a PDF document (.pdf)")
+    public String readPdf(
+        @ToolParam(description = "The path of the PDF document (.pdf)") String path,
+        @ToolParam(description = "Number of pages to read from the beginning (optional)") String frontPages,
+        @ToolParam(description = "Number of random middle pages to read (optional)") String randomPages,
+        @ToolParam(description = "Number of pages to read from the end (optional)") String tailPages
+    ) {
+        try {
+            Path resolvedPath = requireReadablePath(path, ".pdf");
+            PageSelection selection = parsePageSelection(frontPages, randomPages, tailPages);
+            if (!selection.isActive()) {
+                return extractDocumentText(resolvedPath, null);
+            }
+            return extractPdfSample(resolvedPath, selection);
+        } catch (Exception e) {
+            return "Error reading PDF document: " + e.getMessage();
         }
     }
 
@@ -206,161 +220,191 @@ public class FileTools {
         }
     }
 
-    /**
-     * Read .docx file (Office 2007+)
-     */
-    private String readDocx(String path) throws Exception {
+    private String extractDocumentText(Path path, String note) throws Exception {
+        String content = tika.parseToString(path);
+        if (content == null || content.isBlank()) {
+            return "Error: no text content could be extracted from " + path.getFileName();
+        }
+        if (note == null || note.isBlank()) {
+            return content.trim();
+        }
+        return note + "\n\n" + content.trim();
+    }
+
+    private String extractPdfSample(Path path, PageSelection selection) throws Exception {
+        try (PDDocument document = PDDocument.load(path.toFile())) {
+            int totalPages = document.getNumberOfPages();
+            if (totalPages <= 0) {
+                return "Error: PDF contains no readable pages";
+            }
+
+            List<Integer> pages = choosePages(totalPages, selection);
+            PDFTextStripper stripper = new PDFTextStripper();
+            StringBuilder content = new StringBuilder();
+            content.append("PDF page sample from ").append(path.getFileName()).append('\n');
+            content.append("Total pages: ").append(totalPages).append('\n');
+            content.append("Selected pages: ").append(formatPageList(pages)).append("\n\n");
+
+            for (int page : pages) {
+                stripper.setStartPage(page);
+                stripper.setEndPage(page);
+                String pageText = stripper.getText(document).trim();
+                content.append("=== Page ").append(page).append(" ===\n");
+                content.append(pageText.isBlank() ? "[no readable text]" : pageText).append("\n\n");
+            }
+            return content.toString().trim();
+        }
+    }
+
+    private String extractWordSample(Path path, PageSelection selection) throws Exception {
+        List<String> pages = extractWordPages(path);
+        if (pages.isEmpty()) {
+            return "Error: Word document contains no readable text";
+        }
+
+        List<Integer> selectedPages = choosePages(pages.size(), selection);
         StringBuilder content = new StringBuilder();
-        try (FileInputStream fis = new FileInputStream(path);
-             XWPFDocument document = new XWPFDocument(fis)) {
-            
+        content.append("Word page sample from ").append(path.getFileName()).append('\n');
+        content.append("Total estimated pages: ").append(pages.size()).append('\n');
+        content.append("Selected estimated pages: ").append(formatPageList(selectedPages)).append('\n');
+        content.append("Note: Word page boundaries are estimated and may not match Office pagination exactly.\n\n");
+
+        for (int page : selectedPages) {
+            String pageText = pages.get(page - 1).trim();
+            content.append("=== Estimated Page ").append(page).append(" ===\n");
+            content.append(pageText.isBlank() ? "[no readable text]" : pageText).append("\n\n");
+        }
+        return content.toString().trim();
+    }
+
+    private List<String> extractWordPages(Path path) throws Exception {
+        String lowerPath = path.toString().toLowerCase();
+        if (lowerPath.endsWith(".docx")) {
+            return extractDocxPages(path);
+        }
+        String content = tika.parseToString(path);
+        return splitEstimatedPages(content);
+    }
+
+    private List<String> extractDocxPages(Path path) throws Exception {
+        List<String> pages = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+
+        try (InputStream inputStream = Files.newInputStream(path);
+             XWPFDocument document = new XWPFDocument(inputStream)) {
             for (XWPFParagraph paragraph : document.getParagraphs()) {
-                String text = paragraph.getText();
-                if (text != null && !text.isEmpty()) {
-                    content.append(text).append("\n");
+                appendParagraph(current, paragraph);
+                if (containsPageBreak(paragraph)) {
+                    flushEstimatedWordPage(pages, current, true);
+                    continue;
+                }
+                if (current.length() >= ESTIMATED_WORD_PAGE_CHAR_COUNT) {
+                    flushEstimatedWordPage(pages, current, false);
                 }
             }
-
-            document.getTables().forEach(table -> {
-                table.getRows().forEach(row -> {
-                    row.getTableCells().forEach(cell -> {
-                        content.append(cell.getText()).append("\t");
-                    });
-                    content.append("\n");
-                });
-                content.append("\n");
-            });
         }
-        return content.toString().trim();
+
+        flushEstimatedWordPage(pages, current, true);
+        return pages;
     }
 
-    /**
-     * Read .doc file (Office 97-2003)
-     */
-    private String readDoc(String path) throws Exception {
-        StringBuilder content = new StringBuilder();
-        try (FileInputStream fis = new FileInputStream(path);
-             HWPFDocument document = new HWPFDocument(fis);
-             WordExtractor extractor = new WordExtractor(document)) {
-            
-            String[] paragraphs = extractor.getParagraphText();
-            for (String paragraph : paragraphs) {
-                if (paragraph != null && !paragraph.trim().isEmpty()) {
-                    content.append(paragraph.trim()).append("\n");
-                }
-            }
+    private void appendParagraph(StringBuilder current, XWPFParagraph paragraph) {
+        String text = paragraph.getText();
+        if (text != null && !text.isBlank()) {
+            current.append(text.trim()).append('\n');
         }
-        return content.toString().trim();
     }
 
-    /**
-     * Read .xlsx file (Office 2007+)
-     */
-    private String readXlsx(String path, String sheetParam) throws Exception {
-        StringBuilder content = new StringBuilder();
-        try (FileInputStream fis = new FileInputStream(path);
-             XSSFWorkbook workbook = new XSSFWorkbook(fis)) {
-            
-            XSSFSheet sheetData;
-            int sheetIndex = 0;
-            
-            if (sheetParam != null && !sheetParam.isEmpty()) {
-                try {
-                    sheetIndex = Integer.parseInt(sheetParam);
-                    sheetData = workbook.getSheetAt(sheetIndex);
-                } catch (NumberFormatException e) {
-                    sheetData = workbook.getSheet(sheetParam);
-                    if (sheetData == null) {
-                        return "Error: sheet '" + sheetParam + "' not found";
-                    }
-                }
-            } else {
-                sheetData = workbook.getSheetAt(0);
+    private boolean containsPageBreak(XWPFParagraph paragraph) {
+        for (XWPFRun run : paragraph.getRuns()) {
+            if (run != null && run.getCTR() != null && run.getCTR().sizeOfBrArray() > 0) {
+                return true;
             }
-
-            if (sheetData == null) {
-                return "Error: sheet at index " + sheetIndex + " not found";
-            }
-
-            content.append("Sheet: ").append(sheetData.getSheetName()).append("\n\n");
-
-            sheetData.forEach(row -> {
-                row.forEach(cell -> {
-                    content.append(getCellValueAsString(cell)).append("\t");
-                });
-                content.append("\n");
-            });
         }
-        return content.toString().trim();
+        return false;
     }
 
-    /**
-     * Read .xls file (Office 97-2003)
-     */
-    private String readXls(String path, String sheetParam) throws Exception {
-        StringBuilder content = new StringBuilder();
-        try (FileInputStream fis = new FileInputStream(path);
-             HSSFWorkbook workbook = new HSSFWorkbook(fis)) {
-            
-            Sheet sheetData;
-            int sheetIndex = 0;
-            
-            if (sheetParam != null && !sheetParam.isEmpty()) {
-                try {
-                    sheetIndex = Integer.parseInt(sheetParam);
-                    sheetData = workbook.getSheetAt(sheetIndex);
-                } catch (NumberFormatException e) {
-                    sheetData = workbook.getSheet(sheetParam);
-                    if (sheetData == null) {
-                        return "Error: sheet '" + sheetParam + "' not found";
-                    }
-                }
-            } else {
-                sheetData = workbook.getSheetAt(0);
-            }
-
-            if (sheetData == null) {
-                return "Error: sheet at index " + sheetIndex + " not found";
-            }
-
-            content.append("Sheet: ").append(sheetData.getSheetName()).append("\n\n");
-
-            for (Row row : sheetData) {
-                row.forEach(cell -> {
-                    content.append(getCellValueAsString(cell)).append("\t");
-                });
-                content.append("\n");
+    private void flushEstimatedWordPage(List<String> pages, StringBuilder current, boolean allowEmpty) {
+        String text = current.toString().trim();
+        if (!text.isEmpty() || allowEmpty) {
+            if (!text.isEmpty()) {
+                pages.add(text);
             }
         }
-        return content.toString().trim();
+        current.setLength(0);
     }
 
-    /**
-     * Convert Excel cell value to string
-     */
-    private String getCellValueAsString(org.apache.poi.ss.usermodel.Cell cell) {
-        if (cell == null) {
-            return "";
+    private List<String> splitEstimatedPages(String content) {
+        List<String> pages = new ArrayList<>();
+        if (content == null || content.isBlank()) {
+            return pages;
         }
 
-        return switch (cell.getCellType()) {
-            case STRING -> cell.getStringCellValue();
-            case NUMERIC -> {
-                if (org.apache.poi.ss.usermodel.DateUtil.isCellDateFormatted(cell)) {
-                    yield cell.getDateCellValue().toString();
-                } else {
-                    double num = cell.getNumericCellValue();
-                    if (num == (long) num) {
-                        yield String.valueOf((long) num);
-                    } else {
-                        yield String.valueOf(num);
-                    }
-                }
+        String normalized = content.trim();
+        int start = 0;
+        while (start < normalized.length()) {
+            int end = Math.min(normalized.length(), start + ESTIMATED_WORD_PAGE_CHAR_COUNT);
+            pages.add(normalized.substring(start, end).trim());
+            start = end;
+        }
+        return pages;
+    }
+
+    private PageSelection parsePageSelection(String frontPages, String randomPages, String tailPages) {
+        return new PageSelection(
+                parseNonNegative(frontPages),
+                parseNonNegative(randomPages),
+                parseNonNegative(tailPages)
+        );
+    }
+
+    private int parseNonNegative(String value) {
+        if (value == null || value.isBlank()) {
+            return 0;
+        }
+        int parsed = Integer.parseInt(value.trim());
+        if (parsed < 0) {
+            throw new IllegalArgumentException("page selection values must be >= 0");
+        }
+        return parsed;
+    }
+
+    private List<Integer> choosePages(int totalPages, PageSelection selection) {
+        LinkedHashSet<Integer> picked = new LinkedHashSet<>();
+
+        for (int page = 1; page <= Math.min(selection.frontPages(), totalPages); page++) {
+            picked.add(page);
+        }
+
+        int tailStart = Math.max(1, totalPages - selection.tailPages() + 1);
+        for (int page = tailStart; page <= totalPages; page++) {
+            picked.add(page);
+        }
+
+        List<Integer> middleCandidates = new ArrayList<>();
+        for (int page = 1; page <= totalPages; page++) {
+            if (!picked.contains(page)) {
+                middleCandidates.add(page);
             }
-            case BOOLEAN -> String.valueOf(cell.getBooleanCellValue());
-            case FORMULA -> cell.getCellFormula();
-            default -> "";
-        };
+        }
+
+        int randomCount = Math.min(selection.randomPages(), middleCandidates.size());
+        for (int i = 0; i < randomCount; i++) {
+            int index = ThreadLocalRandom.current().nextInt(middleCandidates.size());
+            picked.add(middleCandidates.remove(index));
+        }
+
+        if (picked.isEmpty()) {
+            for (int page = 1; page <= totalPages; page++) {
+                picked.add(page);
+            }
+        }
+
+        return picked.stream().sorted().toList();
+    }
+
+    private String formatPageList(List<Integer> pages) {
+        return pages.stream().map(String::valueOf).reduce((a, b) -> a + ", " + b).orElse("-");
     }
 
     /**
@@ -386,5 +430,39 @@ public class FileTools {
             return input.normalize();
         }
         return workspace.resolve(input).normalize();
+    }
+
+    private Path requireReadablePath(String path, String... allowedExtensions) throws Exception {
+        if (path == null || path.isBlank()) {
+            throw new IllegalArgumentException("path is required");
+        }
+
+        Path resolvedPath = resolvePath(path);
+        String lowerPath = resolvedPath.toString().toLowerCase();
+        boolean matches = false;
+        for (String extension : allowedExtensions) {
+            if (lowerPath.endsWith(extension)) {
+                matches = true;
+                break;
+            }
+        }
+        if (!matches) {
+            throw new IllegalArgumentException(
+                    "file must be one of: " + String.join(", ", allowedExtensions) + ", got: " + path
+            );
+        }
+        if (!Files.exists(resolvedPath)) {
+            throw new IllegalArgumentException("file not found: " + path);
+        }
+        if (!Files.isRegularFile(resolvedPath)) {
+            throw new IllegalArgumentException("path is not a file: " + path);
+        }
+        return resolvedPath;
+    }
+
+    private record PageSelection(int frontPages, int randomPages, int tailPages) {
+        private boolean isActive() {
+            return frontPages > 0 || randomPages > 0 || tailPages > 0;
+        }
     }
 }

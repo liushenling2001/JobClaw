@@ -20,7 +20,8 @@ class ExecutionEventRunContextTest {
                 "run-123",
                 "run-parent",
                 "jd-agent",
-                "JD Agent"
+                "JD Agent",
+                null
         ));
 
         ExecutionEvent event = new ExecutionEvent("web:test", ExecutionEvent.EventType.CUSTOM, "hello");

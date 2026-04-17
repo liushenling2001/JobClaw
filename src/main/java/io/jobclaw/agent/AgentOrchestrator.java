@@ -1,5 +1,8 @@
 package io.jobclaw.agent;
 
+import io.jobclaw.agent.planning.TaskPlanningDecision;
+import io.jobclaw.agent.planning.TaskPlanningMode;
+import io.jobclaw.agent.planning.TaskPlanningPolicy;
 import io.jobclaw.agent.runtime.AgentRunIds;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,18 +30,21 @@ public class AgentOrchestrator {
     private final TaskHarnessVerifier taskHarnessVerifier;
     private final TaskHarnessRepairPromptBuilder taskHarnessRepairPromptBuilder;
     private final TaskHarnessRepairStrategy taskHarnessRepairStrategy;
+    private final TaskPlanningPolicy taskPlanningPolicy;
 
     public AgentOrchestrator(io.jobclaw.config.Config config,
                              AgentRegistry agentRegistry,
                              TaskHarnessService taskHarnessService,
                              TaskHarnessVerifier taskHarnessVerifier,
                              TaskHarnessRepairPromptBuilder taskHarnessRepairPromptBuilder,
-                             TaskHarnessRepairStrategy taskHarnessRepairStrategy) {
+                             TaskHarnessRepairStrategy taskHarnessRepairStrategy,
+                             TaskPlanningPolicy taskPlanningPolicy) {
         this.agentRegistry = agentRegistry;
         this.taskHarnessService = taskHarnessService;
         this.taskHarnessVerifier = taskHarnessVerifier;
         this.taskHarnessRepairPromptBuilder = taskHarnessRepairPromptBuilder;
         this.taskHarnessRepairStrategy = taskHarnessRepairStrategy;
+        this.taskPlanningPolicy = taskPlanningPolicy;
         logger.info("AgentOrchestrator initialized");
     }
 
@@ -171,6 +177,8 @@ public class AgentOrchestrator {
                 userContent,
                 eventCallback
         );
+        TaskPlanningDecision planningDecision = taskPlanningPolicy.decide(userContent);
+        harnessRun.setPlanningMode(planningDecision.mode(), planningDecision.reason());
         Consumer<ExecutionEvent> effectiveCallback = taskHarnessService.wrapEventCallback(harnessRun, eventCallback);
         if (effectiveCallback != null) {
             effectiveCallback.accept(new ExecutionEvent(
@@ -194,12 +202,28 @@ public class AgentOrchestrator {
                 "running",
                 "route",
                 "Routing task into orchestrator",
-                java.util.Map.of(),
+                java.util.Map.of(
+                        "planningMode", planningDecision.mode().name(),
+                        "planningReason", planningDecision.reason()
+                ),
                 effectiveCallback
         );
 
+        AgentExecutionContext.ExecutionScope previousScope = AgentExecutionContext.getCurrentScope();
+        AgentExecutionContext.ExecutionScope harnessScope = new AgentExecutionContext.ExecutionScope(
+                sessionKey,
+                effectiveCallback,
+                runId,
+                previousScope != null ? previousScope.runId() : null,
+                previousScope != null ? previousScope.agentId() : "task_harness",
+                previousScope != null ? previousScope.agentName() : "Task Harness",
+                previousScope != null ? previousScope.definition() : null
+        );
+        AgentExecutionContext.setCurrentContext(harnessScope);
+
         try {
-            String currentResponse = action.run(userContent, effectiveCallback);
+            String plannedTaskInput = applyPlanningGuidance(userContent, planningDecision);
+            String currentResponse = action.run(plannedTaskInput, effectiveCallback);
             TaskHarnessVerificationResult currentResult =
                     taskHarnessService.verify(harnessRun, currentResponse, null, taskHarnessVerifier, effectiveCallback);
 
@@ -244,6 +268,12 @@ public class AgentOrchestrator {
             );
             taskHarnessService.complete(harnessRun, false, failedResult.reason(), effectiveCallback);
             return "Error: " + e.getMessage();
+        } finally {
+            if (previousScope != null) {
+                AgentExecutionContext.setCurrentContext(previousScope);
+            } else {
+                AgentExecutionContext.clear();
+            }
         }
     }
 
@@ -271,11 +301,37 @@ public class AgentOrchestrator {
         );
 
         String repairInput = taskHarnessRepairPromptBuilder.build(harnessRun, originalInput, failure, attempt);
+        repairInput = applyPlanningGuidance(repairInput,
+                new TaskPlanningDecision(harnessRun.getPlanningMode(), harnessRun.getPlanningReason()));
         return action.run(repairInput, effectiveCallback);
     }
 
     private boolean canAttemptRepair(TaskHarnessRun harnessRun) {
         return harnessRun.getRepairAttempts() < taskHarnessRepairStrategy.maxAttempts(harnessRun);
+    }
+
+    private String applyPlanningGuidance(String taskInput, TaskPlanningDecision planningDecision) {
+        if (planningDecision == null || planningDecision.mode() == null) {
+            return taskInput;
+        }
+        return switch (planningDecision.mode()) {
+            case DIRECT -> taskInput;
+            case PHASED -> """
+                    [Runtime Planning Policy]
+                    This is a phased task. Break the work into concrete stages, complete the stages in order, and do not stop at a plan or progress note. Only finish after delivering the requested artifact or result.
+
+                    """ + taskInput;
+            case WORKLIST -> """
+                    [Runtime Planning Policy]
+                    This is a worklist task with independent items.
+                    1. First build the full subtask worklist with `subtasks(action='plan', ...)`.
+                    2. Do not start executing items before the worklist exists.
+                    3. Execute items one by one, preferably with `spawn(..., subtaskId='...')`.
+                    4. Do not finish while pending subtasks remain.
+                    5. If you are unsure about progress, call `subtasks(action='status')`.
+
+                    """ + taskInput;
+        };
     }
 
     @FunctionalInterface

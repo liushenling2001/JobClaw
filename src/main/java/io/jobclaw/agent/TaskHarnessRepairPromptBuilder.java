@@ -113,6 +113,16 @@ public class TaskHarnessRepairPromptBuilder {
             joiner.add(buildVerificationEvidence(verifyFailure));
         }
 
+        if (run.hasTrackedSubtasks()) {
+            StringJoiner subtasks = new StringJoiner("\n");
+            subtasks.add("Tracked subtasks:");
+            run.getSubtasks().forEach(subtask -> subtasks.add("- %s [%s]".formatted(
+                    subtask.id(),
+                    subtask.status().name()
+            )));
+            joiner.add(subtasks.toString());
+        }
+
         return joiner.toString();
     }
 
@@ -241,6 +251,8 @@ public class TaskHarnessRepairPromptBuilder {
                     "Focus on the non-zero command exit. Inspect the command request, fix the underlying cause, and rerun the command until the output no longer reports a non-zero exit.";
             case "EMPTY_RESPONSE" ->
                     "Do not stop at silence. Perform the missing action, verify the result, and return a concrete completion response.";
+            case "PENDING_SUBTASKS" ->
+                    "Do not end the parent task yet. Continue the planned worklist, execute the remaining subtasks, and mark each one complete or failed before finishing.";
             case "ERROR_RESPONSE", "EXECUTION_FAILURE" ->
                     "Focus on the runtime failure. Use the tool and error evidence to remove the immediate execution error before continuing.";
             default -> buildGenericGuidance(run, failureKind);

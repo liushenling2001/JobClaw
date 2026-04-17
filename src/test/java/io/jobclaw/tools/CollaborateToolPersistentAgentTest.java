@@ -9,6 +9,7 @@ import io.jobclaw.agent.catalog.AgentCatalogService;
 import io.jobclaw.agent.catalog.SqliteAgentCatalogStore;
 import io.jobclaw.board.SharedBoardService;
 import io.jobclaw.board.file.FileSharedBoardService;
+import io.jobclaw.config.Config;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
@@ -56,7 +57,8 @@ class CollaborateToolPersistentAgentTest {
                 catalogService,
                 sharedBoardService,
                 new ExecutionTraceService(),
-                new BoardEventSummarizer()
+                new BoardEventSummarizer(),
+                Config.defaultConfig()
         );
 
         String result = tool.collaborate(
@@ -80,7 +82,8 @@ class CollaborateToolPersistentAgentTest {
                 new AgentCatalogService(new SqliteAgentCatalogStore(Path.of(System.getProperty("java.io.tmpdir"), "collab-prompt-reject.db").toString())),
                 sharedBoardService,
                 new ExecutionTraceService(),
-                new BoardEventSummarizer()
+                new BoardEventSummarizer(),
+                Config.defaultConfig()
         );
 
         String result = tool.collaborate(
@@ -104,7 +107,8 @@ class CollaborateToolPersistentAgentTest {
                 new AgentCatalogService(new SqliteAgentCatalogStore(Path.of(System.getProperty("java.io.tmpdir"), "collab-missing-agent.db").toString())),
                 sharedBoardService,
                 new ExecutionTraceService(),
-                new BoardEventSummarizer()
+                new BoardEventSummarizer(),
+                Config.defaultConfig()
         );
 
         String result = tool.collaborate(
@@ -139,7 +143,8 @@ class CollaborateToolPersistentAgentTest {
                 new AgentCatalogService(new SqliteAgentCatalogStore(tempDir.resolve("agents.db").toString())),
                 sharedBoardService,
                 new ExecutionTraceService(),
-                new BoardEventSummarizer()
+                new BoardEventSummarizer(),
+                Config.defaultConfig()
         );
 
         String result = tool.collaborate(
@@ -178,7 +183,8 @@ class CollaborateToolPersistentAgentTest {
                 new AgentCatalogService(new SqliteAgentCatalogStore(tempDir.resolve("agents.db").toString())),
                 sharedBoardService,
                 new ExecutionTraceService(),
-                new BoardEventSummarizer()
+                new BoardEventSummarizer(),
+                Config.defaultConfig()
         );
 
         String result = tool.collaborate(
@@ -219,7 +225,8 @@ class CollaborateToolPersistentAgentTest {
                 new AgentCatalogService(new SqliteAgentCatalogStore(tempDir.resolve("agents.db").toString())),
                 sharedBoardService,
                 new ExecutionTraceService(),
-                new BoardEventSummarizer()
+                new BoardEventSummarizer(),
+                Config.defaultConfig()
         );
 
         String result = tool.collaborate(
