@@ -39,10 +39,15 @@ public record AgentCatalogEntry(
         }
         if (modelConfig != null && !modelConfig.isEmpty()) {
             AgentDefinition.AgentConfig config = new AgentDefinition.AgentConfig();
+            Object provider = modelConfig.get("provider");
             Object model = modelConfig.get("model");
             Object temperature = modelConfig.get("temperature");
             Object maxTokens = modelConfig.get("maxTokens");
+            Object timeoutMs = modelConfig.get("timeoutMs");
             Object apiBase = modelConfig.get("apiBase");
+            if (provider instanceof String providerValue) {
+                config.setProvider(providerValue);
+            }
             if (model instanceof String modelValue) {
                 config.setModel(modelValue);
             }
@@ -51,6 +56,9 @@ public record AgentCatalogEntry(
             }
             if (maxTokens instanceof Number maxTokensValue) {
                 config.setMaxTokens(maxTokensValue.intValue());
+            }
+            if (timeoutMs instanceof Number timeoutValue) {
+                config.setTimeoutMs(timeoutValue.longValue());
             }
             if (apiBase instanceof String apiBaseValue) {
                 config.setApiBase(apiBaseValue);

@@ -34,7 +34,8 @@ class SharedBoardToolTest {
                 "run-test",
                 null,
                 "coder",
-                "Coder"
+                "Coder",
+                null
         ));
 
         String writeResult = tool.boardWrite(boardId, "artifact", "Patch", "Implemented the fix", "team");

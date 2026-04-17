@@ -3,7 +3,7 @@ package io.jobclaw.config;
 import io.jobclaw.agent.AgentLoop;
 import io.jobclaw.agent.catalog.AgentCatalogService;
 import io.jobclaw.agent.catalog.AgentCatalogStore;
-import io.jobclaw.agent.catalog.SqliteAgentCatalogStore;
+import io.jobclaw.agent.catalog.FileAgentCatalogStore;
 import io.jobclaw.board.SharedBoardService;
 import io.jobclaw.board.file.FileSharedBoardService;
 import io.jobclaw.bus.MessageBus;
@@ -110,8 +110,8 @@ public class AgentBeansConfig {
     @Bean
     @ConditionalOnMissingBean
     public AgentCatalogStore agentCatalogStore(Config config) {
-        return new SqliteAgentCatalogStore(
-                Paths.get(config.getWorkspacePath(), "sessions", "conversation", "agents.db").toString()
+        return new FileAgentCatalogStore(
+                Paths.get(config.getWorkspacePath(), ".jobclaw", "agents").toString()
         );
     }
 

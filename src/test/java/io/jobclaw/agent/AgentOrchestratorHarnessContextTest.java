@@ -1,5 +1,6 @@
 package io.jobclaw.agent;
 
+import io.jobclaw.agent.planning.TaskPlanningPolicy;
 import io.jobclaw.config.Config;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -43,7 +44,8 @@ class AgentOrchestratorHarnessContextTest {
                 harnessService,
                 verifier,
                 repairPromptBuilder,
-                repairStrategy
+                repairStrategy,
+                new TaskPlanningPolicy()
         );
 
         String result = orchestrator.process("session-a", "hello", event -> {});

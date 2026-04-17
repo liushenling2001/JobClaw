@@ -67,6 +67,7 @@ public class AgentLoop {
     private final ProviderRuntime providerRuntime;
     private final ToolRuntime toolRuntime;
     private final ToolExecutionStateTracker toolExecutionStateTracker;
+    private final ResolvedProviderConfig defaultProviderConfig;
 
     // 无工具调用的专用 ChatClient（用于摘要生成）
     private final ChatClient simpleChatClient;
@@ -111,6 +112,7 @@ public class AgentLoop {
         this.providerRuntime = providerRuntime;
 
         ResolvedProviderConfig resolvedProvider = providerRuntime.resolve(config, model);
+        this.defaultProviderConfig = resolvedProvider;
         this.model = resolvedProvider.model();
 
         if (resolvedProvider.fallbackUsed()) {
@@ -282,12 +284,8 @@ public class AgentLoop {
             ToolCallback[] rawTools = filterToolsByDefinition(definition);
             ToolCallback[] tools = wrapToolCallbacks(rawTools, sessionKey, eventCallback);
 
-            // 调用 ChatClient（带工具）- 使用配置中的 maxTokens 和 temperature
-            OpenAiChatOptions options = OpenAiChatOptions.builder()
-                    .model(model)
-                    .maxTokens(config.getAgent().getMaxTokens())
-                    .temperature(config.getAgent().getTemperature())
-                    .build();
+            ExecutionClientBundle executionClientBundle = createExecutionClientBundle(definition);
+            OpenAiChatOptions options = buildExecutionOptions(definition, executionClientBundle.model());
 
             // 使用结构化上下文装配器，保留消息边界，不再拍平成单段文本
             ContextAssemblyOptions assemblyOptions = contextAssemblyPolicy.buildOptions(sessionKey, userContent);
@@ -298,7 +296,7 @@ public class AgentLoop {
             // 使用流式响应获取 LLM 回复
             StringBuilder fullResponse = new StringBuilder();
 
-            Flux<String> contentStream = chatClient.prompt()
+            Flux<String> contentStream = executionClientBundle.chatClient().prompt()
                     .messages(promptMessages)
                     .toolCallbacks(tools)
                     .options(options)
@@ -551,6 +549,7 @@ public class AgentLoop {
     private ToolCallback wrapSingleCallback(ToolCallback callback,
                                             String sessionKey,
                                             Consumer<ExecutionEvent> eventCallback) {
+        AgentExecutionContext.ExecutionScope capturedScope = AgentExecutionContext.getCurrentScope();
         return new ToolCallback() {
             @Override
             public org.springframework.ai.tool.definition.ToolDefinition getToolDefinition() {
@@ -559,14 +558,26 @@ public class AgentLoop {
 
             @Override
             public String call(String request) {
-                ToolExecutionResult result = toolRuntime.execute(new ToolExecutionRequest(
-                        sessionKey,
-                        getToolDefinition().name(),
-                        request,
-                        callback,
-                        eventCallback
-                ));
-                return result.response();
+                AgentExecutionContext.ExecutionScope previousScope = AgentExecutionContext.getCurrentScope();
+                if (capturedScope != null) {
+                    AgentExecutionContext.setCurrentContext(capturedScope);
+                }
+                try {
+                    ToolExecutionResult result = toolRuntime.execute(new ToolExecutionRequest(
+                            sessionKey,
+                            getToolDefinition().name(),
+                            request,
+                            callback,
+                            eventCallback
+                    ));
+                    return result.response();
+                } finally {
+                    if (previousScope != null) {
+                        AgentExecutionContext.setCurrentContext(previousScope);
+                    } else {
+                        AgentExecutionContext.clear();
+                    }
+                }
             }
         };
     }
@@ -595,6 +606,63 @@ public class AgentLoop {
     public String getStatus() {
         return "Spring AI initialized (model: " + config.getAgent().getModel() + ")";
     }
+
+    private OpenAiChatOptions buildExecutionOptions(AgentDefinition definition, String baseModel) {
+        String effectiveModel = baseModel != null && !baseModel.isBlank() ? baseModel : model;
+        int effectiveMaxTokens = config.getAgent().getMaxTokens();
+        double effectiveTemperature = config.getAgent().getTemperature();
+
+        if (definition != null && definition.getConfig() != null) {
+            AgentDefinition.AgentConfig definitionConfig = definition.getConfig();
+            if (definitionConfig.getModel() != null && !definitionConfig.getModel().isBlank()) {
+                effectiveModel = definitionConfig.getModel();
+            }
+            if (definitionConfig.getMaxTokens() != null && definitionConfig.getMaxTokens() > 0) {
+                effectiveMaxTokens = definitionConfig.getMaxTokens();
+            }
+            if (definitionConfig.getTemperature() != null) {
+                effectiveTemperature = definitionConfig.getTemperature();
+            }
+        }
+
+        return OpenAiChatOptions.builder()
+                .model(effectiveModel)
+                .maxTokens(effectiveMaxTokens)
+                .temperature(effectiveTemperature)
+                .build();
+    }
+
+    private ExecutionClientBundle createExecutionClientBundle(AgentDefinition definition) {
+        AgentDefinition.AgentConfig definitionConfig = definition != null ? definition.getConfig() : null;
+        String providerOverride = definitionConfig != null ? definitionConfig.getProvider() : null;
+        String apiBaseOverride = definitionConfig != null ? definitionConfig.getApiBase() : null;
+        String modelOverride = definitionConfig != null ? definitionConfig.getModel() : null;
+
+        if ((providerOverride == null || providerOverride.isBlank())
+                && (apiBaseOverride == null || apiBaseOverride.isBlank())
+                && (modelOverride == null || modelOverride.isBlank())) {
+            return new ExecutionClientBundle(chatClient, model);
+        }
+
+        ResolvedProviderConfig resolved = providerRuntime.resolve(
+                config,
+                providerOverride,
+                apiBaseOverride,
+                modelOverride
+        );
+        OpenAiApi openAiApi = OpenAiApi.builder()
+                .apiKey(resolved.apiKey())
+                .baseUrl(resolved.springAiBaseUrl())
+                .build();
+        OpenAiChatModel chatModel = OpenAiChatModel.builder()
+                .openAiApi(openAiApi)
+                .build();
+        ChatClient executionChatClient = ChatClient.builder(chatModel).build();
+        return new ExecutionClientBundle(executionChatClient, resolved.model());
+    }
+
+    private record ExecutionClientBundle(ChatClient chatClient, String model) {
+    }
     
     /**
      * 调用 LLM 生成响应（用于摘要生成，不带工具调用）。
@@ -620,7 +688,8 @@ public class AgentLoop {
                     previousScope.runId(),
                     previousScope.parentRunId(),
                     agentId,
-                    agentName
+                    agentName,
+                    definition != null ? definition : previousScope.definition()
             );
         }
 
@@ -632,7 +701,8 @@ public class AgentLoop {
                 runId,
                 parentRunId,
                 agentId,
-                agentName
+                agentName,
+                definition != null ? definition : previousScope != null ? previousScope.definition() : null
         );
     }
 

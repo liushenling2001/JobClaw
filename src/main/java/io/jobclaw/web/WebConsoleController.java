@@ -9,6 +9,10 @@ import io.jobclaw.agent.TaskHarnessRun;
 import io.jobclaw.agent.TaskHarnessService;
 import io.jobclaw.agent.TaskHarnessStep;
 import io.jobclaw.agent.TaskHarnessVerificationResult;
+import io.jobclaw.agent.profile.AgentProfile;
+import io.jobclaw.agent.profile.AgentProfileService;
+import io.jobclaw.agent.catalog.AgentCatalogEntry;
+import io.jobclaw.agent.catalog.AgentCatalogService;
 import io.jobclaw.bus.InboundMessage;
 import io.jobclaw.bus.MessageBus;
 import io.jobclaw.config.*;
@@ -63,6 +67,8 @@ public class WebConsoleController {
     private final TokenUsageService tokenUsageService;
     private final SecurityGuard securityGuard;
     private final RetrievalService retrievalService;
+    private final AgentProfileService agentProfileService;
+    private final AgentCatalogService agentCatalogService;
 
     private final ExecutorService executor = Executors.newCachedThreadPool();
     private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd");
@@ -75,7 +81,9 @@ public class WebConsoleController {
                                  io.jobclaw.mcp.MCPService mcpService,
                                  TokenUsageService tokenUsageService,
                                  SecurityGuard securityGuard,
-                                 RetrievalService retrievalService) {
+                                 RetrievalService retrievalService,
+                                 AgentProfileService agentProfileService,
+                                 AgentCatalogService agentCatalogService) {
         this.config = config;
         this.sessionManager = sessionManager;
         this.agentLoop = agentLoop;
@@ -89,6 +97,8 @@ public class WebConsoleController {
         this.tokenUsageService = tokenUsageService;
         this.securityGuard = securityGuard;
         this.retrievalService = retrievalService;
+        this.agentProfileService = agentProfileService;
+        this.agentCatalogService = agentCatalogService;
     }
 
     @GetMapping("/status")
@@ -97,8 +107,126 @@ public class WebConsoleController {
         status.put("status", "ok");
         status.put("workspace", config.getWorkspacePath());
         status.put("model", config.getAgent().getModel());
-        status.put("sessions", sessionManager.getSessionCount());
+        status.put("sessions", sessionManager.getUserSessionCount());
         return ResponseEntity.ok(status);
+    }
+
+    @GetMapping("/agents")
+    public ResponseEntity<List<AgentProfile>> getAgents() {
+        return ResponseEntity.ok(agentProfileService.listProfiles());
+    }
+
+    @GetMapping("/agents/{id}")
+    public ResponseEntity<AgentProfile> getAgent(@PathVariable String id) {
+        return agentProfileService.getProfile(id)
+                .map(ResponseEntity::ok)
+                .orElseGet(() -> ResponseEntity.notFound().build());
+    }
+
+    @PostMapping("/agents")
+    public ResponseEntity<?> createAgent(@RequestBody AgentProfileUpsertRequest request) {
+        if (request.getCode() == null || request.getCode().isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "code is required"));
+        }
+        if (request.getDisplayName() == null || request.getDisplayName().isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "displayName is required"));
+        }
+        if (agentCatalogService.get(request.getCode().trim()).isPresent()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "agent already exists: " + request.getCode().trim()));
+        }
+
+        AgentCatalogEntry entry = agentCatalogService.createAgent(
+                request.getCode().trim(),
+                request.getDisplayName().trim(),
+                normalizeText(request.getDescription()),
+                defaultPromptIfBlank(request.getDisplayName(), request.getDescription(), request.getSystemPrompt()),
+                normalizeList(request.getAliases()),
+                normalizeList(request.getAllowedTools()),
+                normalizeList(request.getAllowedSkills()),
+                normalizeModelConfig(request.getModelConfig()),
+                normalizeText(request.getMemoryScope())
+        );
+        return ResponseEntity.ok(agentProfileService.getProfile("agent:" + entry.code()).orElse(null));
+    }
+
+    @PutMapping("/agents/{id}")
+    public ResponseEntity<?> updateAgent(@PathVariable String id, @RequestBody AgentProfileUpsertRequest request) {
+        if (id.startsWith("main:")) {
+            return ResponseEntity.badRequest().body(Map.of("error", "main assistant is managed through global config.json"));
+        }
+        String code = extractAgentCode(id);
+        if (code == null) {
+            return ResponseEntity.badRequest().body(Map.of("error", "unsupported agent id: " + id));
+        }
+        return agentCatalogService.updateAgent(
+                        code,
+                        normalizeText(request.getDisplayName()),
+                        normalizeText(request.getDescription()),
+                        normalizeText(request.getSystemPrompt()),
+                        request.getAliases() != null ? normalizeList(request.getAliases()) : null,
+                        request.getAllowedTools() != null ? normalizeList(request.getAllowedTools()) : null,
+                        request.getAllowedSkills() != null ? normalizeList(request.getAllowedSkills()) : null,
+                        request.getModelConfig() != null ? normalizeModelConfig(request.getModelConfig()) : null,
+                        request.getMemoryScope(),
+                        request.getStatus()
+                )
+                .flatMap(entry -> agentProfileService.getProfile("agent:" + entry.code()))
+                .<ResponseEntity<?>>map(ResponseEntity::ok)
+                .orElseGet(() -> ResponseEntity.notFound().build());
+    }
+
+    @PostMapping("/agents/{id}/clone")
+    public ResponseEntity<?> cloneAgent(@PathVariable String id, @RequestBody AgentProfileCloneRequest request) {
+        AgentProfile sourceProfile = agentProfileService.getProfile(id).orElse(null);
+        if (sourceProfile == null) {
+            return ResponseEntity.notFound().build();
+        }
+
+        String code = request.getCode() != null && !request.getCode().isBlank()
+                ? request.getCode().trim()
+                : sourceProfile.code() + "_copy";
+        String displayName = request.getDisplayName() != null && !request.getDisplayName().isBlank()
+                ? request.getDisplayName().trim()
+                : sourceProfile.displayName() + " Copy";
+
+        if (agentCatalogService.get(code).isPresent()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "agent already exists: " + code));
+        }
+
+        AgentCatalogEntry entry = agentCatalogService.createAgent(
+                code,
+                displayName,
+                normalizeText(sourceProfile.description()),
+                defaultPromptIfBlank(displayName, sourceProfile.description(), sourceProfile.systemPrompt()),
+                List.of(displayName),
+                normalizeList(sourceProfile.allowedTools()),
+                normalizeList(sourceProfile.allowedSkills()),
+                normalizeModelConfig(sourceProfile.modelConfig()),
+                normalizeText(sourceProfile.memoryScope())
+        );
+        return ResponseEntity.ok(agentProfileService.getProfile("agent:" + entry.code()).orElse(null));
+    }
+
+    @PostMapping("/agents/{id}/activate")
+    public ResponseEntity<?> activateAgent(@PathVariable String id) {
+        return changeAgentStatus(id, true);
+    }
+
+    @PostMapping("/agents/{id}/disable")
+    public ResponseEntity<?> disableAgent(@PathVariable String id) {
+        return changeAgentStatus(id, false);
+    }
+
+    @DeleteMapping("/agents/{id}")
+    public ResponseEntity<?> deleteAgent(@PathVariable String id) {
+        if (!id.startsWith("agent:")) {
+            return ResponseEntity.badRequest().body(Map.of("error", "only user-defined catalog agents can be deleted"));
+        }
+        String code = id.substring("agent:".length());
+        if (!agentCatalogService.deleteAgent(code)) {
+            return ResponseEntity.notFound().build();
+        }
+        return ResponseEntity.ok(Map.of("success", true, "code", code));
     }
 
     @PostMapping("/chat")
@@ -116,27 +244,6 @@ public class WebConsoleController {
             response.put("error", e.getMessage());
         }
         return ResponseEntity.ok(response);
-    }
-
-    @PostMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public ResponseEntity<SseEmitter> chatStream(@RequestBody ChatRequest request) {
-        SseEmitter emitter = new SseEmitter(120000L);
-
-        executor.submit(() -> {
-            try {
-                String sessionKey = request.getSessionKey() != null ? request.getSessionKey() : "web:default";
-                String result = agentLoop.process(sessionKey, request.getMessage());
-
-                emitter.send(SseEmitter.event()
-                        .name("message")
-                        .data(result));
-                emitter.complete();
-            } catch (Exception e) {
-                emitter.completeWithError(e);
-            }
-        });
-
-        return ResponseEntity.ok(emitter);
     }
 
     /**
@@ -248,7 +355,7 @@ public class WebConsoleController {
     @GetMapping("/sessions")
     public ResponseEntity<List<Map<String, Object>>> getSessions() {
         List<Map<String, Object>> sessions = new ArrayList<>();
-        for (io.jobclaw.conversation.SessionRecord record : sessionManager.listSessionRecords()) {
+        for (io.jobclaw.conversation.SessionRecord record : sessionManager.listUserSessionRecords()) {
             Map<String, Object> info = new HashMap<>();
             info.put("key", record.getSessionId());
             info.put("created", record.getCreatedAt());
@@ -1613,6 +1720,83 @@ public class WebConsoleController {
         return "application/octet-stream";
     }
 
+    private ResponseEntity<?> changeAgentStatus(String id, boolean active) {
+        if (id.startsWith("main:")) {
+            return ResponseEntity.badRequest().body(Map.of("error", "main assistant cannot be disabled"));
+        }
+        String code = extractAgentCode(id);
+        if (code == null) {
+            return ResponseEntity.badRequest().body(Map.of("error", "unsupported agent id: " + id));
+        }
+        Optional<AgentCatalogEntry> updated = active
+                ? agentCatalogService.activateAgent(code)
+                : agentCatalogService.disableAgent(code);
+        return updated.flatMap(entry -> agentProfileService.getProfile("agent:" + entry.code()))
+                .<ResponseEntity<?>>map(ResponseEntity::ok)
+                .orElseGet(() -> ResponseEntity.notFound().build());
+    }
+
+    private List<String> normalizeList(List<String> values) {
+        if (values == null) {
+            return List.of();
+        }
+        return values.stream()
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .filter(value -> !value.isEmpty())
+                .distinct()
+                .toList();
+    }
+
+    private Map<String, Object> normalizeModelConfig(Map<String, Object> modelConfig) {
+        if (modelConfig == null) {
+            return Map.of();
+        }
+        Map<String, Object> normalized = new LinkedHashMap<>();
+        modelConfig.forEach((key, value) -> {
+            if (key != null && !key.isBlank() && value != null) {
+                normalized.put(key.trim(), value);
+            }
+        });
+        return normalized;
+    }
+
+    private String normalizeText(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private String defaultPromptIfBlank(String displayName, String description, String systemPrompt) {
+        String normalizedPrompt = normalizeText(systemPrompt);
+        if (normalizedPrompt != null) {
+            return normalizedPrompt;
+        }
+        String normalizedName = displayName != null ? displayName.trim() : "Agent";
+        String normalizedDescription = normalizeText(description);
+        if (normalizedDescription == null) {
+            normalizedDescription = "处理用户指定的专项工作";
+        }
+        return "你是 `" + normalizedName + "`。\n"
+                + "你的专属职责是：" + normalizedDescription + "。\n"
+                + "只围绕该职责完成任务，必要时使用允许的工具和技能，避免偏离角色边界。";
+    }
+
+    private String extractAgentCode(String id) {
+        if (id == null || id.isBlank()) {
+            return null;
+        }
+        if (id.startsWith("agent:")) {
+            return id.substring("agent:".length());
+        }
+        if (id.startsWith("role:")) {
+            return id.substring("role:".length());
+        }
+        return null;
+    }
+
     // ==================== Request DTOs ====================
 
     public static class ChatRequest {
@@ -1905,6 +2089,50 @@ public class WebConsoleController {
         public void setData(String data) { this.data = data; }
         public String getName() { return name; }
         public void setName(String name) { this.name = name; }
+    }
+
+    public static class AgentProfileUpsertRequest {
+        private String code;
+        private String displayName;
+        private String description;
+        private String systemPrompt;
+        private List<String> aliases;
+        private List<String> allowedTools;
+        private List<String> allowedSkills;
+        private Map<String, Object> modelConfig;
+        private String memoryScope;
+        private String status;
+
+        public String getCode() { return code; }
+        public void setCode(String code) { this.code = code; }
+        public String getDisplayName() { return displayName; }
+        public void setDisplayName(String displayName) { this.displayName = displayName; }
+        public String getDescription() { return description; }
+        public void setDescription(String description) { this.description = description; }
+        public String getSystemPrompt() { return systemPrompt; }
+        public void setSystemPrompt(String systemPrompt) { this.systemPrompt = systemPrompt; }
+        public List<String> getAliases() { return aliases; }
+        public void setAliases(List<String> aliases) { this.aliases = aliases; }
+        public List<String> getAllowedTools() { return allowedTools; }
+        public void setAllowedTools(List<String> allowedTools) { this.allowedTools = allowedTools; }
+        public List<String> getAllowedSkills() { return allowedSkills; }
+        public void setAllowedSkills(List<String> allowedSkills) { this.allowedSkills = allowedSkills; }
+        public Map<String, Object> getModelConfig() { return modelConfig; }
+        public void setModelConfig(Map<String, Object> modelConfig) { this.modelConfig = modelConfig; }
+        public String getMemoryScope() { return memoryScope; }
+        public void setMemoryScope(String memoryScope) { this.memoryScope = memoryScope; }
+        public String getStatus() { return status; }
+        public void setStatus(String status) { this.status = status; }
+    }
+
+    public static class AgentProfileCloneRequest {
+        private String code;
+        private String displayName;
+
+        public String getCode() { return code; }
+        public void setCode(String code) { this.code = code; }
+        public String getDisplayName() { return displayName; }
+        public void setDisplayName(String displayName) { this.displayName = displayName; }
     }
 }
 

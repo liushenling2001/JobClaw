@@ -8,7 +8,17 @@ import org.springframework.stereotype.Component;
 public class ProviderRuntime {
 
     public ResolvedProviderConfig resolve(Config config, String explicitModelOverride) {
+        return resolve(config, null, null, explicitModelOverride);
+    }
+
+    public ResolvedProviderConfig resolve(Config config,
+                                          String explicitProviderOverride,
+                                          String explicitApiBaseOverride,
+                                          String explicitModelOverride) {
         String requestedProviderName = config.getAgent() != null ? config.getAgent().getProvider() : null;
+        if (explicitProviderOverride != null && !explicitProviderOverride.isBlank()) {
+            requestedProviderName = explicitProviderOverride;
+        }
         ProvidersConfig.ProviderConfig providerConfig = config.getProviderConfigByName(requestedProviderName);
         boolean fallbackUsed = false;
         String effectiveProviderName = requestedProviderName;
@@ -27,7 +37,9 @@ public class ProviderRuntime {
 
         String model = explicitModelOverride != null ? explicitModelOverride : config.getAgent().getModel();
         String apiKey = providerConfig.getApiKey();
-        String apiBase = resolveApiBase(effectiveProviderName, providerConfig);
+        String apiBase = explicitApiBaseOverride != null && !explicitApiBaseOverride.isBlank()
+                ? explicitApiBaseOverride
+                : resolveApiBase(effectiveProviderName, providerConfig);
         String springAiBaseUrl = toSpringAiBaseUrl(apiBase);
 
         return new ResolvedProviderConfig(

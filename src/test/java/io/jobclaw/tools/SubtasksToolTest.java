@@ -27,7 +27,8 @@ class SubtasksToolTest {
                 run.getRunId(),
                 null,
                 "assistant",
-                "Assistant"
+                "Assistant",
+                null
         ));
 
         String planned = tool.subtasks("plan", null, null, "a.txt|File A\nb.txt|File B", null);

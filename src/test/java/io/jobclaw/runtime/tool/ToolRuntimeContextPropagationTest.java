@@ -35,7 +35,8 @@ class ToolRuntimeContextPropagationTest {
                     "run-harness-1",
                     null,
                     "assistant",
-                    "Assistant"
+                    "Assistant",
+                    null
             ));
 
             ToolCallback callback = new ToolCallback() {

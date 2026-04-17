@@ -18,7 +18,8 @@ public class AgentExecutionContext {
             String runId,
             String parentRunId,
             String agentId,
-            String agentName
+            String agentName,
+            AgentDefinition definition
     ) {
     }
 
@@ -31,7 +32,7 @@ public class AgentExecutionContext {
         if (sessionKey == null) {
             return;
         }
-        setCurrentContext(new ExecutionScope(sessionKey, callback, null, null, null, null));
+        setCurrentContext(new ExecutionScope(sessionKey, callback, null, null, null, null, null));
     }
 
     public static void setCurrentContext(ExecutionScope scope) {
@@ -68,6 +69,11 @@ public class AgentExecutionContext {
 
     public static boolean hasContext() {
         return currentScope.get() != null;
+    }
+
+    public static AgentDefinition getCurrentDefinition() {
+        ExecutionScope scope = currentScope.get();
+        return scope != null ? scope.definition() : null;
     }
 
     public static void clear() {

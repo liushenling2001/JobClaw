@@ -67,7 +67,7 @@ agent:
 - **新增端点**:
   - `POST /api/execute/stream` - 执行任务并订阅执行过程事件
   - `GET /api/execute/stream/{sessionKey}` - 只读订阅执行事件
-- **保持兼容**: 原有 `/api/chat` 和 `/api/chat/stream` 端点保持不变
+- **兼容入口**: 保留 `/api/chat`；流式执行统一使用 `/api/execute/stream`
 
 ### 4. `index.html` (前端页面)
 - **新增功能**:

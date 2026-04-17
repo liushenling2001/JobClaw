@@ -159,6 +159,16 @@ public class SessionManager {
         return conversationStore.listSessions();
     }
 
+    public int getUserSessionCount() {
+        return listUserSessionRecords().size();
+    }
+
+    public List<SessionRecord> listUserSessionRecords() {
+        return conversationStore.listSessions().stream()
+                .filter(record -> !isInternalSession(record.getSessionId()))
+                .toList();
+    }
+
     public void saveChunk(MessageChunk chunk) {
         conversationStore.saveChunk(chunk);
     }
@@ -168,6 +178,13 @@ public class SessionManager {
             return "unknown";
         }
         return key.replaceAll("[:/\\\\*?\"<>|]", "_");
+    }
+
+    private boolean isInternalSession(String key) {
+        if (key == null || key.isBlank()) {
+            return false;
+        }
+        return key.startsWith("spawn-") || key.startsWith("subagent-");
     }
 
     private Optional<Session> rebuildSession(String key) {

@@ -1,5 +1,7 @@
 package io.jobclaw.agent;
 
+import io.jobclaw.agent.planning.TaskPlanningMode;
+
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -21,6 +23,8 @@ public class TaskHarnessRun {
     private TaskHarnessFailure lastFailure;
     private TaskHarnessVerificationResult lastVerificationResult;
     private final Map<String, TaskHarnessSubtask> subtasks;
+    private TaskPlanningMode planningMode;
+    private String planningReason;
 
     public TaskHarnessRun(String sessionId, String runId, String taskInput) {
         this.sessionId = sessionId;
@@ -30,6 +34,8 @@ public class TaskHarnessRun {
         this.steps = new ArrayList<>();
         this.subtasks = new LinkedHashMap<>();
         this.currentPhase = TaskHarnessPhase.PLAN;
+        this.planningMode = TaskPlanningMode.DIRECT;
+        this.planningReason = "default";
     }
 
     public synchronized TaskHarnessStep addStep(TaskHarnessPhase phase,
@@ -169,6 +175,19 @@ public class TaskHarnessRun {
 
     public synchronized List<TaskHarnessSubtask> getSubtasks() {
         return List.copyOf(subtasks.values());
+    }
+
+    public synchronized TaskPlanningMode getPlanningMode() {
+        return planningMode;
+    }
+
+    public synchronized String getPlanningReason() {
+        return planningReason;
+    }
+
+    public synchronized void setPlanningMode(TaskPlanningMode planningMode, String planningReason) {
+        this.planningMode = planningMode == null ? TaskPlanningMode.DIRECT : planningMode;
+        this.planningReason = planningReason;
     }
 
     private Map<String, Object> mergeMetadata(Map<String, Object> base, Map<String, Object> updates) {
