@@ -37,6 +37,12 @@ public class LearningCandidateService {
         if (run == null || !run.isSuccess() || run.getDoneDefinition() == null) {
             return;
         }
+        // A single successful run is reference evidence, not experience.
+        // Positive workflow experience should be promoted only after repeated
+        // similar use by the workflow memory layer, otherwise candidates become noise.
+        if (!shouldCaptureSuccessfulRun(run)) {
+            return;
+        }
         List<String> tools = toolSequence(run);
         if (tools.isEmpty()) {
             return;
@@ -47,15 +53,14 @@ public class LearningCandidateService {
                 && isRepeatable(run.getDoneDefinition().deliveryType())) {
             candidates.add(workflowCandidate(run, tools));
         }
-        if (!hasCandidateForRun(candidates, run.getRunId(), LearningCandidateType.SKILL_UPDATE)
-                && shouldSuggestSkillPromotion(run, tools)) {
-            candidates.add(skillPromotionCandidate(run, tools));
-        }
         store.saveAll(candidates);
     }
 
     public void recordFailedRun(TaskHarnessRun run, String reason) {
         if (run == null || run.isSuccess() || run.getDoneDefinition() == null) {
+            return;
+        }
+        if (!hasAttributableFailure(run, reason)) {
             return;
         }
         List<LearningCandidate> candidates = new ArrayList<>(store.list());
@@ -132,14 +137,15 @@ public class LearningCandidateService {
     private LearningCandidate workflowCandidate(TaskHarnessRun run, List<String> tools) {
         LearningCandidate candidate = baseCandidate(run, LearningCandidateType.WORKFLOW);
         candidate.setTitle("可复用任务流程候选");
-        candidate.setReason("任务已成功完成，并包含可复用工具序列。先记录为候选，不自动改变运行逻辑。");
+        candidate.setReason("任务在修复后成功完成，并包含可复用工具序列。普通成功任务不自动进入候选，避免经验泛滥。");
         candidate.setProposal(buildWorkflowProposal(run, tools));
         candidate.setTags(List.of("workflow", run.getPlanningMode().name(), run.getDoneDefinition().deliveryType().name()));
-        candidate.setConfidence(run.hasTrackedSubtasks() ? 0.65 : 0.5);
+        candidate.setConfidence(run.hasTrackedSubtasks() ? 0.8 : 0.75);
         candidate.setMetadata(Map.of(
                 "toolSequence", tools,
                 "hasTrackedSubtasks", run.hasTrackedSubtasks(),
-                "pendingSubtasks", run.getPendingSubtaskCount()
+                "pendingSubtasks", run.getPendingSubtaskCount(),
+                "repairAttempts", run.getRepairAttempts()
         ));
         return candidate;
     }
@@ -162,7 +168,7 @@ public class LearningCandidateService {
         candidate.setReason("任务未成功完成。记录为负向经验候选，供每日经验整理和人工确认，避免重复错误流程。");
         candidate.setProposal(buildNegativeLessonProposal(run, reason, lastStep));
         candidate.setTags(List.of("negative_lesson", run.getPlanningMode().name(), run.getDoneDefinition().deliveryType().name()));
-        candidate.setConfidence(run.hasTrackedSubtasks() ? 0.65 : 0.5);
+        candidate.setConfidence(run.getLastFailure() != null ? 0.8 : 0.75);
         candidate.setMetadata(Map.of(
                 "failureReason", reason != null ? reason : "",
                 "repairAttempts", run.getRepairAttempts(),
@@ -236,19 +242,19 @@ public class LearningCandidateService {
         return sb.toString();
     }
 
-    private boolean shouldSuggestSkillPromotion(TaskHarnessRun run, List<String> tools) {
-        DeliveryType deliveryType = run.getDoneDefinition().deliveryType();
-        if (deliveryType == DeliveryType.ANSWER) {
-            return false;
-        }
-        return tools.size() >= 2 && (run.hasTrackedSubtasks()
-                || deliveryType == DeliveryType.FILE_ARTIFACT
-                || deliveryType == DeliveryType.PATCH
-                || deliveryType == DeliveryType.DOCUMENT_SUMMARY);
-    }
-
     private boolean isRepeatable(DeliveryType deliveryType) {
         return deliveryType != DeliveryType.ANSWER;
+    }
+
+    private boolean shouldCaptureSuccessfulRun(TaskHarnessRun run) {
+        return false;
+    }
+
+    private boolean hasAttributableFailure(TaskHarnessRun run, String reason) {
+        return run.getLastFailure() != null
+                || run.getPendingSubtaskCount() > 0
+                || run.getRepairAttempts() > 0
+                || (reason != null && reason.trim().length() >= 12);
     }
 
     private boolean hasCandidateForRun(List<LearningCandidate> candidates,

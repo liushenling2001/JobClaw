@@ -23,7 +23,7 @@ class LearningCandidateServiceTest {
     Path tempDir;
 
     @Test
-    void shouldRecordWorkflowAndSkillCandidatesForSuccessfulRepeatableRun() {
+    void shouldNotRecordPositiveCandidatesForSingleSuccessfulRun() {
         LearningCandidateService service = new LearningCandidateService(
                 new FileLearningCandidateStore(tempDir.toString())
         );
@@ -31,11 +31,20 @@ class LearningCandidateServiceTest {
 
         service.recordSuccessfulRun(run);
 
-        List<LearningCandidate> pending = service.listPending();
-        assertEquals(2, pending.size());
-        assertTrue(pending.stream().anyMatch(candidate -> candidate.getType() == LearningCandidateType.WORKFLOW));
-        assertTrue(pending.stream().anyMatch(candidate -> candidate.getType() == LearningCandidateType.SKILL_UPDATE));
-        assertTrue(pending.stream().allMatch(candidate -> candidate.getStatus() == LearningCandidateStatus.PENDING));
+        assertTrue(service.listPending().isEmpty());
+    }
+
+    @Test
+    void shouldNotRecordPositiveCandidatesForSingleRepairedSuccessfulRun() {
+        LearningCandidateService service = new LearningCandidateService(
+                new FileLearningCandidateStore(tempDir.toString())
+        );
+        TaskHarnessRun run = successfulBatchRun("run-a");
+        run.incrementRepairAttempts();
+
+        service.recordSuccessfulRun(run);
+
+        assertTrue(service.listPending().isEmpty());
     }
 
     @Test
@@ -48,7 +57,7 @@ class LearningCandidateServiceTest {
         service.recordSuccessfulRun(run);
         service.recordSuccessfulRun(run);
 
-        assertEquals(2, service.listPending().size());
+        assertTrue(service.listPending().isEmpty());
     }
 
     @Test

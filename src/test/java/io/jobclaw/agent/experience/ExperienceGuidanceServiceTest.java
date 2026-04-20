@@ -52,7 +52,7 @@ class ExperienceGuidanceServiceTest {
         assertTrue(guidance.contains("[Accepted Experience Memory]"));
         assertTrue(guidance.contains("[Relevant Negative Lesson]"));
         assertTrue(guidance.contains("pending subtasks remained"));
-        assertTrue(guidance.contains("[Relevant Successful Workflow]"));
+        assertTrue(guidance.contains("[Relevant Prior Workflow Reference]"));
         assertTrue(guidance.contains("成功批量 PDF 审查流程"));
     }
 

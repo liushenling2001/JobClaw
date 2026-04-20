@@ -170,6 +170,9 @@ public class MemoryTool {
         if (learningCandidateStore == null || content == null || content.isBlank()) {
             return Optional.empty();
         }
+        if (content.trim().length() < 30) {
+            return Optional.empty();
+        }
         LearningCandidateType type = classifyExperienceCandidate(content, tags);
         if (type == null) {
             return Optional.empty();
@@ -216,10 +219,16 @@ public class MemoryTool {
 
     private LearningCandidateType classifyExperienceCandidate(String content, List<String> tags) {
         String text = (content + " " + String.join(" ", tags)).toLowerCase(Locale.ROOT);
-        if (containsAny(text, "失败", "教训", "踩坑", "错误", "避免", "不要再", "不能再", "negative", "avoid", "failure", "lesson")) {
+        if (containsAny(text,
+                "记录为教训", "沉淀教训", "固化为教训", "形成教训", "记住教训",
+                "避免再犯", "不要再犯", "negative lesson", "record lesson")) {
             return LearningCandidateType.NEGATIVE_LESSON;
         }
-        if (containsAny(text, "经验", "工作流", "流程", "步骤", "以后按", "以后要", "下次", "复用", "总结", "workflow", "process", "procedure")) {
+        if (containsAny(text,
+                "固化为经验", "沉淀为经验", "形成经验", "进入经验", "作为经验",
+                "经验候选", "学习候选", "promote as experience", "experience candidate")
+                || tags.contains("experience_candidate")
+                || tags.contains("learning_candidate")) {
             return LearningCandidateType.WORKFLOW;
         }
         return null;
