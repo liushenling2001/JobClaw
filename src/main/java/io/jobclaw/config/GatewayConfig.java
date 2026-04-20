@@ -1,5 +1,7 @@
 package io.jobclaw.config;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+
 /**
  * 网关配置
  */
@@ -34,10 +36,12 @@ public class GatewayConfig {
     public int getRateLimitPerMinute() { return rateLimitPerMinute; }
     public void setRateLimitPerMinute(int rateLimitPerMinute) { this.rateLimitPerMinute = rateLimitPerMinute; }
 
+    @JsonIgnore
     public boolean isAuthEnabled() {
         return username != null && !username.isEmpty() && password != null && !password.isEmpty();
     }
 
+    @JsonIgnore
     public boolean isRateLimitEnabled() {
         return rateLimitPerMinute > 0;
     }

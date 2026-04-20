@@ -1,13 +1,18 @@
 package io.jobclaw.agent;
 
+import io.jobclaw.config.Config;
 import org.junit.jupiter.api.Test;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PlanningResponseTaskHarnessVerifierRuleTest {
 
-    private final PlanningResponseTaskHarnessVerifierRule rule = new PlanningResponseTaskHarnessVerifierRule();
+    private final PlanningResponseTaskHarnessVerifierRule rule = new PlanningResponseTaskHarnessVerifierRule(Config.defaultConfig());
 
     @Test
     void shouldRejectPlanningOnlyReply() {
@@ -35,7 +40,7 @@ class PlanningResponseTaskHarnessVerifierRuleTest {
     @Test
     void compositeVerifierShouldShortCircuitPlanningOnlyReplyBeforeDefaultAcceptance() {
         CompositeTaskHarnessVerifier verifier = new CompositeTaskHarnessVerifier(java.util.List.of(
-                new PlanningResponseTaskHarnessVerifierRule(),
+                new PlanningResponseTaskHarnessVerifierRule(Config.defaultConfig()),
                 new DefaultTaskHarnessVerifier()
         ));
 
@@ -111,4 +116,38 @@ class PlanningResponseTaskHarnessVerifierRuleTest {
 
         assertTrue(result.success());
     }
+
+    @Test
+    void shouldAllowPlanningLanguageWhenReportArtifactAlreadyExists() throws Exception {
+        Config config = Config.defaultConfig();
+        Path workspace = Files.createTempDirectory("jobclaw-report-workspace");
+        config.getAgent().setWorkspace(workspace.toString());
+        PlanningResponseTaskHarnessVerifierRule localRule = new PlanningResponseTaskHarnessVerifierRule(config);
+
+        Path report = workspace.resolve("reports").resolve("analysis-report.md");
+        Files.createDirectories(report.getParent());
+        Files.writeString(report, "# report\nready");
+
+        TaskHarnessRun run = new TaskHarnessRun("session-a", "run-7", "分析文件并生成报告");
+        run.addStep(
+                TaskHarnessPhase.ACT,
+                "event",
+                "tool_start",
+                "write_file",
+                Map.of(
+                        "eventType", "TOOL_START",
+                        "toolName", "write_file",
+                        "request", "{\"path\":\"reports/analysis-report.md\",\"content\":\"# report\"}"
+                )
+        );
+
+        TaskHarnessVerificationResult result = localRule.verify(
+                run,
+                "已生成报告文件。接下来我会继续补充一点说明。",
+                null
+        );
+
+        assertTrue(result.success());
+    }
+
 }

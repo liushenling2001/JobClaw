@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ProviderRuntimeTest {
@@ -56,5 +57,51 @@ class ProviderRuntimeTest {
 
         assertEquals("https://api.openai.com/v1", resolved.apiBase());
         assertEquals("https://api.openai.com", resolved.springAiBaseUrl());
+    }
+
+    @Test
+    void shouldRejectConfiguredRemoteProviderWithoutApiKey() {
+        Config config = Config.defaultConfig();
+        config.getAgent().setProvider("dashscope");
+        config.getProviders().getDashscope().setApiKey("");
+
+        IllegalStateException error = assertThrows(IllegalStateException.class,
+                () -> providerRuntime.resolve(config, null));
+
+        assertTrue(error.getMessage().contains("missing apiKey"));
+    }
+
+    @Test
+    void shouldAllowOllamaWithoutApiKey() {
+        Config config = Config.defaultConfig();
+        config.getAgent().setProvider("ollama");
+        config.getAgent().setModel("qwen-coder");
+        config.getProviders().getOllama().setApiKey("");
+        config.getProviders().getOllama().setApiBase("http://localhost:11434/v1");
+
+        ResolvedProviderConfig resolved = providerRuntime.resolve(config, null);
+
+        assertEquals("ollama", resolved.providerName());
+        assertEquals("", resolved.apiKey());
+        assertEquals("qwen-coder", resolved.model());
+    }
+
+    @Test
+    void shouldUseChildProviderAndModelButApiKeyFromMainProviders() {
+        Config config = Config.defaultConfig();
+        config.getAgent().setProvider("dashscope");
+        config.getAgent().setModel("qwen-main");
+        config.getProviders().getOpenai().setApiKey("sk-openai-child");
+
+        ResolvedProviderConfig resolved = providerRuntime.resolve(
+                config,
+                "openai",
+                null,
+                "gpt-child"
+        );
+
+        assertEquals("openai", resolved.providerName());
+        assertEquals("gpt-child", resolved.model());
+        assertEquals("sk-openai-child", resolved.apiKey());
     }
 }

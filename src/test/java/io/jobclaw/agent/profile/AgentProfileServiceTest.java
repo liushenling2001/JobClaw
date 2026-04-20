@@ -156,4 +156,35 @@ class AgentProfileServiceTest {
         assertEquals("custom-model", roleProfile.modelConfig().get("model"));
         assertEquals(config.getAgent().getSubtaskTimeoutMs(), ((Number) roleProfile.modelConfig().get("subtaskTimeoutMs")).longValue());
     }
+
+    @Test
+    void shouldExposeEffectiveAgentModelConfigWithoutApiKey() throws Exception {
+        Path tempDir = Files.createTempDirectory("agent-profile-effective-config");
+        Config config = Config.defaultConfig();
+        config.getAgent().setWorkspace(tempDir.toString());
+        config.getAgent().setProvider("openai");
+        config.getAgent().setModel("main-model");
+        config.getProviders().getOpenai().setApiKey("sk-secret");
+        AgentCatalogService catalogService = new AgentCatalogService(
+                new FileAgentCatalogStore(tempDir.resolve(".jobclaw").resolve("agents").toString())
+        );
+        catalogService.createAgent(
+                "doc_reviewer",
+                "Doc Reviewer",
+                "Review documents",
+                "You review documents.",
+                List.of("doc reviewer"),
+                List.of("read_file"),
+                List.of(),
+                Map.of("model", "child-model"),
+                "agent:doc_reviewer"
+        );
+
+        AgentProfileService service = new AgentProfileService(config, catalogService);
+        AgentProfile profile = service.getProfile("agent:doc_reviewer").orElseThrow();
+
+        assertEquals("openai", profile.modelConfig().get("provider"));
+        assertEquals("child-model", profile.modelConfig().get("model"));
+        assertTrue(!profile.modelConfig().containsKey("apiKey"));
+    }
 }

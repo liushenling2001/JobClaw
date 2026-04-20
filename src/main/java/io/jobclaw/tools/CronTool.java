@@ -33,8 +33,6 @@ public class CronTool {
 
     public CronTool(CronService cronService) {
         this.cronService = cronService;
-        // 设置任务处理器
-        cronService.setOnJob(this::executeJob);
     }
 
     @Tool(name = "cron", description = "Schedule reminders and tasks. IMPORTANT: Call this when user requests reminders or scheduled tasks. Use 'at_seconds' for one-time reminders (e.g., 'remind me in 10 minutes' → at_seconds=600). Use 'every_seconds' for recurring tasks (e.g., 'every 2 hours' → every_seconds=7200). Use 'cron_expr' for complex schedules (e.g., '0 9 * * *' for daily at 9 AM).")
@@ -170,18 +168,4 @@ public class CronTool {
         }
     }
 
-    /**
-     * Execute cron job
-     * This is called by CronService when a job is triggered
-     */
-    private String executeJob(CronJob job) {
-        // TODO: Integrate with MessageBus to send the message
-        // For now, just log and return
-        System.out.println("[CronJob] Executing: " + job.getName());
-        System.out.println("[CronJob] Message: " + job.getPayload().getMessage());
-        System.out.println("[CronJob] Channel: " + job.getPayload().getChannel());
-        System.out.println("[CronJob] To: " + job.getPayload().getTo());
-        
-        return "Job executed: " + job.getName();
-    }
 }

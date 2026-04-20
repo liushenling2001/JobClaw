@@ -17,6 +17,7 @@ public class Config {
     private ProvidersConfig providers;
     private GatewayConfig gateway;
     private ToolsConfig tools;
+    private ExperienceConfig experience;
     private SocialNetworkConfig socialNetwork;
     private MCPServersConfig mcpServers;
 
@@ -27,6 +28,7 @@ public class Config {
         this.providers = new ProvidersConfig();
         this.gateway = new GatewayConfig();
         this.tools = new ToolsConfig();
+        this.experience = new ExperienceConfig();
         this.socialNetwork = new SocialNetworkConfig();
         this.mcpServers = new MCPServersConfig();
     }
@@ -48,6 +50,17 @@ public class Config {
 
     public ToolsConfig getTools() { return tools; }
     public void setTools(ToolsConfig tools) { this.tools = tools; }
+
+    public ExperienceConfig getExperience() {
+        if (experience == null) {
+            experience = new ExperienceConfig();
+        }
+        return experience;
+    }
+
+    public void setExperience(ExperienceConfig experience) {
+        this.experience = experience;
+    }
 
     public SocialNetworkConfig getSocialNetwork() { return socialNetwork; }
     public void setSocialNetwork(SocialNetworkConfig socialNetwork) { this.socialNetwork = socialNetwork; }
@@ -125,7 +138,8 @@ public class Config {
             return "Provider '" + selectedProvider + "' 未在 providers 中配置";
         }
         
-        if (providerConfig.getApiKey() == null || providerConfig.getApiKey().trim().isEmpty()) {
+        if (!"ollama".equals(selectedProvider)
+                && (providerConfig.getApiKey() == null || providerConfig.getApiKey().trim().isEmpty())) {
             return "Provider '" + selectedProvider + "' 的 API Key 未配置";
         }
         
@@ -180,6 +194,9 @@ public class Config {
         if (config.getTools() == null) {
             config.setTools(new ToolsConfig());
         }
+        if (config.getExperience() == null) {
+            config.setExperience(new ExperienceConfig());
+        }
         if (config.getGateway() == null) {
             config.setGateway(new GatewayConfig());
         }
@@ -205,8 +222,8 @@ public class Config {
         config.getAgent().setMaxTestCommandRepairAttempts(1);
         config.getAgent().setMaxCommandExitRepairAttempts(1);
         config.getAgent().setMaxToolOutputLength(10000);
-        config.getAgent().setToolCallTimeoutSeconds(120);
-        config.getAgent().setSubtaskTimeoutMs(300_000L);
+        config.getAgent().setToolCallTimeoutSeconds(300);
+        config.getAgent().setSubtaskTimeoutMs(900_000L);
         // 上下文管理默认值（参考 TinyClaw）
         config.getAgent().setContextWindow(128_000);
         config.getAgent().setSummarizeMessageThreshold(200);

@@ -49,6 +49,7 @@ public class ToolEventPublisher {
                               String toolId,
                               String truncatedRequest,
                               long durationMs,
+                              int fullOutputLength,
                               String result) {
         publish(callback, new ExecutionEvent(
                 sessionKey,
@@ -58,7 +59,8 @@ public class ToolEventPublisher {
                         "toolName", toolName,
                         "toolId", toolId,
                         "request", truncatedRequest,
-                        "durationMs", durationMs
+                        "durationMs", durationMs,
+                        "fullOutputLength", fullOutputLength
                 )
         ));
     }

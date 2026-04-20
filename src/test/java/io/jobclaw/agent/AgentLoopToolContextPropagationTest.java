@@ -25,8 +25,11 @@ class AgentLoopToolContextPropagationTest {
 
     @Test
     void wrappedToolCallbackShouldRestoreExecutionContextOnCallingThread() throws Exception {
+        Config config = Config.defaultConfig();
+        config.getAgent().setProvider("ollama");
+        config.getAgent().setModel("llama3.1");
         AgentLoop agentLoop = new AgentLoop(
-                Config.defaultConfig(),
+                config,
                 new SessionManager(),
                 new ToolCallback[0],
                 mock(ContextBuilder.class),

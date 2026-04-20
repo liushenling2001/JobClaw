@@ -47,6 +47,7 @@ public class CronService {
     private static final String LEGACY_CRON_FILE = "cron.json";
     private static final String CRON_DIR = "cron";
     private static final String CRON_STORE_FILE = "jobs.json";
+    private static final String TYPE_MESSAGE = "MESSAGE";
     
     private final Path storePath;
     private final Path legacyStorePath;
@@ -439,6 +440,7 @@ public class CronService {
         job.setEnabled(true);
         job.setSchedule(schedule);
         job.setPayload(new CronPayload(message, channel, to));
+        job.setType(TYPE_MESSAGE);
         job.setCreatedAtMs(now);
         job.setUpdatedAtMs(now);
         job.setDeleteAfterRun(deleteAfterRun);

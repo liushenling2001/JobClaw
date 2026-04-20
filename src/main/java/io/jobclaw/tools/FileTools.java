@@ -18,8 +18,10 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.stream.Stream;
 
 /**
  * 文件操作工具集合 - 基于 Spring AI @Tool 注解
@@ -36,12 +38,12 @@ public class FileTools {
         this.tika = new Tika();
     }
 
-    @Tool(name = "read_file", description = "Read the contents of a file")
+    @Tool(name = "read_file", description = "Read the contents of a file. Use the exact path returned by list_dir; copy it verbatim and do not insert, remove, or reformat spaces in file names.")
     public String readFile(
-        @ToolParam(description = "The path of the file to read") String path
+        @ToolParam(description = "Exact file path to read. Preserve every character exactly as shown by list_dir, including Chinese characters and spaces.") String path
     ) {
         try {
-            Path resolvedPath = resolvePath(path);
+            Path resolvedPath = resolveExistingPath(path);
             String content = Files.readString(resolvedPath);
             return content;
         } catch (Exception e) {
@@ -49,9 +51,9 @@ public class FileTools {
         }
     }
 
-    @Tool(name = "write_file", description = "Write content to a file (create or overwrite)")
+    @Tool(name = "write_file", description = "Write content to a file (create or overwrite). Preserve the path exactly; do not insert or remove spaces in file names.")
     public String writeFile(
-        @ToolParam(description = "The path of the file to write") String path,
+        @ToolParam(description = "Exact path of the file to write") String path,
         @ToolParam(description = "The content to write") String content
     ) {
         if (path == null || path.isEmpty()) {
@@ -73,17 +75,19 @@ public class FileTools {
         }
     }
 
-    @Tool(name = "list_dir", description = "List the contents of a directory")
+    @Tool(name = "list_dir", description = "List the contents of a directory. The output includes exact absolute paths; use those paths verbatim for later file tools.")
     public String listDir(
-        @ToolParam(description = "The path of the directory to list") String path
+        @ToolParam(description = "The exact path of the directory to list") String path
     ) {
         try {
             Path resolvedPath = resolvePath(path);
             List<String> entries = new java.util.ArrayList<>();
-            Files.list(resolvedPath).forEach(p -> {
-                String type = Files.isDirectory(p) ? "[DIR]  " : "[FILE] ";
-                entries.add(type + p.getFileName());
-            });
+            try (Stream<Path> stream = Files.list(resolvedPath)) {
+                stream.forEach(p -> {
+                    String type = Files.isDirectory(p) ? "[DIR]  " : "[FILE] ";
+                    entries.add(type + p.getFileName() + " | path=\"" + p.toAbsolutePath().normalize() + "\"");
+                });
+            }
 
             return String.join("\n", entries);
         } catch (Exception e) {
@@ -91,9 +95,9 @@ public class FileTools {
         }
     }
 
-    @Tool(name = "read_word", description = "Read the contents of a Word document (.doc or .docx)")
+    @Tool(name = "read_word", description = "Read the contents of a Word document (.doc or .docx). Use the exact path returned by list_dir; do not insert, remove, or reformat spaces in file names.")
     public String readWord(
-        @ToolParam(description = "The path of the Word document (.doc or .docx)") String path,
+        @ToolParam(description = "Exact path of the Word document (.doc or .docx)") String path,
         @ToolParam(description = "Number of pages to read from the beginning (optional)") String frontPages,
         @ToolParam(description = "Number of random middle pages to read (optional)") String randomPages,
         @ToolParam(description = "Number of pages to read from the end (optional)") String tailPages
@@ -110,9 +114,9 @@ public class FileTools {
         }
     }
 
-    @Tool(name = "read_excel", description = "Read the contents of an Excel workbook (.xls or .xlsx)")
+    @Tool(name = "read_excel", description = "Read the contents of an Excel workbook (.xls or .xlsx). Use the exact path returned by list_dir; do not insert, remove, or reformat spaces in file names.")
     public String readExcel(
-        @ToolParam(description = "The path of the Excel workbook (.xls or .xlsx)") String path,
+        @ToolParam(description = "Exact path of the Excel workbook (.xls or .xlsx)") String path,
         @ToolParam(description = "Sheet name or index (0-based, optional, default: 0)") String sheet
     ) {
         try {
@@ -130,9 +134,9 @@ public class FileTools {
         }
     }
 
-    @Tool(name = "read_pdf", description = "Read the contents of a PDF document (.pdf)")
+    @Tool(name = "read_pdf", description = "Read the contents of a PDF document (.pdf). Use the exact path returned by list_dir; do not insert, remove, or reformat spaces in file names.")
     public String readPdf(
-        @ToolParam(description = "The path of the PDF document (.pdf)") String path,
+        @ToolParam(description = "Exact path of the PDF document (.pdf)") String path,
         @ToolParam(description = "Number of pages to read from the beginning (optional)") String frontPages,
         @ToolParam(description = "Number of random middle pages to read (optional)") String randomPages,
         @ToolParam(description = "Number of pages to read from the end (optional)") String tailPages
@@ -149,9 +153,9 @@ public class FileTools {
         }
     }
 
-    @Tool(name = "edit_file", description = "Edit a file by replacing exact text (old_text must match exactly)")
+    @Tool(name = "edit_file", description = "Edit a file by replacing exact text (old_text must match exactly). Preserve the path exactly; do not insert or remove spaces in file names.")
     public String editFile(
-        @ToolParam(description = "The path of the file to edit") String path,
+        @ToolParam(description = "Exact path of the file to edit") String path,
         @ToolParam(description = "The exact text to find and replace (must match exactly)") String oldText,
         @ToolParam(description = "The new text to replace the old text with") String newText
     ) {
@@ -191,9 +195,9 @@ public class FileTools {
         }
     }
 
-    @Tool(name = "append_file", description = "Append content to end of file (creates if not exists)")
+    @Tool(name = "append_file", description = "Append content to end of file (creates if not exists). Preserve the path exactly; do not insert or remove spaces in file names.")
     public String appendFile(
-        @ToolParam(description = "The path of the file to append to") String path,
+        @ToolParam(description = "Exact path of the file to append to") String path,
         @ToolParam(description = "The content to append") String content
     ) {
         if (path == null || path.isEmpty()) {
@@ -437,7 +441,7 @@ public class FileTools {
             throw new IllegalArgumentException("path is required");
         }
 
-        Path resolvedPath = resolvePath(path);
+        Path resolvedPath = resolveExistingPath(path);
         String lowerPath = resolvedPath.toString().toLowerCase();
         boolean matches = false;
         for (String extension : allowedExtensions) {
@@ -458,6 +462,54 @@ public class FileTools {
             throw new IllegalArgumentException("path is not a file: " + path);
         }
         return resolvedPath;
+    }
+
+    private Path resolveExistingPath(String path) {
+        Path resolvedPath = resolvePath(path);
+        if (Files.exists(resolvedPath)) {
+            return resolvedPath;
+        }
+        return recoverWhitespaceMutatedPath(resolvedPath).orElse(resolvedPath);
+    }
+
+    private Optional<Path> recoverWhitespaceMutatedPath(Path requestedPath) {
+        Path parent = requestedPath.getParent();
+        Path requestedFileName = requestedPath.getFileName();
+        if (parent == null || requestedFileName == null || !Files.isDirectory(parent)) {
+            return Optional.empty();
+        }
+
+        String compactRequestedName = removeWhitespace(requestedFileName.toString());
+        if (compactRequestedName.equals(requestedFileName.toString())) {
+            return Optional.empty();
+        }
+
+        List<Path> matches = new ArrayList<>();
+        try (Stream<Path> stream = Files.list(parent)) {
+            stream.filter(path -> removeWhitespace(path.getFileName().toString()).equals(compactRequestedName))
+                    .forEach(matches::add);
+        } catch (Exception ignored) {
+            return Optional.empty();
+        }
+
+        if (matches.size() == 1) {
+            return Optional.of(matches.get(0).toAbsolutePath().normalize());
+        }
+        return Optional.empty();
+    }
+
+    private String removeWhitespace(String value) {
+        if (value == null || value.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder(value.length());
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (!Character.isWhitespace(ch)) {
+                sb.append(ch);
+            }
+        }
+        return sb.toString();
     }
 
     private record PageSelection(int frontPages, int randomPages, int tailPages) {

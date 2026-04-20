@@ -7,6 +7,8 @@ import io.jobclaw.config.MCPServersConfig;
 import io.jobclaw.mcp.MCPService;
 import io.jobclaw.providers.Message;
 import io.jobclaw.session.SessionManager;
+import io.jobclaw.skills.SkillInfo;
+import io.jobclaw.skills.SkillSelectionPolicy;
 import io.jobclaw.skills.SkillsService;
 import io.jobclaw.summary.SessionSummaryRecord;
 import io.jobclaw.summary.SummaryService;
@@ -52,6 +54,7 @@ public class ContextBuilder {
     private final SessionManager sessionManager;
     private final MemoryStore memoryStore;
     private final SkillsService skillsService;
+    private final SkillSelectionPolicy skillSelectionPolicy;
     private final SummaryService summaryService;
     private final MCPService mcpService;
     private final Map<String, String> fileContentCache;
@@ -67,6 +70,7 @@ public class ContextBuilder {
         this.config = config;
         this.sessionManager = sessionManager;
         this.skillsService = skillsService;
+        this.skillSelectionPolicy = new SkillSelectionPolicy();
         this.summaryService = summaryService;
         this.mcpService = mcpService;
         this.fileContentCache = new ConcurrentHashMap<>();
@@ -109,7 +113,7 @@ public class ContextBuilder {
 
         parts.add(getIdentity());
         addSectionIfNotBlank(parts, loadBootstrapFiles());
-        addSectionIfNotBlank(parts, buildSkillsSection());
+        addSectionIfNotBlank(parts, buildSkillsSection(currentMessage));
         addSectionIfNotBlank(parts, buildMcpSection());
 
         int memoryBudget = calculateMemoryTokenBudget();
@@ -143,45 +147,60 @@ public class ContextBuilder {
                 Math.min(config.getAgent().getMemoryMaxTokenBudget(), budget));
     }
 
-    private String buildSkillsSection() {
+    private String buildSkillsSection(String currentMessage) {
         if (skillsService == null) {
             return "";
         }
 
-        String skillsSummary = skillsService.buildSkillsSummary();
+        List<SkillInfo> selectedSkills = skillSelectionPolicy.selectInstalledSkills(
+                skillsService.listSkills(),
+                currentMessage,
+                5
+        );
         StringBuilder sb = new StringBuilder();
         sb.append("# Skills\n\n");
 
-        if (skillsSummary != null && !skillsSummary.trim().isEmpty()) {
-            sb.append("## Installed Skills\n\n");
-            sb.append("Use `skills(action='invoke', name='skill-name')` to open a skill and get its base path.\n\n");
-            sb.append(skillsSummary).append("\n\n");
+        sb.append("Use `skills(action='search', query='...')` to find installable skills. ");
+        sb.append("Use `skills(action='invoke', name='skill-name')` to open an installed skill and get its base path.\n\n");
+
+        if (!selectedSkills.isEmpty()) {
+            sb.append("## Relevant Installed Skills\n\n");
+            sb.append("<skills>\n");
+            for (SkillInfo skill : selectedSkills) {
+                sb.append("  <skill>\n");
+                sb.append("    <name>").append(escapeXml(skill.getName())).append("</name>\n");
+                sb.append("    <description>").append(escapeXml(skill.getDescription())).append("</description>\n");
+                sb.append("    <source>").append(escapeXml(skill.getSource())).append("</source>\n");
+                sb.append("  </skill>\n");
+            }
+            sb.append("</skills>\n\n");
+        } else {
+            sb.append("No installed skill was selected for this request. Search or invoke skills only if the task requires specialized reusable instructions.\n\n");
         }
 
         appendSkillSelfLearningGuide(sb);
         return sb.toString();
     }
 
+    private String escapeXml(String value) {
+        if (value == null) {
+            return "";
+        }
+        return value.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\"", "&quot;")
+                .replace("'", "&apos;");
+    }
+
     private void appendSkillSelfLearningGuide(StringBuilder sb) {
         String skillsPath = Paths.get(workspace).toAbsolutePath() + "/skills/";
 
         sb.append("""
-                ## Skill Self-Learning
+                ## Skill Management
 
-                You can use the `skills` tool to search, install, create, edit, and remove skills.
-
-                Common operations:
-                - `skills(action='list')`
-                - `skills(action='invoke', name='...')`
-                - `skills(action='search', query='...')`
-                - `skills(action='install', repo='owner/repo')`
-                - `skills(action='create', name='...', content='...', skill_description='...')`
-                - `skills(action='edit', name='...', content='...')`
-                - `skills(action='remove', name='...')`
-
-                For script-backed skills:
-                1. Invoke the skill to get its base path.
-                2. Execute scripts inside that path with `run_command`.
+                Prefer searching or invoking skills only when the task needs specialized reusable instructions.
+                For script-backed skills, invoke the skill first to get its base path, then run scripts from that path.
                 """);
 
         sb.append("\nSkills are stored in `").append(skillsPath).append("`.\n");
@@ -243,11 +262,14 @@ public class ContextBuilder {
         sb.append("## Rules\n\n");
         sb.append("1. Use tools when you need to perform actions.\n");
         sb.append("2. Be concise and accurate.\n");
-        sb.append("3. Persist durable memory to workspace memory files when appropriate.\n");
-        sb.append("4. To create a reusable specialized agent, use `agent_catalog` to persist the definition.\n");
-        sb.append("5. To run an existing persistent agent, use `spawn(agent='agent-name', task='...')`.\n");
-        sb.append("6. Do not invent a parallel agent execution flow when `spawn` already fits the task.\n");
-        sb.append("7. For batch work with independent items (for example multiple files, links, or records), first use `subtasks(action='plan', items='id|title\\n...')` to register the worklist, then execute each item in isolation and mark it complete. Do not finish the parent task while pending subtasks remain.\n");
+        sb.append("3. Use workspace files for task inputs, outputs, reports, and configuration; do not treat ordinary files as durable user memory.\n");
+        sb.append("4. When the user explicitly asks you to remember something, future behavior, preferences, or durable rules, call `memory(action='remember', content='...', scope='user|project|agent')`.\n");
+        sb.append("5. Use `memory(action='search'|'list'|'forget')` to inspect or manage durable memory. Durable memory is stored in the structured memory system, not ad-hoc files.\n");
+        sb.append("6. To create a reusable specialized agent, use `agent_catalog` to persist the definition.\n");
+        sb.append("7. To run an existing persistent agent, use `spawn(agent='agent-name', task='...')`.\n");
+        sb.append("8. Do not invent a parallel agent execution flow when `spawn` already fits the task.\n");
+        sb.append("9. For batch work with independent items (for example multiple files, links, or records), first use `subtasks(action='plan', items='id|title\\n...')` to register the worklist, then execute each item in isolation and mark it complete. Do not finish the parent task while pending subtasks remain.\n");
+        sb.append("10. For file tools, copy paths exactly from `list_dir` output or user input. Never add, remove, split, translate, or reformat spaces and Chinese characters in file names.\n");
         sb.append("\n");
         sb.append("## Persistent Agents\n\n");
         sb.append("- Use `agent_catalog(action='create', ...)` to create a reusable agent.\n");

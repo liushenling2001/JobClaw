@@ -6,6 +6,9 @@ import io.jobclaw.agent.ExecutionTraceService;
 import io.jobclaw.agent.TaskHarnessService;
 import io.jobclaw.agent.catalog.FileAgentCatalogStore;
 import io.jobclaw.agent.catalog.AgentCatalogService;
+import io.jobclaw.agent.experience.ExperienceMemoryService;
+import io.jobclaw.agent.experience.FileExperienceMemoryStore;
+import io.jobclaw.agent.learning.LearningCandidateService;
 import io.jobclaw.agent.profile.AgentProfile;
 import io.jobclaw.agent.profile.AgentProfileService;
 import io.jobclaw.bus.MessageBus;
@@ -55,7 +58,9 @@ class WebConsoleControllerAgentApiTest {
                 mock(SecurityGuard.class),
                 mock(RetrievalService.class),
                 profileService,
-                catalogService
+                catalogService,
+                mock(LearningCandidateService.class),
+                new ExperienceMemoryService(new FileExperienceMemoryStore(tempDir.resolve(".jobclaw").resolve("experience").toString()))
         );
 
         WebConsoleController.AgentProfileUpsertRequest createRequest = new WebConsoleController.AgentProfileUpsertRequest();
@@ -120,7 +125,9 @@ class WebConsoleControllerAgentApiTest {
                 mock(SecurityGuard.class),
                 mock(RetrievalService.class),
                 new AgentProfileService(config, catalogService),
-                catalogService
+                catalogService,
+                mock(LearningCandidateService.class),
+                new ExperienceMemoryService(new FileExperienceMemoryStore(tempDir.resolve(".jobclaw").resolve("experience").toString()))
         );
 
         WebConsoleController.AgentProfileUpsertRequest updateRequest = new WebConsoleController.AgentProfileUpsertRequest();

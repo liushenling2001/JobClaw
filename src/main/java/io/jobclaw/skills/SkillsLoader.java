@@ -51,7 +51,8 @@ public class SkillsLoader {
      * Built-in skill names list (loaded from classpath)
      */
     private static final List<String> BUILTIN_SKILL_NAMES = Arrays.asList(
-            "weather", "github", "summarize", "skill-creator", "tmux", "work-partner-skill-creator"
+            "weather", "github", "summarize", "skill-creator", "tmux", "work-partner-skill-creator",
+            "experience-review"
     );
 
     /**

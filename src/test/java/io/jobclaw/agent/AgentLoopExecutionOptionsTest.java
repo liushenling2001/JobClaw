@@ -19,6 +19,8 @@ class AgentLoopExecutionOptionsTest {
     @Test
     void shouldApplyAgentDefinitionOverridesToExecutionOptions() throws Exception {
         Config config = Config.defaultConfig();
+        config.getAgent().setProvider("ollama");
+        config.getAgent().setModel("llama3.1");
         AgentLoop loop = new AgentLoop(
                 config,
                 new SessionManager(),

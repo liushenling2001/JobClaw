@@ -74,9 +74,9 @@ public class AgentConfig {
         this.feedbackEnabled = false;
         this.promptOptimizationEnabled = false;
         this.collaborationEnabled = true;
-        this.maxToolOutputLength = 10000; // 默认限制工具返回 10000 字符
-        this.toolCallTimeoutSeconds = 120;
-        this.subtaskTimeoutMs = 300_000L;
+        this.maxToolOutputLength = 10000; // 工具结果在前端事件中的展示截断长度，不截断模型流程内容
+        this.toolCallTimeoutSeconds = 300;
+        this.subtaskTimeoutMs = 900_000L;
         this.commandBlacklist = new ArrayList<>();
         // 上下文管理默认值（参考 TinyClaw）
         this.contextWindow = 128_000;

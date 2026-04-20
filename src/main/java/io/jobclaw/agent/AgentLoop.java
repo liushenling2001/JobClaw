@@ -3,6 +3,7 @@ package io.jobclaw.agent;
 import io.jobclaw.agent.evolution.MemoryEvolver;
 import io.jobclaw.agent.evolution.MemoryStore;
 import io.jobclaw.agent.runtime.AgentRunIds;
+import io.jobclaw.agent.completion.ActiveExecutionRegistry;
 import io.jobclaw.context.ContextAssembler;
 import io.jobclaw.context.ContextAssemblyOptions;
 import io.jobclaw.context.ContextAssemblyPolicy;
@@ -33,9 +34,12 @@ import reactor.core.publisher.Flux;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.Consumer;
@@ -68,6 +72,8 @@ public class AgentLoop {
     private final ToolRuntime toolRuntime;
     private final ToolExecutionStateTracker toolExecutionStateTracker;
     private final ResolvedProviderConfig defaultProviderConfig;
+    private final ActiveExecutionRegistry activeExecutionRegistry;
+    private final ToolSelectionPolicy toolSelectionPolicy;
 
     // 无工具调用的专用 ChatClient（用于摘要生成）
     private final ChatClient simpleChatClient;
@@ -106,10 +112,25 @@ public class AgentLoop {
                      SummaryService summaryService,
                      ChatClient chatClient, String model,
                      ProviderRuntime providerRuntime) {
+        this(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler, contextAssemblyPolicy,
+                summaryService, chatClient, model, providerRuntime, new ActiveExecutionRegistry());
+    }
+
+    AgentLoop(Config config, SessionManager sessionManager,
+                     ToolCallback[] allToolCallbacks,
+                     ContextBuilder contextBuilder,
+                     ContextAssembler contextAssembler,
+                     ContextAssemblyPolicy contextAssemblyPolicy,
+                     SummaryService summaryService,
+                     ChatClient chatClient, String model,
+                     ProviderRuntime providerRuntime,
+                     ActiveExecutionRegistry activeExecutionRegistry) {
         this.config = config;
         this.sessionManager = sessionManager;
         this.allToolCallbacks = allToolCallbacks;
         this.providerRuntime = providerRuntime;
+        this.activeExecutionRegistry = activeExecutionRegistry;
+        this.toolSelectionPolicy = new ToolSelectionPolicy();
 
         ResolvedProviderConfig resolvedProvider = providerRuntime.resolve(config, model);
         this.defaultProviderConfig = resolvedProvider;
@@ -177,7 +198,7 @@ public class AgentLoop {
             return thread;
         });
         this.toolExecutionStateTracker = new DefaultToolExecutionStateTracker();
-        this.toolRuntime = new ToolRuntime(config, sessionManager, toolExecutionExecutor, toolExecutionStateTracker);
+        this.toolRuntime = new ToolRuntime(config, sessionManager, toolExecutionExecutor, toolExecutionStateTracker, activeExecutionRegistry);
 
         logger.info("AgentLoop initialized with {} tools from Spring context", this.allToolCallbacks.length);
         for (ToolCallback callback : this.allToolCallbacks) {
@@ -281,7 +302,7 @@ public class AgentLoop {
                     buildSystemPromptWithDefinition(sessionKey, userContent, definition) : buildSystemPrompt(sessionKey, userContent);
 
             // 创建工具回调（支持工具过滤）
-            ToolCallback[] rawTools = filterToolsByDefinition(definition);
+            ToolCallback[] rawTools = filterToolsByDefinition(definition, userContent);
             ToolCallback[] tools = wrapToolCallbacks(rawTools, sessionKey, eventCallback);
 
             ExecutionClientBundle executionClientBundle = createExecutionClientBundle(definition);
@@ -588,16 +609,33 @@ public class AgentLoop {
      * @param definition Agent 定义
      * @return 过滤后的工具数组
      */
-    private ToolCallback[] filterToolsByDefinition(AgentDefinition definition) {
-        // 如果没有定义或没有限制，返回所有工具
-        if (definition == null || definition.getAllowedTools() == null || definition.getAllowedTools().isEmpty()) {
-            return allToolCallbacks;
+    private ToolCallback[] filterToolsByDefinition(AgentDefinition definition, String userContent) {
+        if (definition != null && definition.getAllowedTools() != null && !definition.getAllowedTools().isEmpty()) {
+            ToolCallback[] explicitTools = Arrays.stream(allToolCallbacks)
+                    .filter(tool -> definition.isToolAllowed(tool.getToolDefinition().name()))
+                    .toArray(ToolCallback[]::new);
+            logger.debug("Using explicit agent tool allowlist for {}: {}", definition.getCode(), toolNames(explicitTools));
+            return explicitTools;
         }
 
-        // 过滤工具
-        return java.util.Arrays.stream(allToolCallbacks)
-                .filter(tool -> definition.isToolAllowed(tool.getToolDefinition().name()))
+        Set<String> availableNames = Arrays.stream(allToolCallbacks)
+                .map(tool -> tool.getToolDefinition().name())
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        Set<String> selectedNames = toolSelectionPolicy.selectToolNames(userContent, availableNames);
+        ToolCallback[] selectedTools = Arrays.stream(allToolCallbacks)
+                .filter(tool -> selectedNames.contains(tool.getToolDefinition().name()))
                 .toArray(ToolCallback[]::new);
+        logger.debug("Selected task toolset: {}", toolNames(selectedTools));
+        return selectedTools;
+    }
+
+    private List<String> toolNames(ToolCallback[] callbacks) {
+        if (callbacks == null) {
+            return List.of();
+        }
+        return Arrays.stream(callbacks)
+                .map(callback -> callback.getToolDefinition().name())
+                .toList();
     }
 
     /**
@@ -609,8 +647,8 @@ public class AgentLoop {
 
     private OpenAiChatOptions buildExecutionOptions(AgentDefinition definition, String baseModel) {
         String effectiveModel = baseModel != null && !baseModel.isBlank() ? baseModel : model;
-        int effectiveMaxTokens = config.getAgent().getMaxTokens();
-        double effectiveTemperature = config.getAgent().getTemperature();
+        Integer effectiveMaxTokens = null;
+        Double effectiveTemperature = null;
 
         if (definition != null && definition.getConfig() != null) {
             AgentDefinition.AgentConfig definitionConfig = definition.getConfig();
@@ -625,11 +663,15 @@ public class AgentLoop {
             }
         }
 
-        return OpenAiChatOptions.builder()
-                .model(effectiveModel)
-                .maxTokens(effectiveMaxTokens)
-                .temperature(effectiveTemperature)
-                .build();
+        OpenAiChatOptions.Builder builder = OpenAiChatOptions.builder()
+                .model(effectiveModel);
+        if (effectiveMaxTokens != null) {
+            builder.maxTokens(effectiveMaxTokens);
+        }
+        if (effectiveTemperature != null) {
+            builder.temperature(effectiveTemperature);
+        }
+        return builder.build();
     }
 
     private ExecutionClientBundle createExecutionClientBundle(AgentDefinition definition) {

@@ -1,9 +1,17 @@
 package io.jobclaw.config;
 
 import io.jobclaw.agent.AgentLoop;
+import io.jobclaw.agent.checkpoint.FileTaskCheckpointStore;
+import io.jobclaw.agent.checkpoint.TaskCheckpointStore;
 import io.jobclaw.agent.catalog.AgentCatalogService;
 import io.jobclaw.agent.catalog.AgentCatalogStore;
 import io.jobclaw.agent.catalog.FileAgentCatalogStore;
+import io.jobclaw.agent.experience.ExperienceMemoryStore;
+import io.jobclaw.agent.experience.FileExperienceMemoryStore;
+import io.jobclaw.agent.learning.FileLearningCandidateStore;
+import io.jobclaw.agent.learning.LearningCandidateStore;
+import io.jobclaw.agent.workflow.FileWorkflowMemoryStore;
+import io.jobclaw.agent.workflow.WorkflowMemoryStore;
 import io.jobclaw.board.SharedBoardService;
 import io.jobclaw.board.file.FileSharedBoardService;
 import io.jobclaw.bus.MessageBus;
@@ -15,6 +23,7 @@ import io.jobclaw.context.ContextAssemblyPolicy;
 import io.jobclaw.context.DefaultContextAssemblyPolicy;
 import io.jobclaw.context.DefaultContextAssembler;
 import io.jobclaw.cron.CronService;
+import io.jobclaw.cron.CronJobDispatcher;
 import io.jobclaw.mcp.MCPService;
 import io.jobclaw.providers.HTTPProvider;
 import io.jobclaw.providers.LLMProvider;
@@ -131,6 +140,38 @@ public class AgentBeansConfig {
 
     @Bean
     @ConditionalOnMissingBean
+    public TaskCheckpointStore taskCheckpointStore(Config config) {
+        return new FileTaskCheckpointStore(
+                Paths.get(config.getWorkspacePath(), ".jobclaw", "checkpoints").toString()
+        );
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public WorkflowMemoryStore workflowMemoryStore(Config config) {
+        return new FileWorkflowMemoryStore(
+                Paths.get(config.getWorkspacePath(), ".jobclaw", "workflows").toString()
+        );
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public LearningCandidateStore learningCandidateStore(Config config) {
+        return new FileLearningCandidateStore(
+                Paths.get(config.getWorkspacePath(), ".jobclaw", "learning").toString()
+        );
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public ExperienceMemoryStore experienceMemoryStore(Config config) {
+        return new FileExperienceMemoryStore(
+                Paths.get(config.getWorkspacePath(), ".jobclaw", "experience").toString()
+        );
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
     public ContextAssembler contextAssembler(Config config,
                                              SessionManager sessionManager,
                                              RetrievalService retrievalService) {
@@ -194,8 +235,10 @@ public class AgentBeansConfig {
 
     @Bean
     @ConditionalOnMissingBean
-    public CronService cronService(Config config) {
-        return new CronService(config.getWorkspacePath());
+    public CronService cronService(Config config, CronJobDispatcher cronJobDispatcher) {
+        CronService cronService = new CronService(config.getWorkspacePath());
+        cronService.setOnJob(cronJobDispatcher);
+        return cronService;
     }
 
     @Bean
@@ -224,6 +267,7 @@ public class AgentBeansConfig {
             ExecTool execTool,
             SharedBoardTool sharedBoardTool,
             AgentCatalogTool agentCatalogTool,
+            MemoryTool memoryTool,
             SubtasksTool subtasksTool,
             SpawnTool spawnTool,
             CollaborateTool collaborateTool) {
@@ -234,7 +278,7 @@ public class AgentBeansConfig {
                 .toolObjects(fileTools, runCommandTool, skillsTools, messageTool, cronTool,
                             mcpTool, tokenUsageTool, webSearchTool, webFetchTool, execTool,
                             sharedBoardTool,
-                            agentCatalogTool, subtasksTool, spawnTool, collaborateTool)
+                            agentCatalogTool, memoryTool, subtasksTool, spawnTool, collaborateTool)
                 .build()
                 .getToolCallbacks();
     }

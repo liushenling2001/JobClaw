@@ -1,5 +1,6 @@
 package io.jobclaw.agent;
 
+import io.jobclaw.agent.completion.DoneDefinition;
 import io.jobclaw.agent.planning.TaskPlanningMode;
 
 import java.time.Instant;
@@ -25,6 +26,7 @@ public class TaskHarnessRun {
     private final Map<String, TaskHarnessSubtask> subtasks;
     private TaskPlanningMode planningMode;
     private String planningReason;
+    private DoneDefinition doneDefinition;
 
     public TaskHarnessRun(String sessionId, String runId, String taskInput) {
         this.sessionId = sessionId;
@@ -36,6 +38,7 @@ public class TaskHarnessRun {
         this.currentPhase = TaskHarnessPhase.PLAN;
         this.planningMode = TaskPlanningMode.DIRECT;
         this.planningReason = "default";
+        this.doneDefinition = null;
     }
 
     public synchronized TaskHarnessStep addStep(TaskHarnessPhase phase,
@@ -188,6 +191,14 @@ public class TaskHarnessRun {
     public synchronized void setPlanningMode(TaskPlanningMode planningMode, String planningReason) {
         this.planningMode = planningMode == null ? TaskPlanningMode.DIRECT : planningMode;
         this.planningReason = planningReason;
+    }
+
+    public synchronized DoneDefinition getDoneDefinition() {
+        return doneDefinition;
+    }
+
+    public synchronized void setDoneDefinition(DoneDefinition doneDefinition) {
+        this.doneDefinition = doneDefinition;
     }
 
     private Map<String, Object> mergeMetadata(Map<String, Object> base, Map<String, Object> updates) {

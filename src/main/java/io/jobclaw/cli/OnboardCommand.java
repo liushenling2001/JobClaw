@@ -2,6 +2,7 @@ package io.jobclaw.cli;
 
 import io.jobclaw.config.Config;
 import io.jobclaw.config.ConfigLoader;
+import io.jobclaw.bootstrap.SystemBootstrapService;
 import org.springframework.stereotype.Component;
 
 import java.io.File;
@@ -61,6 +62,12 @@ public class OnboardCommand extends CliCommand {
     private static final String FILE_MEMORY = "MEMORY.md";     // 记忆文件
     private static final String FILE_HEARTBEAT = "HEARTBEAT.md"; // 心跳上下文文件
 
+    private final SystemBootstrapService systemBootstrapService;
+
+    public OnboardCommand(SystemBootstrapService systemBootstrapService) {
+        this.systemBootstrapService = systemBootstrapService;
+    }
+
     @Override
     public String name() {
         return "onboard";
@@ -88,6 +95,9 @@ public class OnboardCommand extends CliCommand {
 
         // 创建工作空间模板文件
         createWorkspaceTemplates(config.getWorkspacePath());
+
+        // 初始化内置系统配置（仅 onboard 触发，普通启动不写默认配置）
+        systemBootstrapService.initializeOnboardDefaults(config.getWorkspacePath());
 
         // 打印完成信息和下一步指引
         printCompletionMessage(configPath);

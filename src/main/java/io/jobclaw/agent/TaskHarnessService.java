@@ -1,5 +1,8 @@
 package io.jobclaw.agent;
 
+import io.jobclaw.agent.checkpoint.TaskCheckpointService;
+import io.jobclaw.agent.completion.ActiveExecutionRegistry;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.HashMap;
@@ -11,6 +14,28 @@ import java.util.function.Consumer;
 public class TaskHarnessService {
 
     private final ConcurrentHashMap<String, TaskHarnessRun> runs = new ConcurrentHashMap<>();
+    private final TaskCheckpointService taskCheckpointService;
+    private final ActiveExecutionRegistry activeExecutionRegistry;
+
+    public TaskHarnessService() {
+        this(new TaskCheckpointService(new io.jobclaw.agent.checkpoint.TaskCheckpointStore() {
+            @Override
+            public void save(io.jobclaw.agent.checkpoint.TaskCheckpoint checkpoint) {
+            }
+
+            @Override
+            public java.util.Optional<io.jobclaw.agent.checkpoint.TaskCheckpoint> latest(String sessionId) {
+                return java.util.Optional.empty();
+            }
+        }), new ActiveExecutionRegistry());
+    }
+
+    @Autowired
+    public TaskHarnessService(TaskCheckpointService taskCheckpointService,
+                              ActiveExecutionRegistry activeExecutionRegistry) {
+        this.taskCheckpointService = taskCheckpointService;
+        this.activeExecutionRegistry = activeExecutionRegistry;
+    }
 
     public TaskHarnessRun startRun(String sessionId,
                                    String runId,
@@ -110,6 +135,27 @@ public class TaskHarnessService {
         run.complete(success);
     }
 
+    public void recordCompletionDecision(TaskHarnessRun run,
+                                         String status,
+                                         String reason,
+                                         java.util.List<String> missingRequirements,
+                                         Consumer<ExecutionEvent> eventCallback) {
+        HashMap<String, Object> metadata = new HashMap<>();
+        metadata.put("decisionStatus", status);
+        if (missingRequirements != null && !missingRequirements.isEmpty()) {
+            metadata.put("missingRequirements", String.join(",", missingRequirements));
+        }
+        transition(
+                run,
+                TaskHarnessPhase.VERIFY,
+                "decision",
+                "completion_decision",
+                reason,
+                metadata,
+                eventCallback
+        );
+    }
+
     public TaskHarnessRun getRun(String runId) {
         return runs.get(runId);
     }
@@ -140,6 +186,7 @@ public class TaskHarnessService {
             return null;
         }
         TaskHarnessSubtask subtask = run.markSubtaskRunning(subtaskId, title, childSessionId, metadata);
+        activeExecutionRegistry.subagentStarted(run.getSessionId());
         publishSubtask(run, subtask, "running", "subtask_started",
                 "Subtask started: " + titleOrId(subtask), eventCallback);
         return subtask;
@@ -156,10 +203,12 @@ public class TaskHarnessService {
             return null;
         }
         TaskHarnessSubtask subtask = run.markSubtaskCompleted(subtaskId, summary, success, metadata);
+        activeExecutionRegistry.subagentFinished(run.getSessionId());
         publishSubtask(run, subtask, success ? "success" : "failed",
                 success ? "subtask_completed" : "subtask_failed",
                 summary != null && !summary.isBlank() ? summary : "Subtask finished: " + titleOrId(subtask),
                 eventCallback);
+        taskCheckpointService.save(run);
         return subtask;
     }
 

@@ -96,6 +96,31 @@ class FileToolsTikaTest {
         assertTrue(content.contains("=== Estimated Page"), content);
     }
 
+    @Test
+    void listDirShouldReturnExactAbsolutePathsForReuse() throws Exception {
+        Path file = tempDir.resolve("桌面文件.txt");
+        Files.writeString(file, "exact path");
+
+        FileTools tools = createTools();
+        String listing = tools.listDir(tempDir.toString());
+
+        assertTrue(listing.contains("[FILE] 桌面文件.txt"), listing);
+        assertTrue(listing.contains("path=\"" + file.toAbsolutePath().normalize() + "\""), listing);
+    }
+
+    @Test
+    void readFileShouldRecoverWhenModelInsertsSpacesIntoFileName() throws Exception {
+        Path file = tempDir.resolve("桌面文件.txt");
+        Files.writeString(file, "recovered content");
+
+        FileTools tools = createTools();
+        String mutatedPath = tempDir.resolve("桌 面 文 件.txt").toString();
+        String content = tools.readFile(mutatedPath);
+
+        assertFalse(content.startsWith("Error"), content);
+        assertTrue(content.contains("recovered content"), content);
+    }
+
     private FileTools createTools() {
         Config config = Config.defaultConfig();
         config.getAgent().setWorkspace(tempDir.toString());

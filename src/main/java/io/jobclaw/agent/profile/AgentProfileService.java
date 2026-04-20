@@ -110,7 +110,7 @@ public class AgentProfileService {
                 entry.systemPrompt(),
                 entry.allowedTools(),
                 entry.allowedSkills(),
-                entry.modelConfig() != null ? entry.modelConfig() : Map.of(),
+                effectiveModelConfig(entry.modelConfig()),
                 entry.memoryScope(),
                 entry.status(),
                 entry.version(),
@@ -146,6 +146,16 @@ public class AgentProfileService {
             modelConfig.put("apiBase", providerConfig.getApiBase());
         }
         return Map.copyOf(modelConfig);
+    }
+
+    private Map<String, Object> effectiveModelConfig(Map<String, Object> modelConfig) {
+        Map<String, Object> merged = new LinkedHashMap<>();
+        if (modelConfig != null) {
+            merged.putAll(modelConfig);
+        }
+        defaultModelConfig().forEach(merged::putIfAbsent);
+        merged.remove("apiKey");
+        return Map.copyOf(merged);
     }
 
     private boolean isRoleAgent(AgentCatalogEntry entry) {

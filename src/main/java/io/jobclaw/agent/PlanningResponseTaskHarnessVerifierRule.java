@@ -1,11 +1,20 @@
 package io.jobclaw.agent;
 
+import io.jobclaw.config.Config;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Component
 @Order(90)
@@ -100,6 +109,22 @@ public class PlanningResponseTaskHarnessVerifierRule implements TaskHarnessVerif
             "done"
     );
 
+    private static final Set<String> MUTATING_FILE_TOOLS = Set.of("write_file", "edit_file", "append_file");
+    private static final List<String> REPORT_TASK_HINTS = List.of(
+            "报告",
+            "report",
+            "汇报",
+            "总结文档",
+            "分析报告",
+            "生成文档",
+            "输出文档",
+            "write report",
+            "create report",
+            "generate report"
+    );
+    private static final Pattern JSON_PATH_PATTERN = Pattern.compile("\"path\"\\s*:\\s*\"([^\"]+)\"");
+    private static final Pattern PARAM_PATH_PATTERN = Pattern.compile("path\\s*[=:]\\s*['\"]?([^,'\"\\n}]+)");
+
     private static final List<String> CONDITIONAL_CONTINUE_MARKERS = List.of(
             "如果你需要",
             "如果你愿意",
@@ -119,6 +144,12 @@ public class PlanningResponseTaskHarnessVerifierRule implements TaskHarnessVerif
             "do you want me to continue"
     );
 
+    private final Config config;
+
+    public PlanningResponseTaskHarnessVerifierRule(Config config) {
+        this.config = config;
+    }
+
     @Override
     public TaskHarnessVerificationResult verify(TaskHarnessRun run, String finalResponse, Throwable failure) {
         if (failure != null || finalResponse == null || finalResponse.isBlank()) {
@@ -136,6 +167,11 @@ public class PlanningResponseTaskHarnessVerifierRule implements TaskHarnessVerif
         boolean completion = containsCompletionSignal(normalized);
         boolean toolActivity = hasToolActivity(run);
         boolean optionalFollowUpQuestion = isOptionalFollowUpQuestion(normalized, trailingSegment);
+        boolean reportArtifactCompleted = isGeneratedReportArtifactContext(run);
+
+        if (reportArtifactCompleted) {
+            return TaskHarnessVerificationResult.ok("Report artifact already exists, treat follow-up planning language as optional");
+        }
 
         if (completion && optionalFollowUpQuestion) {
             return TaskHarnessVerificationResult.ok("Response includes a completed result plus an optional follow-up question");
@@ -209,6 +245,72 @@ public class PlanningResponseTaskHarnessVerifierRule implements TaskHarnessVerif
     private boolean hasToolActivity(TaskHarnessRun run) {
         return run.getSteps().stream()
                 .anyMatch(step -> "TOOL_START".equals(step.metadata().get("eventType")));
+    }
+
+    private boolean isGeneratedReportArtifactContext(TaskHarnessRun run) {
+        if (run == null) {
+            return false;
+        }
+        String taskInput = normalize(run.getTaskInput());
+        boolean reportTask = REPORT_TASK_HINTS.stream().anyMatch(taskInput::contains);
+        if (!reportTask) {
+            return false;
+        }
+
+        Set<String> expectedPaths = new LinkedHashSet<>();
+        for (TaskHarnessStep step : run.getSteps()) {
+            if (!"TOOL_START".equals(step.metadata().get("eventType"))) {
+                continue;
+            }
+            String toolName = stringValue(step.metadata().get("toolName")).toLowerCase(Locale.ROOT);
+            if (!MUTATING_FILE_TOOLS.contains(toolName)) {
+                continue;
+            }
+            expectedPaths.addAll(extractPaths(stringValue(step.metadata().get("request"))));
+        }
+
+        if (expectedPaths.isEmpty()) {
+            return false;
+        }
+
+        for (String expectedPath : expectedPaths) {
+            Path resolvedPath = resolvePath(expectedPath);
+            if (Files.exists(resolvedPath)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private List<String> extractPaths(String request) {
+        if (request == null || request.isBlank()) {
+            return List.of();
+        }
+        LinkedHashSet<String> paths = new LinkedHashSet<>();
+        collectMatches(paths, JSON_PATH_PATTERN.matcher(request));
+        collectMatches(paths, PARAM_PATH_PATTERN.matcher(request));
+        return List.copyOf(paths);
+    }
+
+    private void collectMatches(Set<String> paths, Matcher matcher) {
+        while (matcher.find()) {
+            String path = matcher.group(1);
+            if (path != null && !path.isBlank()) {
+                paths.add(path.trim());
+            }
+        }
+    }
+
+    private Path resolvePath(String path) {
+        Path input = Paths.get(path);
+        if (input.isAbsolute()) {
+            return input.normalize();
+        }
+        return Paths.get(config.getWorkspacePath()).resolve(input).normalize();
+    }
+
+    private String stringValue(Object value) {
+        return value == null ? "" : value.toString();
     }
 
     private String trailingSegment(String normalized) {

@@ -63,8 +63,14 @@ public class ConfigLoader {
             if (config.getTools() == null) {
                 config.setTools(new ToolsConfig());
             }
+            if (config.getExperience() == null) {
+                config.setExperience(new ExperienceConfig());
+            }
             if (config.getGateway() == null) {
                 config.setGateway(new GatewayConfig());
+            }
+            if (config.getMcpServers() == null) {
+                config.setMcpServers(new MCPServersConfig());
             }
             
             return config;

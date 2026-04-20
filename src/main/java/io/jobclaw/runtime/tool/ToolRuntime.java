@@ -1,6 +1,7 @@
 package io.jobclaw.runtime.tool;
 
 import io.jobclaw.agent.AgentExecutionContext;
+import io.jobclaw.agent.completion.ActiveExecutionRegistry;
 import io.jobclaw.config.Config;
 import io.jobclaw.providers.Message;
 import io.jobclaw.providers.ToolCall;
@@ -26,16 +27,26 @@ public class ToolRuntime {
     private final ExecutorService toolExecutionExecutor;
     private final ToolExecutionStateTracker stateTracker;
     private final ToolEventPublisher eventPublisher;
+    private final ActiveExecutionRegistry activeExecutionRegistry;
 
     public ToolRuntime(Config config,
                        SessionManager sessionManager,
                        ExecutorService toolExecutionExecutor,
                        ToolExecutionStateTracker stateTracker) {
+        this(config, sessionManager, toolExecutionExecutor, stateTracker, new ActiveExecutionRegistry());
+    }
+
+    public ToolRuntime(Config config,
+                       SessionManager sessionManager,
+                       ExecutorService toolExecutionExecutor,
+                       ToolExecutionStateTracker stateTracker,
+                       ActiveExecutionRegistry activeExecutionRegistry) {
         this.config = config;
         this.sessionManager = sessionManager;
         this.toolExecutionExecutor = toolExecutionExecutor;
         this.stateTracker = stateTracker;
         this.eventPublisher = new ToolEventPublisher();
+        this.activeExecutionRegistry = activeExecutionRegistry;
     }
 
     public ToolExecutionResult execute(ToolExecutionRequest executionRequest) {
@@ -51,6 +62,7 @@ public class ToolRuntime {
         sessionManager.addFullMessage(executionRequest.sessionKey(), assistantToolMessage);
 
         stateTracker.markExecuting(executionRequest.sessionKey());
+        activeExecutionRegistry.toolStarted(executionRequest.sessionKey());
         eventPublisher.publishStart(
                 executionRequest.eventCallback(),
                 executionRequest.sessionKey(),
@@ -83,6 +95,7 @@ public class ToolRuntime {
                     toolId,
                     truncatedRequest,
                     durationMs,
+                    outputLength(response),
                     truncateToolOutput(response, executionRequest.toolName())
             );
 
@@ -103,6 +116,7 @@ public class ToolRuntime {
             throw asRuntimeException(e);
         } finally {
             stateTracker.markIdle(executionRequest.sessionKey());
+            activeExecutionRegistry.toolFinished(executionRequest.sessionKey());
             if (throwable == null) {
                 stateTracker.flushBufferedThink(executionRequest.sessionKey(), executionRequest.eventCallback());
             } else {
@@ -161,6 +175,8 @@ public class ToolRuntime {
             return "无返回数据";
         }
 
+        // This limit is only for UI/event display. The agent loop and persisted
+        // tool message keep the original output so task execution is not weakened.
         int maxLength = config.getAgent().getMaxToolOutputLength();
         if (output.length() <= maxLength) {
             return output;
@@ -174,6 +190,10 @@ public class ToolRuntime {
                 toolName, output.length(), maxLength);
 
         return truncated + truncateNotice;
+    }
+
+    private int outputLength(String output) {
+        return output != null ? output.length() : 0;
     }
 
     private RuntimeException asRuntimeException(Throwable throwable) {

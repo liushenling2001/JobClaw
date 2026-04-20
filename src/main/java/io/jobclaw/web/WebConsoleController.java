@@ -9,6 +9,9 @@ import io.jobclaw.agent.TaskHarnessRun;
 import io.jobclaw.agent.TaskHarnessService;
 import io.jobclaw.agent.TaskHarnessStep;
 import io.jobclaw.agent.TaskHarnessVerificationResult;
+import io.jobclaw.agent.experience.ExperienceMemoryService;
+import io.jobclaw.agent.learning.LearningCandidate;
+import io.jobclaw.agent.learning.LearningCandidateService;
 import io.jobclaw.agent.profile.AgentProfile;
 import io.jobclaw.agent.profile.AgentProfileService;
 import io.jobclaw.agent.catalog.AgentCatalogEntry;
@@ -69,6 +72,8 @@ public class WebConsoleController {
     private final RetrievalService retrievalService;
     private final AgentProfileService agentProfileService;
     private final AgentCatalogService agentCatalogService;
+    private final LearningCandidateService learningCandidateService;
+    private final ExperienceMemoryService experienceMemoryService;
 
     private final ExecutorService executor = Executors.newCachedThreadPool();
     private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd");
@@ -83,7 +88,9 @@ public class WebConsoleController {
                                  SecurityGuard securityGuard,
                                  RetrievalService retrievalService,
                                  AgentProfileService agentProfileService,
-                                 AgentCatalogService agentCatalogService) {
+                                 AgentCatalogService agentCatalogService,
+                                 LearningCandidateService learningCandidateService,
+                                 ExperienceMemoryService experienceMemoryService) {
         this.config = config;
         this.sessionManager = sessionManager;
         this.agentLoop = agentLoop;
@@ -99,6 +106,8 @@ public class WebConsoleController {
         this.retrievalService = retrievalService;
         this.agentProfileService = agentProfileService;
         this.agentCatalogService = agentCatalogService;
+        this.learningCandidateService = learningCandidateService;
+        this.experienceMemoryService = experienceMemoryService;
     }
 
     @GetMapping("/status")
@@ -1470,6 +1479,65 @@ public class WebConsoleController {
             }
         }
         return null;
+    }
+
+    // ==================== Learning Candidates API ====================
+
+    @GetMapping("/learning/candidates")
+    public ResponseEntity<?> listLearningCandidates(@RequestParam(required = false) String status) {
+        try {
+            return ResponseEntity.ok(learningCandidateService.list(status));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @GetMapping("/learning/candidates/{id}")
+    public ResponseEntity<?> getLearningCandidate(@PathVariable String id) {
+        return learningCandidateService.findById(id)
+                .<ResponseEntity<?>>map(ResponseEntity::ok)
+                .orElse(ResponseEntity.status(404).body(Map.of("error", "Learning candidate not found: " + id)));
+    }
+
+    @PostMapping("/learning/candidates/{id}/accept")
+    public ResponseEntity<?> acceptLearningCandidate(@PathVariable String id) {
+        return learningCandidateService.markAccepted(id)
+                .<ResponseEntity<?>>map(ResponseEntity::ok)
+                .orElse(ResponseEntity.status(404).body(Map.of("error", "Learning candidate not found: " + id)));
+    }
+
+    @PostMapping("/learning/candidates/{id}/reject")
+    public ResponseEntity<?> rejectLearningCandidate(@PathVariable String id) {
+        return learningCandidateService.markRejected(id)
+                .<ResponseEntity<?>>map(ResponseEntity::ok)
+                .orElse(ResponseEntity.status(404).body(Map.of("error", "Learning candidate not found: " + id)));
+    }
+
+    // ==================== Experience API ====================
+
+    @GetMapping("/experience/memories")
+    public ResponseEntity<?> listExperienceMemories() {
+        return ResponseEntity.ok(experienceMemoryService.listActive());
+    }
+
+    @GetMapping("/experience/review/latest")
+    public ResponseEntity<?> getLatestExperienceReview() {
+        Path latest = Paths.get(config.getWorkspacePath(), ".jobclaw", "experience", "latest.md");
+        if (!Files.exists(latest)) {
+            return ResponseEntity.ok(Map.of(
+                    "exists", false,
+                    "content", ""
+            ));
+        }
+        try {
+            return ResponseEntity.ok(Map.of(
+                    "exists", true,
+                    "path", latest.toString(),
+                    "content", Files.readString(latest)
+            ));
+        } catch (IOException e) {
+            return ResponseEntity.status(500).body(Map.of("error", "Failed to read latest experience review: " + e.getMessage()));
+        }
     }
 
     // ==================== Workspace Files API ====================

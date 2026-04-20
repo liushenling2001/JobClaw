@@ -2,11 +2,14 @@ package io.jobclaw.runtime.tool;
 
 import io.jobclaw.agent.ExecutionEvent;
 import io.jobclaw.config.Config;
+import io.jobclaw.providers.Message;
 import io.jobclaw.session.SessionManager;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
 
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
@@ -18,6 +21,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ToolRuntimeTest {
+
+    @TempDir
+    Path tempDir;
 
     @Test
     void shouldPublishSuccessEventsAndFlushBufferedThink() {
@@ -47,6 +53,40 @@ class ToolRuntimeTest {
                 ExecutionEvent.EventType.TOOL_OUTPUT,
                 ExecutionEvent.EventType.THINK_STREAM
         ), events.stream().map(ExecutionEvent::getType).toList());
+
+        executor.shutdownNow();
+    }
+
+    @Test
+    void shouldOnlyTruncateToolOutputForDisplayEvents() {
+        Config config = Config.defaultConfig();
+        config.getAgent().setMaxToolOutputLength(10);
+        SessionManager sessionManager = new SessionManager(tempDir.toString());
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        DefaultToolExecutionStateTracker tracker = new DefaultToolExecutionStateTracker();
+        ToolRuntime toolRuntime = new ToolRuntime(config, sessionManager, executor, tracker);
+        List<ExecutionEvent> events = new ArrayList<>();
+        String longResponse = "abcdefghijklmnopqrstuvwxyz";
+
+        ToolExecutionResult result = toolRuntime.execute(new ToolExecutionRequest(
+                "session-display-limit",
+                "long_tool",
+                "{}",
+                new StaticToolCallback("long_tool", longResponse),
+                events::add
+        ));
+
+        assertEquals(longResponse, result.response());
+        List<Message> history = sessionManager.getHistory("session-display-limit");
+        assertEquals(longResponse, history.get(history.size() - 1).getContent());
+
+        ExecutionEvent outputEvent = events.stream()
+                .filter(event -> event.getType() == ExecutionEvent.EventType.TOOL_OUTPUT)
+                .findFirst()
+                .orElseThrow();
+        assertTrue(outputEvent.getContent().startsWith("abcdefghij"));
+        assertTrue(outputEvent.getContent().contains("返回结果已截断"));
+        assertEquals(longResponse.length(), outputEvent.getMetadata().get("fullOutputLength"));
 
         executor.shutdownNow();
     }

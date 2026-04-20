@@ -22,6 +22,8 @@ class AgentLoopSystemPromptOverlayTest {
         Path workspace = Files.createTempDirectory("agent-loop-overlay");
         Config config = Config.defaultConfig();
         config.getAgent().setWorkspace(workspace.toString());
+        config.getAgent().setProvider("ollama");
+        config.getAgent().setModel("llama3.1");
 
         String conversationPath = workspace.resolve("sessions").resolve("conversation").toString();
         SummaryService summaryService = new FileSummaryService(conversationPath);

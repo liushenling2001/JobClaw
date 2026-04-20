@@ -1,5 +1,7 @@
 package io.jobclaw.config;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+
 import java.util.*;
 
 /**
@@ -112,6 +114,7 @@ public class ChannelsConfig {
 
         public String getConnectionMode() { return connectionMode; }
         public void setConnectionMode(String connectionMode) { this.connectionMode = connectionMode; }
+        @JsonIgnore
         public boolean isWebSocketMode() { return "websocket".equalsIgnoreCase(connectionMode); }
         public boolean isEnabled() { return enabled; }
         public void setEnabled(boolean enabled) { this.enabled = enabled; }
@@ -143,6 +146,7 @@ public class ChannelsConfig {
 
         public String getConnectionMode() { return connectionMode; }
         public void setConnectionMode(String connectionMode) { this.connectionMode = connectionMode; }
+        @JsonIgnore
         public boolean isStreamMode() { return "stream".equalsIgnoreCase(connectionMode); }
         public boolean isEnabled() { return enabled; }
         public void setEnabled(boolean enabled) { this.enabled = enabled; }

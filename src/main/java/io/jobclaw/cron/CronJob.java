@@ -17,6 +17,9 @@ public class CronJob {
     private long createdAtMs;
     private long updatedAtMs;
     private boolean deleteAfterRun;
+    private String type;
+    private String action;
+    private boolean builtin;
     
     public CronJob() {
         this.state = new CronJobState();
@@ -49,4 +52,13 @@ public class CronJob {
     
     public boolean isDeleteAfterRun() { return deleteAfterRun; }
     public void setDeleteAfterRun(boolean deleteAfterRun) { this.deleteAfterRun = deleteAfterRun; }
+
+    public String getType() { return type; }
+    public void setType(String type) { this.type = type; }
+
+    public String getAction() { return action; }
+    public void setAction(String action) { this.action = action; }
+
+    public boolean isBuiltin() { return builtin; }
+    public void setBuiltin(boolean builtin) { this.builtin = builtin; }
 }
