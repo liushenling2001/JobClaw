@@ -10,6 +10,7 @@ import java.util.StringJoiner;
 
 @Component
 public class TaskHarnessRepairPromptBuilder {
+    private static final int SUBTASK_EVIDENCE_LIMIT = 40;
 
     public String build(TaskHarnessRun run, String originalInput, TaskHarnessFailure failure, int attempt) {
         String evidence = buildStructuredEvidence(run, failure);
@@ -115,11 +116,19 @@ public class TaskHarnessRepairPromptBuilder {
 
         if (run.hasTrackedSubtasks()) {
             StringJoiner subtasks = new StringJoiner("\n");
-            subtasks.add("Tracked subtasks:");
-            run.getSubtasks().forEach(subtask -> subtasks.add("- %s [%s]".formatted(
+            List<TaskHarnessSubtask> allSubtasks = run.getSubtasks();
+            subtasks.add("Tracked subtasks: total=%d, pending=%d".formatted(
+                    allSubtasks.size(),
+                    run.getPendingSubtaskCount()
+            ));
+            allSubtasks.stream().limit(SUBTASK_EVIDENCE_LIMIT).forEach(subtask -> subtasks.add("- %s [%s]".formatted(
                     subtask.id(),
                     subtask.status().name()
-            )));
+            ) + subtaskEvidenceSuffix(subtask)));
+            int omitted = allSubtasks.size() - Math.min(allSubtasks.size(), SUBTASK_EVIDENCE_LIMIT);
+            if (omitted > 0) {
+                subtasks.add("... " + omitted + " more subtasks omitted from repair evidence");
+            }
             joiner.add(subtasks.toString());
         }
 
@@ -225,7 +234,32 @@ public class TaskHarnessRepairPromptBuilder {
                 return failureType.toString();
             }
         }
+        TaskHarnessStep completionDecision = latestStep(run, step -> "completion_decision".equals(step.label()));
+        if (completionDecision != null) {
+            Object missingRequirements = completionDecision.metadata().get("missingRequirements");
+            String failureType = failureTypeFromMissingRequirements(missingRequirements);
+            if (!failureType.isBlank()) {
+                return failureType;
+            }
+        }
         return "UNKNOWN";
+    }
+
+    private String failureTypeFromMissingRequirements(Object missingRequirements) {
+        if (missingRequirements == null || missingRequirements.toString().isBlank()) {
+            return "";
+        }
+        String normalized = missingRequirements.toString().toLowerCase();
+        if (normalized.contains("failed_subtasks_retryable")) {
+            return "FAILED_SUBTASKS_RETRYABLE";
+        }
+        if (normalized.contains("worklist_not_planned")) {
+            return "WORKLIST_NOT_PLANNED";
+        }
+        if (normalized.contains("pending_subtasks")) {
+            return "PENDING_SUBTASKS";
+        }
+        return "";
     }
 
     private TaskHarnessFailureKind mapVerificationFailureKind(TaskHarnessRun run, TaskHarnessFailureKind fallback) {
@@ -253,6 +287,10 @@ public class TaskHarnessRepairPromptBuilder {
                     "Do not stop at silence. Perform the missing action, verify the result, and return a concrete completion response.";
             case "PENDING_SUBTASKS" ->
                     "Do not end the parent task yet. Continue the planned worklist, execute the remaining subtasks, and mark each one complete or failed before finishing.";
+            case "FAILED_SUBTASKS_RETRYABLE" ->
+                    "Retry only the failed subtasks that are marked retryable. Do not repeat completed subtasks. Use the same subtaskId when spawning the retry. If a retried subtask still fails or is not recoverable, keep it failed and produce a final summary that lists the failed item and reason.";
+            case "WORKLIST_NOT_PLANNED" ->
+                    "Before continuing, create the missing worklist with `subtasks(action='plan', items='id|title\\n...')`. If a local directory path is available, enumerate files first and plan one subtask per file. Do not answer with a final summary before tracked subtasks exist.";
             case "ERROR_RESPONSE", "EXECUTION_FAILURE" ->
                     "Focus on the runtime failure. Use the tool and error evidence to remove the immediate execution error before continuing.";
             default -> buildGenericGuidance(run, failureKind);
@@ -268,5 +306,30 @@ public class TaskHarnessRepairPromptBuilder {
             return "Use the latest tool evidence to complete the missing task outcome, then verify that the result satisfies the task instead of only describing it.";
         }
         return "Act on the recorded evidence, make the minimal required changes, and verify the actual task outcome before responding.";
+    }
+
+    private String subtaskEvidenceSuffix(TaskHarnessSubtask subtask) {
+        StringJoiner joiner = new StringJoiner(", ", " (", ")");
+        boolean hasEvidence = false;
+        Object failureType = subtask.metadata().get("failureType");
+        if (failureType != null && !failureType.toString().isBlank()) {
+            joiner.add("failureType=" + failureType);
+            hasEvidence = true;
+        }
+        Object retryCount = subtask.metadata().get("retryCount");
+        if (retryCount != null && !retryCount.toString().isBlank()) {
+            joiner.add("retryCount=" + retryCount);
+            hasEvidence = true;
+        }
+        Object retryable = subtask.metadata().get("retryable");
+        if (retryable != null && !retryable.toString().isBlank()) {
+            joiner.add("retryable=" + retryable);
+            hasEvidence = true;
+        }
+        if (subtask.summary() != null && !subtask.summary().isBlank()) {
+            joiner.add("summary=" + safeMessage(subtask.summary(), ""));
+            hasEvidence = true;
+        }
+        return hasEvidence ? joiner.toString() : "";
     }
 }

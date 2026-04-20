@@ -224,6 +224,11 @@ public class Config {
         config.getAgent().setMaxToolOutputLength(10000);
         config.getAgent().setToolCallTimeoutSeconds(300);
         config.getAgent().setSubtaskTimeoutMs(900_000L);
+        config.getAgent().setSubtaskResultMaxChars(4000);
+        config.getAgent().setContextRefEnabled(true);
+        config.getAgent().setContextRefThresholdChars(20_000);
+        config.getAgent().setContextRefPreviewChars(2_000);
+        config.getAgent().setContextRefReadMaxChars(12_000);
         // 上下文管理默认值（参考 TinyClaw）
         config.getAgent().setContextWindow(128_000);
         config.getAgent().setSummarizeMessageThreshold(200);

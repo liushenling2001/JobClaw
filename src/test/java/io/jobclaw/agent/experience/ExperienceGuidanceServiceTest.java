@@ -27,7 +27,7 @@ class ExperienceGuidanceServiceTest {
     Path tempDir;
 
     @Test
-    void shouldBuildGuidanceFromNegativeLessonAndSuccessfulWorkflow() {
+    void shouldPreferAcceptedExperienceAndInjectOnlyOneGuidanceBlock() {
         FileLearningCandidateStore candidateStore = new FileLearningCandidateStore(
                 tempDir.resolve("learning").toString());
         FileWorkflowMemoryStore workflowStore = new FileWorkflowMemoryStore(
@@ -50,10 +50,54 @@ class ExperienceGuidanceServiceTest {
         );
 
         assertTrue(guidance.contains("[Accepted Experience Memory]"));
+        assertFalse(guidance.contains("[Relevant Negative Lesson]"));
+        assertFalse(guidance.contains("[Relevant Prior Workflow Reference]"));
+    }
+
+    @Test
+    void shouldUseWorkflowReferenceWhenNoAcceptedExperienceExists() {
+        FileLearningCandidateStore candidateStore = new FileLearningCandidateStore(
+                tempDir.resolve("learning-workflow").toString());
+        FileWorkflowMemoryStore workflowStore = new FileWorkflowMemoryStore(
+                tempDir.resolve("workflows-workflow").toString());
+        workflowStore.saveAll(List.of(workflow()));
+        ExperienceGuidanceService service = new ExperienceGuidanceService(
+                new WorkflowMemoryService(workflowStore),
+                candidateStore
+        );
+
+        String guidance = service.buildGuidance(
+                "批量审查目录中的 PDF 文件",
+                TaskPlanningMode.WORKLIST,
+                doneDefinition()
+        );
+
+        assertTrue(guidance.contains("[Relevant Prior Workflow Reference]"));
+        assertTrue(guidance.contains("成功批量 PDF 审查流程"));
+    }
+
+    @Test
+    void shouldUseOnlyHighConfidenceNegativeLessonWhenNoBetterExperienceExists() {
+        FileLearningCandidateStore candidateStore = new FileLearningCandidateStore(
+                tempDir.resolve("learning-negative").toString());
+        FileWorkflowMemoryStore workflowStore = new FileWorkflowMemoryStore(
+                tempDir.resolve("workflows-negative").toString());
+        LearningCandidate candidate = negativeLesson(LearningCandidateStatus.PENDING);
+        candidate.setConfidence(0.9);
+        candidateStore.saveAll(List.of(candidate));
+        ExperienceGuidanceService service = new ExperienceGuidanceService(
+                new WorkflowMemoryService(workflowStore),
+                candidateStore
+        );
+
+        String guidance = service.buildGuidance(
+                "批量审查目录中的 PDF 文件",
+                TaskPlanningMode.WORKLIST,
+                doneDefinition()
+        );
+
         assertTrue(guidance.contains("[Relevant Negative Lesson]"));
         assertTrue(guidance.contains("pending subtasks remained"));
-        assertTrue(guidance.contains("[Relevant Successful Workflow]"));
-        assertTrue(guidance.contains("成功批量 PDF 审查流程"));
     }
 
     @Test

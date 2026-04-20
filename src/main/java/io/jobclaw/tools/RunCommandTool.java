@@ -1,5 +1,6 @@
 package io.jobclaw.tools;
 
+import io.jobclaw.config.Config;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
@@ -29,14 +30,18 @@ import java.util.concurrent.TimeUnit;
 public class RunCommandTool {
 
     private static final int MAX_OUTPUT_LENGTH = 10000;         // 输出最大长度
-    private static final long DEFAULT_TIMEOUT_SECONDS = 60;     // 默认超时时间（秒）
     private static final long THREAD_JOIN_TIMEOUT_MS = 1000;    // 线程等待超时（毫秒）
+    private final Config config;
+
+    public RunCommandTool(Config config) {
+        this.config = config;
+    }
 
     @Tool(name = "run_command", description = "Execute a shell command and return output. Use this tool when you need to: 1) Run system commands, 2) Execute scripts (Python, Bash, etc.), 3) Invoke skill scripts (use base-path from skills invoke operation). IMPORTANT: For skill scripts, use the base-path returned by skills(action='invoke') as workingDir or in command path.")
     public String execute(
         @ToolParam(description = "The shell command to execute. For skill scripts, include the full path: e.g., 'python3 {base-path}/script.py arg1'") String command,
         @ToolParam(description = "Working directory (optional, defaults to current directory). Use the base-path from skills invoke for skill scripts") String workingDir,
-        @ToolParam(description = "Timeout in seconds (optional, default: 60)") Integer timeout
+        @ToolParam(description = "Timeout in seconds (optional, defaults to agent.toolCallTimeoutSeconds)") Integer timeout
     ) {
         if (command == null || command.isEmpty()) {
             return "Error: command is required";
@@ -51,10 +56,17 @@ public class RunCommandTool {
         System.out.println("[RunCommandTool] WARNING: Executing command without SecurityGuard: " + command);
 
         try {
-            return executeCommand(command, cwd, timeout != null ? timeout : (int)DEFAULT_TIMEOUT_SECONDS);
+            return executeCommand(command, cwd, timeout != null ? timeout : defaultTimeoutSeconds());
         } catch (Exception e) {
             return "Error executing command: " + e.getMessage();
         }
+    }
+
+    private int defaultTimeoutSeconds() {
+        if (config == null || config.getAgent() == null || config.getAgent().getToolCallTimeoutSeconds() <= 0) {
+            return 300;
+        }
+        return config.getAgent().getToolCallTimeoutSeconds();
     }
 
     /**

@@ -20,7 +20,7 @@ import java.util.Set;
 @Component
 public class ExperienceGuidanceService {
 
-    private static final double MIN_NEGATIVE_LESSON_CONFIDENCE = 0.5;
+    private static final double MIN_NEGATIVE_LESSON_CONFIDENCE = 0.85;
 
     private final WorkflowMemoryService workflowMemoryService;
     private final LearningCandidateStore learningCandidateStore;
@@ -44,17 +44,20 @@ public class ExperienceGuidanceService {
                                 TaskPlanningMode planningMode,
                                 DoneDefinition doneDefinition) {
         String acceptedGuidance = buildAcceptedExperienceGuidance(taskInput, planningMode, doneDefinition);
-        String negativeGuidance = findRelevantNegativeLesson(taskInput, planningMode, doneDefinition)
-                .map(this::buildNegativeLessonGuidance)
-                .orElse("");
+        if (!acceptedGuidance.isBlank()) {
+            return acceptedGuidance;
+        }
+
         String workflowGuidance = workflowMemoryService.findRelevant(taskInput, planningMode, doneDefinition)
                 .map(workflowMemoryService::buildGuidance)
                 .orElse("");
-        StringBuilder sb = new StringBuilder();
-        appendSection(sb, acceptedGuidance);
-        appendSection(sb, negativeGuidance);
-        appendSection(sb, workflowGuidance);
-        return sb.toString();
+        if (!workflowGuidance.isBlank()) {
+            return workflowGuidance;
+        }
+
+        return findRelevantNegativeLesson(taskInput, planningMode, doneDefinition)
+                .map(this::buildNegativeLessonGuidance)
+                .orElse("");
     }
 
     private String buildAcceptedExperienceGuidance(String taskInput,
@@ -100,16 +103,6 @@ public class ExperienceGuidanceService {
             sb.append("- Notes: ").append(singleLine(memory.getProposal()));
         }
         return sb.toString();
-    }
-
-    private void appendSection(StringBuilder sb, String section) {
-        if (section == null || section.isBlank()) {
-            return;
-        }
-        if (!sb.isEmpty()) {
-            sb.append("\n\n");
-        }
-        sb.append(section);
     }
 
     private Optional<LearningCandidate> findRelevantNegativeLesson(String taskInput,

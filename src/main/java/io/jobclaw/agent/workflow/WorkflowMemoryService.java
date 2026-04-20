@@ -4,7 +4,9 @@ import io.jobclaw.agent.TaskHarnessRun;
 import io.jobclaw.agent.TaskHarnessStep;
 import io.jobclaw.agent.TaskHarnessSubtaskStatus;
 import io.jobclaw.agent.completion.DoneDefinition;
+import io.jobclaw.agent.experience.ExperienceMemoryService;
 import io.jobclaw.agent.planning.TaskPlanningMode;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -21,11 +23,21 @@ import java.util.UUID;
 public class WorkflowMemoryService {
 
     private static final double MIN_GUIDANCE_CONFIDENCE = 0.45;
+    private static final int AUTO_PROMOTE_SUCCESS_THRESHOLD = 3;
 
     private final WorkflowMemoryStore store;
+    private final ExperienceMemoryService experienceMemoryService;
+
+    @Autowired
+    public WorkflowMemoryService(WorkflowMemoryStore store,
+                                 ExperienceMemoryService experienceMemoryService) {
+        this.store = store;
+        this.experienceMemoryService = experienceMemoryService;
+    }
 
     public WorkflowMemoryService(WorkflowMemoryStore store) {
         this.store = store;
+        this.experienceMemoryService = null;
     }
 
     public Optional<WorkflowRecipe> findRelevant(String taskInput,
@@ -52,9 +64,10 @@ public class WorkflowMemoryService {
             return "";
         }
         StringBuilder sb = new StringBuilder();
-        sb.append("[Relevant Successful Workflow]\n");
-        sb.append("A similar task previously succeeded with this workflow. Use it as guidance unless the current task conflicts.\n");
+        sb.append("[Relevant Prior Workflow Reference]\n");
+        sb.append("A similar task previously succeeded with this workflow. Treat it as reference evidence, not a hard rule, unless it has been promoted to accepted experience.\n");
         sb.append("- Name: ").append(recipe.getName()).append("\n");
+        sb.append("- Prior successes: ").append(recipe.getSuccessCount()).append("\n");
         if (recipe.getApplicability() != null && !recipe.getApplicability().isBlank()) {
             sb.append("- Applies when: ").append(recipe.getApplicability()).append("\n");
         }
@@ -101,6 +114,20 @@ public class WorkflowMemoryService {
             recipes.add(recipe);
         }
         store.saveAll(recipes);
+        autoPromoteIfStable(recipe);
+    }
+
+    private void autoPromoteIfStable(WorkflowRecipe recipe) {
+        if (experienceMemoryService == null || recipe == null) {
+            return;
+        }
+        if (recipe.getSuccessCount() < AUTO_PROMOTE_SUCCESS_THRESHOLD) {
+            return;
+        }
+        if (recipe.getConfidence() < 0.75) {
+            return;
+        }
+        experienceMemoryService.applyAutoPromotedWorkflow(recipe);
     }
 
     private WorkflowRecipe newRecipe(TaskHarnessRun run, String signature) {

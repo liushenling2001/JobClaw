@@ -6,12 +6,18 @@ import io.jobclaw.agent.AgentOrchestrator;
 import io.jobclaw.agent.ExecutionEvent;
 import io.jobclaw.agent.ExecutionTraceService;
 import io.jobclaw.agent.TaskHarnessService;
+import io.jobclaw.agent.TaskHarnessRun;
+import io.jobclaw.agent.TaskHarnessSubtask;
 import io.jobclaw.agent.profile.AgentProfileService;
 import io.jobclaw.agent.profile.ResolvedAgentRuntime;
 import io.jobclaw.agent.runtime.AgentRunIds;
 import io.jobclaw.bus.MessageBus;
 import io.jobclaw.config.Config;
+import io.jobclaw.context.result.ContextRef;
+import io.jobclaw.context.result.NoopResultStore;
+import io.jobclaw.context.result.ResultStore;
 import io.jobclaw.bus.OutboundMessage;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.context.annotation.Lazy;
@@ -28,6 +34,8 @@ import java.util.function.Consumer;
  */
 @Component
 public class SpawnTool {
+    private static final String ERROR_PREFIX = "Error:";
+    private static final int DEFAULT_SUBTASK_RESULT_MAX_CHARS = 4000;
 
     private final AgentOrchestrator orchestrator;
     private final AgentProfileService agentProfileService;
@@ -35,7 +43,25 @@ public class SpawnTool {
     private final ExecutionTraceService executionTraceService;
     private final TaskHarnessService taskHarnessService;
     private final Config config;
+    private final ResultStore resultStore;
     private final ExecutorService spawnExecutor = Executors.newCachedThreadPool();
+
+    @Autowired
+    public SpawnTool(@Lazy AgentOrchestrator orchestrator,
+                     AgentProfileService agentProfileService,
+                     MessageBus messageBus,
+                     ExecutionTraceService executionTraceService,
+                     TaskHarnessService taskHarnessService,
+                     Config config,
+                     ResultStore resultStore) {
+        this.orchestrator = orchestrator;
+        this.agentProfileService = agentProfileService;
+        this.messageBus = messageBus;
+        this.executionTraceService = executionTraceService;
+        this.taskHarnessService = taskHarnessService;
+        this.config = config;
+        this.resultStore = resultStore != null ? resultStore : new NoopResultStore();
+    }
 
     public SpawnTool(@Lazy AgentOrchestrator orchestrator,
                      AgentProfileService agentProfileService,
@@ -43,12 +69,7 @@ public class SpawnTool {
                      ExecutionTraceService executionTraceService,
                      TaskHarnessService taskHarnessService,
                      Config config) {
-        this.orchestrator = orchestrator;
-        this.agentProfileService = agentProfileService;
-        this.messageBus = messageBus;
-        this.executionTraceService = executionTraceService;
-        this.taskHarnessService = taskHarnessService;
-        this.config = config;
+        this(orchestrator, agentProfileService, messageBus, executionTraceService, taskHarnessService, config, new NoopResultStore());
     }
 
     @Tool(name = "spawn", description = "Spawn a sub-agent to handle a task. Use role for built-in roles. Use agent for persistent agents created through agent_catalog. Default is synchronous. Set async=true to run in the background and stream progress updates back to the parent session.")
@@ -107,42 +128,67 @@ public class SpawnTool {
             return spawnAsync(task, taskLabel, effectiveDefinition, childSessionKey, childRunId,
                     parentSessionKey, parentRunId, effectiveSubtaskId, effectiveTimeoutMs, parentEventCallback);
         }
-        return spawnSync(task, taskLabel, effectiveDefinition, childSessionKey, effectiveSubtaskId, effectiveTimeoutMs, parentRunId, parentEventCallback);
+        return spawnSync(task, taskLabel, effectiveDefinition, childSessionKey, childRunId, effectiveSubtaskId,
+                effectiveTimeoutMs, parentSessionKey, parentRunId, parentEventCallback);
     }
 
     private String spawnSync(String task,
                              String label,
                              AgentDefinition definition,
                              String sessionKey,
+                             String childRunId,
                              String subtaskId,
                              long timeoutMs,
+                             String parentSessionKey,
                              String parentRunId,
                              Consumer<ExecutionEvent> parentEventCallback) {
+        String agentId = definition != null ? definition.getCode() : "assistant";
+        String agentName = definition != null ? definition.getDisplayName() : "Assistant";
+        Consumer<ExecutionEvent> childEventCallback = event -> publishRemappedEvent(
+                event, parentSessionKey, childRunId, parentRunId, agentId, agentName, label);
         try {
+            String isolatedTask = buildIsolatedSubtaskInput(task);
             if (definition != null) {
                 String result = executeWithTimeout(
-                        () -> orchestrator.processWithDefinition(sessionKey, task, definition),
+                        () -> orchestrator.processWithDefinition(sessionKey, isolatedTask, definition, childEventCallback),
                         timeoutMs
                 );
-                completeTrackedSubtask(parentRunId, subtaskId, true, truncate(result), parentEventCallback);
+                if (isFailureResult(result)) {
+                    completeTrackedSubtask(parentRunId, subtaskId, false, subtaskSummary(result),
+                            failureMetadata(result), parentEventCallback);
+                    return failedResult(label, result, sessionKey);
+                }
+                completeTrackedSubtask(parentRunId, subtaskId, true, subtaskSummary(result),
+                        Map.of("source", "spawn"), parentEventCallback);
                 return "Spawned sub-agent: **" + definition.getDisplayName() + "**\n\n" +
                         "**Task**: " + label + "\n\n" +
+                        "**Child session**: " + sessionKey + "\n\n" +
                         "**Result**:\n" +
-                        result;
+                        parentHandoff(result, parentSessionKey, parentRunId, label);
             }
 
-            String enhancedTask = "[Sub-agent Task: " + label + "] " + task;
-            String result = executeWithTimeout(() -> orchestrator.process(sessionKey, enhancedTask), timeoutMs);
-            completeTrackedSubtask(parentRunId, subtaskId, true, truncate(result), parentEventCallback);
+            String enhancedTask = "[Sub-agent Task: " + label + "] " + isolatedTask;
+            String result = executeWithTimeout(() -> orchestrator.process(sessionKey, enhancedTask, childEventCallback), timeoutMs);
+            if (isFailureResult(result)) {
+                completeTrackedSubtask(parentRunId, subtaskId, false, subtaskSummary(result),
+                        failureMetadata(result), parentEventCallback);
+                return failedResult(label, result, sessionKey);
+            }
+            completeTrackedSubtask(parentRunId, subtaskId, true, subtaskSummary(result),
+                    Map.of("source", "spawn"), parentEventCallback);
 
             return "Sub-agent completed task: **" + label + "**\n\n" +
                     "**Task**: " + task + "\n\n" +
+                    "**Child session**: " + sessionKey + "\n\n" +
                     "**Result**:\n" +
-                    result;
+                    parentHandoff(result, parentSessionKey, parentRunId, label);
 
         } catch (Exception e) {
-            completeTrackedSubtask(parentRunId, subtaskId, false, e.getMessage(), parentEventCallback);
-            return "Error spawning sub-agent: " + e.getMessage();
+            String message = e.getMessage() != null ? e.getMessage() : e.toString();
+            completeTrackedSubtask(parentRunId, subtaskId, false, message,
+                    failureMetadata(message), parentEventCallback);
+            publishSyncFailure(parentSessionKey, parentRunId, subtaskId, label, message, parentEventCallback);
+            return "Sub-agent failed task: **" + label + "**\n\nError: " + message;
         }
     }
 
@@ -194,18 +240,21 @@ public class SpawnTool {
             );
             AgentExecutionContext.setCurrentContext(childScope);
             try {
+                String isolatedTask = buildIsolatedSubtaskInput(task);
                 String result;
                 if (definition != null) {
-                    result = orchestrator.processWithDefinition(childSessionKey, task, definition,
+                    result = orchestrator.processWithDefinition(childSessionKey, isolatedTask, definition,
                             event -> executionTraceService.publish(remapEvent(
                                     event, parentSessionKey, childRunId, parentRunId, agentId, agentName, label)));
                 } else {
-                    result = orchestrator.process(childSessionKey, task,
+                    result = orchestrator.process(childSessionKey, isolatedTask,
                             event -> executionTraceService.publish(remapEvent(
                                     event, parentSessionKey, childRunId, parentRunId, agentId, agentName, label)));
                 }
 
-                String notificationContent = "Async task completed: **" + label + "**\n\n" + result;
+                String notificationContent = "Async task completed: **" + label + "**\n\n"
+                        + "**Child session**: " + childSessionKey + "\n\n"
+                        + parentHandoff(result, parentSessionKey, parentRunId, label);
                 ExecutionEvent notification = new ExecutionEvent(
                         parentSessionKey,
                         ExecutionEvent.EventType.CUSTOM,
@@ -220,7 +269,13 @@ public class SpawnTool {
 
                 OutboundMessage outbound = new OutboundMessage("web", parentSessionKey, notificationContent);
                 messageBus.publishOutbound(outbound);
-                completeTrackedSubtask(parentRunId, subtaskId, true, truncate(result), parentEventCallback);
+                if (isFailureResult(result)) {
+                    completeTrackedSubtask(parentRunId, subtaskId, false, subtaskSummary(result),
+                            failureMetadata(result), parentEventCallback);
+                } else {
+                    completeTrackedSubtask(parentRunId, subtaskId, true, subtaskSummary(result),
+                            Map.of("source", "spawn", "mode", "async"), parentEventCallback);
+                }
             } catch (Exception e) {
                 String errorContent = "Async task failed: **" + label + "**\n\nError: " + e.getMessage();
                 ExecutionEvent notification = new ExecutionEvent(
@@ -237,7 +292,8 @@ public class SpawnTool {
 
                 OutboundMessage outbound = new OutboundMessage("web", parentSessionKey, errorContent);
                 messageBus.publishOutbound(outbound);
-                completeTrackedSubtask(parentRunId, subtaskId, false, e.getMessage(), parentEventCallback);
+                completeTrackedSubtask(parentRunId, subtaskId, false, e.getMessage(),
+                        failureMetadata(e.getMessage()), parentEventCallback);
             } finally {
                 AgentExecutionContext.clear();
             }
@@ -265,6 +321,7 @@ public class SpawnTool {
             metadata.putAll(childEvent.getMetadata());
         }
         metadata.put("asyncTaskLabel", label);
+        metadata.put("spawnTaskLabel", label);
         metadata.put("childSessionId", childEvent.getSessionId());
 
         return new ExecutionEvent(
@@ -279,8 +336,41 @@ public class SpawnTool {
         );
     }
 
+    private void publishRemappedEvent(ExecutionEvent childEvent,
+                                      String parentSessionKey,
+                                      String childRunId,
+                                      String parentRunId,
+                                      String agentId,
+                                      String agentName,
+                                      String label) {
+        executionTraceService.publish(remapEvent(
+                childEvent,
+                parentSessionKey,
+                childRunId,
+                parentRunId,
+                agentId,
+                agentName,
+                label
+        ));
+    }
+
     private String executeWithTimeout(Callable<String> action, long timeoutMs) throws Exception {
-        Future<String> future = spawnExecutor.submit(action);
+        AgentExecutionContext.ExecutionScope capturedScope = AgentExecutionContext.getCurrentScope();
+        Future<String> future = spawnExecutor.submit(() -> {
+            AgentExecutionContext.ExecutionScope previousScope = AgentExecutionContext.getCurrentScope();
+            if (capturedScope != null) {
+                AgentExecutionContext.setCurrentContext(capturedScope);
+            }
+            try {
+                return action.call();
+            } finally {
+                if (previousScope != null) {
+                    AgentExecutionContext.setCurrentContext(previousScope);
+                } else {
+                    AgentExecutionContext.clear();
+                }
+            }
+        });
         try {
             return future.get(timeoutMs, TimeUnit.MILLISECONDS);
         } catch (TimeoutException e) {
@@ -299,42 +389,237 @@ public class SpawnTool {
         }
     }
 
+    private boolean isFailureResult(String result) {
+        return result != null && result.stripLeading().startsWith(ERROR_PREFIX);
+    }
+
+    private String failedResult(String label, String result, String childSessionKey) {
+        return "Sub-agent failed task: **" + label + "**\n\n"
+                + "**Child session**: " + childSessionKey + "\n\n"
+                + parentHandoff(result, null, null, label);
+    }
+
+    private Map<String, Object> failureMetadata(String message) {
+        String failureType = classifyFailureType(message);
+        return Map.of(
+                "source", "spawn",
+                "failureType", failureType,
+                "retryable", isRetryableFailureType(failureType)
+        );
+    }
+
+    private String classifyFailureType(String message) {
+        String normalized = message == null ? "" : message.toLowerCase();
+        if (normalized.contains("timed out") || normalized.contains("timeout")) {
+            return "timeout";
+        }
+        if (normalized.contains("interrupted")) {
+            return "interrupted";
+        }
+        if (normalized.contains("network") || normalized.contains("api key")
+                || normalized.contains("bad request") || normalized.contains("llm")) {
+            return "transient_model_error";
+        }
+        if (normalized.stripLeading().startsWith("error:")) {
+            return "child_error";
+        }
+        return "unknown";
+    }
+
+    private boolean isRetryableFailureType(String failureType) {
+        return "timeout".equals(failureType)
+                || "interrupted".equals(failureType)
+                || "transient_model_error".equals(failureType)
+                || "child_error".equals(failureType);
+    }
+
+    private void publishSyncFailure(String parentSessionKey,
+                                    String parentRunId,
+                                    String subtaskId,
+                                    String label,
+                                    String message,
+                                    Consumer<ExecutionEvent> parentEventCallback) {
+        if (parentEventCallback == null) {
+            return;
+        }
+        parentEventCallback.accept(new ExecutionEvent(
+                parentSessionKey,
+                ExecutionEvent.EventType.ERROR,
+                "Sub-agent failed: " + label + " - " + message,
+                Map.of(
+                        "source", "spawn",
+                        "subtaskId", subtaskId != null ? subtaskId : "",
+                        "parentRunId", parentRunId != null ? parentRunId : "",
+                        "spawnStatus", "failed"
+                ),
+                parentRunId,
+                null,
+                "spawn",
+                "Spawn Tool"
+        ));
+    }
+
     private void completeTrackedSubtask(String parentRunId,
                                         String subtaskId,
                                         boolean success,
                                         String summary,
+                                        Map<String, Object> metadata,
                                         Consumer<ExecutionEvent> parentEventCallback) {
         if (parentRunId == null || subtaskId == null || subtaskId.isBlank()) {
             return;
+        }
+        Map<String, Object> effectiveMetadata = metadata != null ? new LinkedHashMap<>(metadata) : new LinkedHashMap<>();
+        effectiveMetadata.putIfAbsent("source", "spawn");
+        if (!success) {
+            effectiveMetadata.put("retryCount", nextRetryCount(parentRunId, subtaskId));
         }
         taskHarnessService.completeSubtask(
                 parentRunId,
                 subtaskId,
                 summary,
                 success,
-                Map.of("source", "spawn"),
+                effectiveMetadata,
                 parentEventCallback
         );
     }
 
-    private String truncate(String value) {
-        if (value == null || value.length() <= 500) {
+    private int nextRetryCount(String parentRunId, String subtaskId) {
+        TaskHarnessRun run = taskHarnessService.getRun(parentRunId);
+        if (run == null) {
+            return 1;
+        }
+        return run.getSubtasks().stream()
+                .filter(subtask -> subtaskId.equals(subtask.id()))
+                .findFirst()
+                .map(TaskHarnessSubtask::metadata)
+                .map(metadata -> metadata.get("retryCount"))
+                .map(this::intValue)
+                .map(value -> value + 1)
+                .orElse(1);
+    }
+
+    private int intValue(Object value) {
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        if (value != null) {
+            try {
+                return Integer.parseInt(value.toString());
+            } catch (NumberFormatException ignored) {
+                return 0;
+            }
+        }
+        return 0;
+    }
+
+    private String buildIsolatedSubtaskInput(String task) {
+        return """
+                [Subtask Isolation Policy]
+                You are executing one isolated subtask. Do not rely on parent chat history.
+                Use tools to inspect only the specific input needed for this subtask.
+                Return only a concise result for this subtask: status, key findings, issue list, and next action if needed.
+                Do not include large source excerpts, full document text, or unrelated worklist items.
+
+                Subtask:
+                """ + task;
+    }
+
+    private String subtaskSummary(String value) {
+        return boundedText(value, 1200);
+    }
+
+    private String parentHandoff(String value) {
+        return parentHandoff(value, null, null, null);
+    }
+
+    private String parentHandoff(String value, String parentSessionKey, String parentRunId, String label) {
+        int maxChars = config != null && config.getAgent() != null && config.getAgent().getSubtaskResultMaxChars() > 0
+                ? config.getAgent().getSubtaskResultMaxChars()
+                : DEFAULT_SUBTASK_RESULT_MAX_CHARS;
+        if (shouldStoreSubtaskResult(value, maxChars)) {
+            ContextRef ref = resultStore.save(
+                    parentSessionKey,
+                    parentRunId,
+                    "subtask",
+                    label != null && !label.isBlank() ? label : "spawn",
+                    value
+            );
+            return """
+                    Subtask result stored as a context reference.
+
+                    refId: %s
+                    source: %s
+                    contentLength: %d
+
+                    preview:
+                    %s
+
+                    Use context_ref(action='read', refId='%s', start='0', maxChars='12000') or context_ref(action='search', refId='%s', query='...') if more detail is needed.
+                    """.formatted(
+                    ref.getRefId(),
+                    ref.getSourceName(),
+                    ref.getContentLength(),
+                    ref.getPreview() != null ? ref.getPreview() : "",
+                    ref.getRefId(),
+                    ref.getRefId()
+            );
+        }
+        return boundedText(value, maxChars);
+    }
+
+    private boolean shouldStoreSubtaskResult(String value, int maxChars) {
+        if (value == null || value.isEmpty()) {
+            return false;
+        }
+        if (config == null || config.getAgent() == null || !config.getAgent().isContextRefEnabled()) {
+            return false;
+        }
+        int threshold = Math.max(1, config.getAgent().getContextRefThresholdChars());
+        return value.length() > Math.max(threshold, maxChars);
+    }
+
+    private String boundedText(String value, int maxChars) {
+        if (value == null || value.length() <= maxChars) {
             return value;
         }
-        return value.substring(0, 500) + "\n[truncated]";
+        return value.substring(0, maxChars)
+                + "\n\n[Subtask result truncated for parent context; full output is stored in the child session.]";
     }
 
     private long resolveTimeout(Long explicitTimeoutMs, AgentDefinition effectiveDefinition) {
-        if (explicitTimeoutMs != null && explicitTimeoutMs > 0) {
-            return explicitTimeoutMs;
-        }
+        long configuredTimeout = config.getAgent().getSubtaskTimeoutMs();
         if (effectiveDefinition != null
                 && effectiveDefinition.getConfig() != null
                 && effectiveDefinition.getConfig().getTimeoutMs() != null
                 && effectiveDefinition.getConfig().getTimeoutMs() > 0) {
-            return effectiveDefinition.getConfig().getTimeoutMs();
+            configuredTimeout = effectiveDefinition.getConfig().getTimeoutMs();
         }
-        return config.getAgent().getSubtaskTimeoutMs();
+        Long profileSubtaskTimeoutMs = profileSubtaskTimeoutMs(effectiveDefinition);
+        if (profileSubtaskTimeoutMs != null && profileSubtaskTimeoutMs > 0) {
+            configuredTimeout = profileSubtaskTimeoutMs;
+        }
+        if (explicitTimeoutMs != null && explicitTimeoutMs > 0) {
+            return Math.max(explicitTimeoutMs, configuredTimeout);
+        }
+        return configuredTimeout;
+    }
+
+    private Long profileSubtaskTimeoutMs(AgentDefinition effectiveDefinition) {
+        if (effectiveDefinition == null || effectiveDefinition.getConfig() == null) {
+            return null;
+        }
+        Object value = effectiveDefinition.getConfig().getCustomSetting("subtaskTimeoutMs");
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        if (value instanceof String stringValue) {
+            try {
+                return Long.parseLong(stringValue);
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
     }
 
     private AgentDefinition mergeDefinition(AgentDefinition parentDefinition, AgentDefinition overlayDefinition) {

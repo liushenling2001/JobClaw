@@ -8,6 +8,8 @@ import io.jobclaw.context.ContextAssembler;
 import io.jobclaw.context.ContextAssemblyOptions;
 import io.jobclaw.context.ContextAssemblyPolicy;
 import io.jobclaw.config.Config;
+import io.jobclaw.context.result.NoopResultStore;
+import io.jobclaw.context.result.ResultStore;
 import io.jobclaw.runtime.provider.ProviderRuntime;
 import io.jobclaw.runtime.provider.ResolvedProviderConfig;
 import io.jobclaw.runtime.tool.DefaultToolExecutionStateTracker;
@@ -74,6 +76,7 @@ public class AgentLoop {
     private final ResolvedProviderConfig defaultProviderConfig;
     private final ActiveExecutionRegistry activeExecutionRegistry;
     private final ToolSelectionPolicy toolSelectionPolicy;
+    private final ResultStore resultStore;
 
     // 无工具调用的专用 ChatClient（用于摘要生成）
     private final ChatClient simpleChatClient;
@@ -87,7 +90,18 @@ public class AgentLoop {
                      ContextAssemblyPolicy contextAssemblyPolicy,
                      SummaryService summaryService) {
         this(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler, contextAssemblyPolicy,
-                summaryService, null, null, new ProviderRuntime());
+                summaryService, new NoopResultStore());
+    }
+
+    public AgentLoop(Config config, SessionManager sessionManager,
+                     ToolCallback[] allToolCallbacks,
+                     ContextBuilder contextBuilder,
+                     ContextAssembler contextAssembler,
+                     ContextAssemblyPolicy contextAssemblyPolicy,
+                     SummaryService summaryService,
+                     ResultStore resultStore) {
+        this(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler, contextAssemblyPolicy,
+                summaryService, null, null, new ProviderRuntime(), new ActiveExecutionRegistry(), resultStore);
     }
 
     /**
@@ -101,7 +115,7 @@ public class AgentLoop {
                      SummaryService summaryService,
                      ChatClient chatClient, String model) {
         this(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler, contextAssemblyPolicy,
-                summaryService, chatClient, model, new ProviderRuntime());
+                summaryService, chatClient, model, new ProviderRuntime(), new ActiveExecutionRegistry(), new NoopResultStore());
     }
 
     AgentLoop(Config config, SessionManager sessionManager,
@@ -113,7 +127,7 @@ public class AgentLoop {
                      ChatClient chatClient, String model,
                      ProviderRuntime providerRuntime) {
         this(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler, contextAssemblyPolicy,
-                summaryService, chatClient, model, providerRuntime, new ActiveExecutionRegistry());
+                summaryService, chatClient, model, providerRuntime, new ActiveExecutionRegistry(), new NoopResultStore());
     }
 
     AgentLoop(Config config, SessionManager sessionManager,
@@ -125,12 +139,27 @@ public class AgentLoop {
                      ChatClient chatClient, String model,
                      ProviderRuntime providerRuntime,
                      ActiveExecutionRegistry activeExecutionRegistry) {
+        this(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler, contextAssemblyPolicy,
+                summaryService, chatClient, model, providerRuntime, activeExecutionRegistry, new NoopResultStore());
+    }
+
+    AgentLoop(Config config, SessionManager sessionManager,
+                     ToolCallback[] allToolCallbacks,
+                     ContextBuilder contextBuilder,
+                     ContextAssembler contextAssembler,
+                     ContextAssemblyPolicy contextAssemblyPolicy,
+                     SummaryService summaryService,
+                     ChatClient chatClient, String model,
+                     ProviderRuntime providerRuntime,
+                     ActiveExecutionRegistry activeExecutionRegistry,
+                     ResultStore resultStore) {
         this.config = config;
         this.sessionManager = sessionManager;
         this.allToolCallbacks = allToolCallbacks;
         this.providerRuntime = providerRuntime;
         this.activeExecutionRegistry = activeExecutionRegistry;
         this.toolSelectionPolicy = new ToolSelectionPolicy();
+        this.resultStore = resultStore != null ? resultStore : new NoopResultStore();
 
         ResolvedProviderConfig resolvedProvider = providerRuntime.resolve(config, model);
         this.defaultProviderConfig = resolvedProvider;
@@ -198,7 +227,8 @@ public class AgentLoop {
             return thread;
         });
         this.toolExecutionStateTracker = new DefaultToolExecutionStateTracker();
-        this.toolRuntime = new ToolRuntime(config, sessionManager, toolExecutionExecutor, toolExecutionStateTracker, activeExecutionRegistry);
+        this.toolRuntime = new ToolRuntime(config, sessionManager, toolExecutionExecutor, toolExecutionStateTracker,
+                activeExecutionRegistry, this.resultStore);
 
         logger.info("AgentLoop initialized with {} tools from Spring context", this.allToolCallbacks.length);
         for (ToolCallback callback : this.allToolCallbacks) {
@@ -369,6 +399,14 @@ public class AgentLoop {
 
         } catch (Exception e) {
             logger.error("Error processing message for session {}", sessionKey, e);
+            if (containsInterruptedException(e)) {
+                Thread.currentThread().interrupt();
+                if (eventCallback != null) {
+                    eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.ERROR,
+                            "Error: execution interrupted"));
+                }
+                return "Error: execution interrupted";
+            }
             if (eventCallback != null) {
                 eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.ERROR,
                         "Error: " + e.getMessage()));
@@ -627,6 +665,17 @@ public class AgentLoop {
                 .toArray(ToolCallback[]::new);
         logger.debug("Selected task toolset: {}", toolNames(selectedTools));
         return selectedTools;
+    }
+
+    private boolean containsInterruptedException(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof InterruptedException) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return Thread.currentThread().isInterrupted();
     }
 
     private List<String> toolNames(ToolCallback[] callbacks) {

@@ -14,6 +14,7 @@ import java.util.function.Consumer;
 
 @Component
 public class SubtasksTool {
+    private static final int STATUS_DETAIL_LIMIT = 30;
 
     private final TaskHarnessService taskHarnessService;
 
@@ -92,11 +93,22 @@ public class SubtasksTool {
             return "Error: task harness run not found";
         }
         List<String> lines = new ArrayList<>();
+        var subtasks = run.getSubtasks();
+        lines.add("Total subtasks: " + subtasks.size());
         lines.add("Pending subtasks: " + run.getPendingSubtaskCount());
-        for (var subtask : run.getSubtasks()) {
+        int emitted = 0;
+        for (var subtask : subtasks) {
+            if (emitted >= STATUS_DETAIL_LIMIT) {
+                break;
+            }
             lines.add("- [" + subtask.status().name().toLowerCase() + "] "
                     + (subtask.title() != null && !subtask.title().isBlank() ? subtask.title() : subtask.id())
                     + " (" + subtask.id() + ")");
+            emitted++;
+        }
+        int remaining = subtasks.size() - emitted;
+        if (remaining > 0) {
+            lines.add("... " + remaining + " more subtasks omitted from status output");
         }
         return String.join("\n", lines);
     }

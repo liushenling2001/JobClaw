@@ -67,8 +67,33 @@ class WebConsoleControllerLearningCandidateApiTest {
         assertEquals(200, memoriesResponse.getStatusCode().value());
         assertTrue(((List<?>) memoriesResponse.getBody()).size() >= 1);
 
+        LearningCandidate rejectedCandidate = candidate("candidate-b");
+        new FileLearningCandidateStore(tempDir.resolve(".jobclaw").resolve("learning").toString())
+                .saveAll(List.of(accepted, rejectedCandidate));
+        ResponseEntity<?> rejectResponse = controller.rejectLearningCandidate("candidate-b");
+        assertEquals(200, rejectResponse.getStatusCode().value());
+        assertTrue(learningService.findById("candidate-b").isEmpty());
+
         ResponseEntity<?> rejectMissingResponse = controller.rejectLearningCandidate("missing");
         assertEquals(404, rejectMissingResponse.getStatusCode().value());
+    }
+
+    @Test
+    void shouldDeleteLearningCandidateViaApi() throws Exception {
+        Path tempDir = Files.createTempDirectory("web-learning-delete-api");
+        LearningCandidateService learningService = new LearningCandidateService(
+                new FileLearningCandidateStore(tempDir.resolve(".jobclaw").resolve("learning").toString())
+        );
+        LearningCandidate candidate = candidate("candidate-delete");
+        new FileLearningCandidateStore(tempDir.resolve(".jobclaw").resolve("learning").toString())
+                .saveAll(List.of(candidate));
+        WebConsoleController controller = controller(tempDir, learningService);
+
+        ResponseEntity<?> deleteResponse = controller.deleteLearningCandidate("candidate-delete");
+
+        assertEquals(200, deleteResponse.getStatusCode().value());
+        assertTrue(learningService.findById("candidate-delete").isEmpty());
+        assertTrue(learningService.list(null).isEmpty());
     }
 
     @Test

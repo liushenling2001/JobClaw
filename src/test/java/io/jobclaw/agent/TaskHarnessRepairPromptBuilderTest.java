@@ -81,4 +81,70 @@ class TaskHarnessRepairPromptBuilderTest {
         assertTrue(prompt.contains("Verifier failure type: FILE_EXPECTATION"));
         assertTrue(prompt.contains("Focus on the missing or unchanged file."));
     }
+
+    @Test
+    void shouldAddWorklistPlanningRepairGuidance() {
+        TaskHarnessRun run = new TaskHarnessRun("session-a", "run-4", "batch review files");
+        run.recordVerificationResult(TaskHarnessVerificationResult.fail(
+                "WORKLIST_NOT_PLANNED",
+                "This task was classified as a worklist task but no subtasks were planned"
+        ));
+
+        TaskHarnessRepairPromptBuilder builder = new TaskHarnessRepairPromptBuilder();
+        String prompt = builder.build(
+                run,
+                "batch review files",
+                new TaskHarnessFailure(TaskHarnessFailureKind.VERIFICATION_FAILURE, "missing worklist", ""),
+                1
+        );
+
+        assertTrue(prompt.contains("Verifier failure type: WORKLIST_NOT_PLANNED"));
+        assertTrue(prompt.contains("create the missing worklist"));
+        assertTrue(prompt.contains("subtasks(action='plan'"));
+    }
+
+    @Test
+    void shouldAddFailedSubtaskRetryGuidanceFromCompletionDecision() {
+        TaskHarnessRun run = new TaskHarnessRun("session-a", "run-5", "batch review files");
+        run.markSubtaskCompleted("file-a.pdf", "timeout", false, Map.of(
+                "failureType", "timeout",
+                "retryable", true,
+                "retryCount", 0
+        ));
+        run.addStep(TaskHarnessPhase.VERIFY, "decision", "completion_decision",
+                "Retryable failed subtasks remain",
+                Map.of("missingRequirements", "failed_subtasks_retryable"));
+
+        TaskHarnessRepairPromptBuilder builder = new TaskHarnessRepairPromptBuilder();
+        String prompt = builder.build(
+                run,
+                "batch review files",
+                new TaskHarnessFailure(TaskHarnessFailureKind.VERIFICATION_FAILURE, "failed subtask", ""),
+                1
+        );
+
+        assertTrue(prompt.contains("Verifier failure type: FAILED_SUBTASKS_RETRYABLE"));
+        assertTrue(prompt.contains("Retry only the failed subtasks"));
+        assertTrue(prompt.contains("file-a.pdf [FAILED]"));
+        assertTrue(prompt.contains("failureType=timeout"));
+    }
+
+    @Test
+    void shouldBoundLargeSubtaskEvidenceInRepairPrompt() {
+        TaskHarnessRun run = new TaskHarnessRun("session-a", "run-6", "batch review files");
+        for (int i = 1; i <= 50; i++) {
+            run.upsertPlannedSubtask("file-" + i + ".pdf", "File " + i, Map.of("source", "test"));
+        }
+
+        TaskHarnessRepairPromptBuilder builder = new TaskHarnessRepairPromptBuilder();
+        String prompt = builder.build(
+                run,
+                "batch review files",
+                new TaskHarnessFailure(TaskHarnessFailureKind.VERIFICATION_FAILURE, "pending subtasks", ""),
+                1
+        );
+
+        assertTrue(prompt.contains("Tracked subtasks: total=50, pending=50"));
+        assertTrue(prompt.contains("10 more subtasks omitted"));
+    }
 }

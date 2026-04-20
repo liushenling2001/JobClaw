@@ -1,5 +1,6 @@
 package io.jobclaw.tools;
 
+import io.jobclaw.config.Config;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
@@ -25,14 +26,18 @@ import java.util.concurrent.TimeUnit;
 public class ExecTool {
 
     private static final int MAX_OUTPUT_LENGTH = 10000;         // 输出最大长度
-    private static final long DEFAULT_TIMEOUT_SECONDS = 60;     // 默认超时时间（秒）
     private static final long THREAD_JOIN_TIMEOUT_MS = 1000;    // 线程等待超时（毫秒）
+    private final Config config;
+
+    public ExecTool(Config config) {
+        this.config = config;
+    }
 
     @Tool(name = "exec", description = "Execute a shell command and return output. WARNING: Use with caution!")
     public String execute(
         @ToolParam(description = "The shell command to execute") String command,
         @ToolParam(description = "Working directory (optional, defaults to current directory)") String workingDir,
-        @ToolParam(description = "Timeout in seconds (optional, default: 60)") Integer timeout
+        @ToolParam(description = "Timeout in seconds (optional, defaults to agent.toolCallTimeoutSeconds)") Integer timeout
     ) {
         if (command == null || command.isEmpty()) {
             return "Error: command is required";
@@ -47,10 +52,17 @@ public class ExecTool {
         System.out.println("[ExecTool] WARNING: Executing command without SecurityGuard: " + command);
 
         try {
-            return executeCommand(command, cwd, timeout != null ? timeout : (int)DEFAULT_TIMEOUT_SECONDS);
+            return executeCommand(command, cwd, timeout != null ? timeout : defaultTimeoutSeconds());
         } catch (Exception e) {
             return "Error executing command: " + e.getMessage();
         }
+    }
+
+    private int defaultTimeoutSeconds() {
+        if (config == null || config.getAgent() == null || config.getAgent().getToolCallTimeoutSeconds() <= 0) {
+            return 300;
+        }
+        return config.getAgent().getToolCallTimeoutSeconds();
     }
 
     /**

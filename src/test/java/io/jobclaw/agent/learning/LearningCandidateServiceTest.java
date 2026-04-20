@@ -23,7 +23,7 @@ class LearningCandidateServiceTest {
     Path tempDir;
 
     @Test
-    void shouldRecordWorkflowAndSkillCandidatesForSuccessfulRepeatableRun() {
+    void shouldNotRecordPositiveCandidatesForSingleSuccessfulRun() {
         LearningCandidateService service = new LearningCandidateService(
                 new FileLearningCandidateStore(tempDir.toString())
         );
@@ -31,11 +31,20 @@ class LearningCandidateServiceTest {
 
         service.recordSuccessfulRun(run);
 
-        List<LearningCandidate> pending = service.listPending();
-        assertEquals(2, pending.size());
-        assertTrue(pending.stream().anyMatch(candidate -> candidate.getType() == LearningCandidateType.WORKFLOW));
-        assertTrue(pending.stream().anyMatch(candidate -> candidate.getType() == LearningCandidateType.SKILL_UPDATE));
-        assertTrue(pending.stream().allMatch(candidate -> candidate.getStatus() == LearningCandidateStatus.PENDING));
+        assertTrue(service.listPending().isEmpty());
+    }
+
+    @Test
+    void shouldNotRecordPositiveCandidatesForSingleRepairedSuccessfulRun() {
+        LearningCandidateService service = new LearningCandidateService(
+                new FileLearningCandidateStore(tempDir.toString())
+        );
+        TaskHarnessRun run = successfulBatchRun("run-a");
+        run.incrementRepairAttempts();
+
+        service.recordSuccessfulRun(run);
+
+        assertTrue(service.listPending().isEmpty());
     }
 
     @Test
@@ -48,7 +57,7 @@ class LearningCandidateServiceTest {
         service.recordSuccessfulRun(run);
         service.recordSuccessfulRun(run);
 
-        assertEquals(2, service.listPending().size());
+        assertTrue(service.listPending().isEmpty());
     }
 
     @Test
@@ -78,21 +87,27 @@ class LearningCandidateServiceTest {
     }
 
     @Test
-    void shouldRecordNegativeLessonForFailedRun() {
+    void shouldPromoteNegativeLessonOnlyAfterRepeatedSimilarFailures() {
         LearningCandidateService service = new LearningCandidateService(
                 new FileLearningCandidateStore(tempDir.toString())
         );
-        TaskHarnessRun run = failedBatchRun("run-failed");
 
-        service.recordFailedRun(run, "pending work remained");
+        service.recordFailedRun(failedBatchRun("run-failed-1"), "pending work remained");
+        service.recordFailedRun(failedBatchRun("run-failed-2"), "pending work remained");
+
+        assertTrue(service.listPending().isEmpty());
+
+        service.recordFailedRun(failedBatchRun("run-failed-3"), "pending work remained");
 
         List<LearningCandidate> pending = service.listPending();
         assertEquals(1, pending.size());
         LearningCandidate candidate = pending.get(0);
         assertEquals(LearningCandidateType.NEGATIVE_LESSON, candidate.getType());
+        assertEquals("重复失败经验候选", candidate.getTitle());
         assertTrue(candidate.getProposal().contains("Task failed"));
         assertTrue(candidate.getProposal().contains("pending work remained"));
         assertTrue(candidate.getMetadata().containsKey("toolSequence"));
+        assertEquals(3, ((Number) candidate.getMetadata().get("occurrenceCount")).intValue());
     }
 
     @Test
@@ -102,10 +117,28 @@ class LearningCandidateServiceTest {
         );
         TaskHarnessRun run = failedBatchRun("run-failed");
 
-        service.recordFailedRun(run, "first");
-        service.recordFailedRun(run, "second");
+        service.recordFailedRun(run, "pending work remained");
+        service.recordFailedRun(run, "pending work remained");
 
-        assertEquals(1, service.listPending().size());
+        assertTrue(service.listPending().isEmpty());
+        assertEquals(0, service.list(null).size());
+    }
+
+    @Test
+    void shouldPhysicallyDeleteRejectedCandidate() {
+        LearningCandidateService service = new LearningCandidateService(
+                new FileLearningCandidateStore(tempDir.toString())
+        );
+        service.recordFailedRun(failedBatchRun("run-failed-1"), "pending work remained");
+        service.recordFailedRun(failedBatchRun("run-failed-2"), "pending work remained");
+        service.recordFailedRun(failedBatchRun("run-failed-3"), "pending work remained");
+        LearningCandidate candidate = service.listPending().get(0);
+
+        assertTrue(service.markRejected(candidate.getId()).isPresent());
+
+        assertTrue(service.findById(candidate.getId()).isEmpty());
+        assertTrue(service.list(null).isEmpty());
+        assertTrue(service.list("rejected").isEmpty());
     }
 
     private TaskHarnessRun successfulBatchRun(String runId) {

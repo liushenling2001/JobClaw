@@ -2,6 +2,7 @@ package io.jobclaw.agent;
 
 import io.jobclaw.agent.checkpoint.TaskCheckpointService;
 import io.jobclaw.agent.completion.DeliveryType;
+import io.jobclaw.agent.completion.DoneDefinition;
 import io.jobclaw.agent.completion.TaskCompletionController;
 import io.jobclaw.agent.completion.TaskCompletionDecision;
 import io.jobclaw.agent.experience.ExperienceGuidanceService;
@@ -277,7 +278,8 @@ public class AgentOrchestrator {
                 userContent,
                 eventCallback
         );
-        TaskPlan taskPlan = taskPlanningPolicy.decide(userContent);
+        AgentExecutionContext.ExecutionScope previousScope = AgentExecutionContext.getCurrentScope();
+        TaskPlan taskPlan = adaptPlanForRunScope(taskPlanningPolicy.decide(userContent), previousScope);
         TaskPlanningDecision planningDecision = new TaskPlanningDecision(taskPlan.planningMode(), taskPlan.reason());
         harnessRun.setPlanningMode(taskPlan.planningMode(), taskPlan.reason());
         harnessRun.setDoneDefinition(taskPlan.doneDefinition());
@@ -316,7 +318,6 @@ public class AgentOrchestrator {
                 effectiveCallback
         );
 
-        AgentExecutionContext.ExecutionScope previousScope = AgentExecutionContext.getCurrentScope();
         AgentExecutionContext.ExecutionScope harnessScope = new AgentExecutionContext.ExecutionScope(
                 sessionKey,
                 effectiveCallback,
@@ -375,7 +376,9 @@ public class AgentOrchestrator {
                             currentResponse
                     );
                     stalledContinuePasses = progressed ? 0 : stalledContinuePasses + 1;
-                    if (continuePasses >= maxContinuePasses() || stalledContinuePasses >= 2) {
+                    boolean canEscalateStalledContinue = !(harnessRun.hasTrackedSubtasks() && pendingSubtasks > 0);
+                    if (continuePasses >= maxContinuePasses()
+                            || (canEscalateStalledContinue && stalledContinuePasses >= 2)) {
                         decision = TaskCompletionDecision.repair(
                                 "Pending work did not make progress, escalate to repair",
                                 java.util.List.of("continue_stalled")
@@ -516,6 +519,34 @@ public class AgentOrchestrator {
     private int maxContinuePasses() {
         return Math.max(MIN_CONTINUE_PASSES,
                 Math.min(MAX_CONTINUE_PASSES, Math.max(1, config.getAgent().getMaxToolIterations())));
+    }
+
+    private TaskPlan adaptPlanForRunScope(TaskPlan taskPlan, AgentExecutionContext.ExecutionScope previousScope) {
+        if (taskPlan == null || taskPlan.doneDefinition() == null) {
+            return taskPlan;
+        }
+        if (previousScope == null || previousScope.runId() == null || previousScope.runId().isBlank()) {
+            return taskPlan;
+        }
+        DoneDefinition done = taskPlan.doneDefinition();
+        if (!done.requiresWorklist()) {
+            return taskPlan;
+        }
+        DoneDefinition childDone = new DoneDefinition(
+                TaskPlanningMode.DIRECT,
+                done.deliveryType(),
+                done.requiredArtifacts(),
+                done.requiredPhases(),
+                false,
+                done.requiresFinalSummary(),
+                done.acceptOptionalFollowUp(),
+                done.completionRules()
+        );
+        return new TaskPlan(
+                TaskPlanningMode.DIRECT,
+                childDone,
+                taskPlan.reason() + "_child_contract"
+        );
     }
 
     private String applyWorkflowGuidance(String taskInput, String experienceGuidance) {

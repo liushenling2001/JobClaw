@@ -3,6 +3,9 @@ package io.jobclaw.runtime.tool;
 import io.jobclaw.agent.AgentExecutionContext;
 import io.jobclaw.agent.completion.ActiveExecutionRegistry;
 import io.jobclaw.config.Config;
+import io.jobclaw.context.result.ContextRef;
+import io.jobclaw.context.result.NoopResultStore;
+import io.jobclaw.context.result.ResultStore;
 import io.jobclaw.providers.Message;
 import io.jobclaw.providers.ToolCall;
 import io.jobclaw.session.SessionManager;
@@ -16,11 +19,15 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class ToolRuntime {
 
     private static final Logger logger = LoggerFactory.getLogger(ToolRuntime.class);
     private static final long MIN_TIMEOUT_MILLIS = 1_000L;
+    private static final long SPAWN_TIMEOUT_GRACE_MILLIS = 30_000L;
+    private static final Pattern TIMEOUT_MS_PATTERN = Pattern.compile("\"?timeoutMs\"?\\s*[:=]\\s*(\\d+)");
 
     private final Config config;
     private final SessionManager sessionManager;
@@ -28,12 +35,13 @@ public class ToolRuntime {
     private final ToolExecutionStateTracker stateTracker;
     private final ToolEventPublisher eventPublisher;
     private final ActiveExecutionRegistry activeExecutionRegistry;
+    private final ResultStore resultStore;
 
     public ToolRuntime(Config config,
                        SessionManager sessionManager,
                        ExecutorService toolExecutionExecutor,
                        ToolExecutionStateTracker stateTracker) {
-        this(config, sessionManager, toolExecutionExecutor, stateTracker, new ActiveExecutionRegistry());
+        this(config, sessionManager, toolExecutionExecutor, stateTracker, new ActiveExecutionRegistry(), new NoopResultStore());
     }
 
     public ToolRuntime(Config config,
@@ -41,12 +49,22 @@ public class ToolRuntime {
                        ExecutorService toolExecutionExecutor,
                        ToolExecutionStateTracker stateTracker,
                        ActiveExecutionRegistry activeExecutionRegistry) {
+        this(config, sessionManager, toolExecutionExecutor, stateTracker, activeExecutionRegistry, new NoopResultStore());
+    }
+
+    public ToolRuntime(Config config,
+                       SessionManager sessionManager,
+                       ExecutorService toolExecutionExecutor,
+                       ToolExecutionStateTracker stateTracker,
+                       ActiveExecutionRegistry activeExecutionRegistry,
+                       ResultStore resultStore) {
         this.config = config;
         this.sessionManager = sessionManager;
         this.toolExecutionExecutor = toolExecutionExecutor;
         this.stateTracker = stateTracker;
         this.eventPublisher = new ToolEventPublisher();
         this.activeExecutionRegistry = activeExecutionRegistry;
+        this.resultStore = resultStore != null ? resultStore : new NoopResultStore();
     }
 
     public ToolExecutionResult execute(ToolExecutionRequest executionRequest) {
@@ -77,8 +95,9 @@ public class ToolRuntime {
                     executionRequest.request(),
                     executionRequest.toolName()
             );
+            String modelResponse = prepareModelResponse(executionRequest, response);
             long durationMs = System.currentTimeMillis() - toolStartAt;
-            sessionManager.addFullMessage(executionRequest.sessionKey(), Message.tool(toolId, response));
+            sessionManager.addFullMessage(executionRequest.sessionKey(), Message.tool(toolId, modelResponse));
 
             eventPublisher.publishEnd(
                     executionRequest.eventCallback(),
@@ -99,7 +118,7 @@ public class ToolRuntime {
                     truncateToolOutput(response, executionRequest.toolName())
             );
 
-            return new ToolExecutionResult(toolId, response, durationMs, true, null);
+            return new ToolExecutionResult(toolId, modelResponse, durationMs, true, null);
         } catch (Throwable e) {
             throwable = e;
             long durationMs = System.currentTimeMillis() - toolStartAt;
@@ -142,7 +161,7 @@ public class ToolRuntime {
                 }
             }
         });
-        long timeoutMillis = resolveTimeoutMillis(toolName);
+        long timeoutMillis = resolveTimeoutMillis(toolName, request);
         try {
             return future.get(timeoutMillis, TimeUnit.MILLISECONDS);
         } catch (TimeoutException e) {
@@ -196,6 +215,58 @@ public class ToolRuntime {
         return output != null ? output.length() : 0;
     }
 
+    private String prepareModelResponse(ToolExecutionRequest executionRequest, String response) {
+        if (!shouldStoreAsReference(executionRequest.toolName(), response)) {
+            return response;
+        }
+        AgentExecutionContext.ExecutionScope scope = AgentExecutionContext.getCurrentScope();
+        String runId = scope != null ? scope.runId() : null;
+        ContextRef ref = resultStore.save(
+                executionRequest.sessionKey(),
+                runId,
+                "tool",
+                executionRequest.toolName(),
+                response
+        );
+        return formatContextReferenceResponse(ref);
+    }
+
+    private boolean shouldStoreAsReference(String toolName, String response) {
+        if (response == null || response.isEmpty()) {
+            return false;
+        }
+        if ("context_ref".equals(toolName)) {
+            return false;
+        }
+        if (config == null || config.getAgent() == null || !config.getAgent().isContextRefEnabled()) {
+            return false;
+        }
+        int threshold = Math.max(1, config.getAgent().getContextRefThresholdChars());
+        return response.length() > threshold;
+    }
+
+    private String formatContextReferenceResponse(ContextRef ref) {
+        return """
+                Large tool result stored as a context reference.
+
+                refId: %s
+                source: %s
+                contentLength: %d
+
+                preview:
+                %s
+
+                Use context_ref(action='read', refId='%s', start='0', maxChars='12000') or context_ref(action='search', refId='%s', query='...') if you need more detail.
+                """.formatted(
+                ref.getRefId(),
+                ref.getSourceName(),
+                ref.getContentLength(),
+                ref.getPreview() != null ? ref.getPreview() : "",
+                ref.getRefId(),
+                ref.getRefId()
+        );
+    }
+
     private RuntimeException asRuntimeException(Throwable throwable) {
         if (throwable instanceof RuntimeException runtimeException) {
             return runtimeException;
@@ -203,10 +274,30 @@ public class ToolRuntime {
         return new RuntimeException(throwable);
     }
 
-    private long resolveTimeoutMillis(String toolName) {
+    private long resolveTimeoutMillis(String toolName, String request) {
         if ("spawn".equals(toolName) || "collaborate".equals(toolName)) {
-            return Math.max(MIN_TIMEOUT_MILLIS, config.getAgent().getSubtaskTimeoutMs());
+            long subtaskTimeout = resolveSubtaskTimeoutMillis(request);
+            long grace = Math.max(SPAWN_TIMEOUT_GRACE_MILLIS, subtaskTimeout / 10);
+            return Math.max(MIN_TIMEOUT_MILLIS, subtaskTimeout + grace);
         }
         return Math.max(MIN_TIMEOUT_MILLIS, config.getAgent().getToolCallTimeoutSeconds() * 1_000L);
+    }
+
+    private long resolveSubtaskTimeoutMillis(String request) {
+        long configuredTimeout = config.getAgent().getSubtaskTimeoutMs();
+        if (request != null && !request.isBlank()) {
+            Matcher matcher = TIMEOUT_MS_PATTERN.matcher(request);
+            if (matcher.find()) {
+                try {
+                    long parsed = Long.parseLong(matcher.group(1));
+                    if (parsed > 0) {
+                        return Math.max(parsed, configuredTimeout);
+                    }
+                } catch (NumberFormatException ignored) {
+                    // Fall back to configured subtask timeout.
+                }
+            }
+        }
+        return configuredTimeout;
     }
 }

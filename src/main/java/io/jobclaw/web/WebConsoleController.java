@@ -329,7 +329,8 @@ public class WebConsoleController {
      * 閻劋绨径姘吂閹撮顏崥灞炬閺屻儳婀呴崥灞肩娑?Agent 閻ㄥ嫭澧界悰宀€濮搁幀?
      */
     @GetMapping(value = "/execute/stream/{sessionKey}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public ResponseEntity<SseEmitter> subscribeExecution(@PathVariable String sessionKey) {
+    public ResponseEntity<SseEmitter> subscribeExecution(@PathVariable String sessionKey,
+                                                         @RequestParam(value = "history", required = false, defaultValue = "true") boolean history) {
         SseEmitter emitter = new SseEmitter(300000L);
 
         String subscriberId = executionTraceService.subscribe(sessionKey, emitter);
@@ -343,16 +344,17 @@ public class WebConsoleController {
                     .name("subscribed")
                     .data(Map.of("sessionId", sessionKey, "subscriberId", subscriberId)));
 
-                // 闁插秵鎸遍崢鍡楀蕉娴滃娆?
-                executionTraceService.getHistory(sessionKey).forEach(event -> {
-                    try {
-                        emitter.send(SseEmitter.event()
-                            .name("history-event")
-                            .data(event.toSseData()));
-                    } catch (Exception e) {
-                        logger.debug("Failed to send history event: {}", e.getMessage());
-                    }
-                });
+                if (history) {
+                    executionTraceService.getHistory(sessionKey).forEach(event -> {
+                        try {
+                            emitter.send(SseEmitter.event()
+                                .name("history-event")
+                                .data(event.toSseData()));
+                        } catch (Exception e) {
+                            logger.debug("Failed to send history event: {}", e.getMessage());
+                        }
+                    });
+                }
             } catch (Exception e) {
                 logger.debug("Failed to send subscription confirmation: {}", e.getMessage());
             }
@@ -362,17 +364,61 @@ public class WebConsoleController {
     }
 
     @GetMapping("/sessions")
-    public ResponseEntity<List<Map<String, Object>>> getSessions() {
-        List<Map<String, Object>> sessions = new ArrayList<>();
-        for (io.jobclaw.conversation.SessionRecord record : sessionManager.listUserSessionRecords()) {
-            Map<String, Object> info = new HashMap<>();
-            info.put("key", record.getSessionId());
-            info.put("created", record.getCreatedAt());
-            info.put("updated", record.getUpdatedAt());
-            info.put("message_count", record.getMessageCount());
-            sessions.add(info);
+    public ResponseEntity<Map<String, Object>> getSessions(
+            @RequestParam(value = "channel", required = false) String channel,
+            @RequestParam(value = "all", required = false, defaultValue = "false") boolean all,
+            @RequestParam(value = "page", required = false, defaultValue = "1") Integer page,
+            @RequestParam(value = "size", required = false, defaultValue = "20") Integer size) {
+        String normalizedChannel = normalizeSessionChannel(channel);
+        int normalizedPage = page != null && page > 0 ? page : 1;
+        int normalizedSize = size != null && size > 0 ? Math.min(size, 100) : 20;
+
+        List<io.jobclaw.conversation.SessionRecord> filtered = sessionManager.listUserSessionRecords().stream()
+                .filter(record -> all || normalizedChannel.equals(sessionChannel(record.getSessionId())))
+                .toList();
+
+        int total = filtered.size();
+        int fromIndex = Math.min((normalizedPage - 1) * normalizedSize, total);
+        int toIndex = Math.min(fromIndex + normalizedSize, total);
+        List<Map<String, Object>> sessions = filtered.subList(fromIndex, toIndex).stream()
+                .map(record -> {
+                    Map<String, Object> info = new HashMap<>();
+                    info.put("key", record.getSessionId());
+                    info.put("channel", sessionChannel(record.getSessionId()));
+                    info.put("created", record.getCreatedAt());
+                    info.put("updated", record.getUpdatedAt());
+                    info.put("message_count", record.getMessageCount());
+                    return info;
+                })
+                .toList();
+
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("items", sessions);
+        response.put("page", normalizedPage);
+        response.put("size", normalizedSize);
+        response.put("total", total);
+        response.put("totalPages", normalizedSize > 0 ? (int) Math.ceil(total / (double) normalizedSize) : 0);
+        response.put("channel", all ? "all" : normalizedChannel);
+        response.put("all", all);
+        return ResponseEntity.ok(response);
+    }
+
+    private String normalizeSessionChannel(String channel) {
+        if (channel == null || channel.isBlank()) {
+            return "web";
         }
-        return ResponseEntity.ok(sessions);
+        return channel.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private String sessionChannel(String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) {
+            return "unknown";
+        }
+        int separator = sessionId.indexOf(':');
+        if (separator <= 0) {
+            return "unknown";
+        }
+        return sessionId.substring(0, separator).toLowerCase(Locale.ROOT);
     }
 
     @GetMapping("/task-harness/runs/{runId}")
@@ -1510,6 +1556,16 @@ public class WebConsoleController {
     public ResponseEntity<?> rejectLearningCandidate(@PathVariable String id) {
         return learningCandidateService.markRejected(id)
                 .<ResponseEntity<?>>map(ResponseEntity::ok)
+                .orElse(ResponseEntity.status(404).body(Map.of("error", "Learning candidate not found: " + id)));
+    }
+
+    @DeleteMapping("/learning/candidates/{id}")
+    public ResponseEntity<?> deleteLearningCandidate(@PathVariable String id) {
+        return learningCandidateService.delete(id)
+                .<ResponseEntity<?>>map(candidate -> ResponseEntity.ok(Map.of(
+                        "deleted", true,
+                        "id", candidate.getId()
+                )))
                 .orElse(ResponseEntity.status(404).body(Map.of("error", "Learning candidate not found: " + id)));
     }
 

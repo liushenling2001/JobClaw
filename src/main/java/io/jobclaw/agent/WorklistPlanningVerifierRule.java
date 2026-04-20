@@ -1,6 +1,5 @@
 package io.jobclaw.agent;
 
-import io.jobclaw.agent.planning.TaskPlanningMode;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
@@ -10,7 +9,7 @@ public class WorklistPlanningVerifierRule implements TaskHarnessVerifierRule {
 
     @Override
     public TaskHarnessVerificationResult verify(TaskHarnessRun run, String finalResponse, Throwable failure) {
-        if (run == null || run.getPlanningMode() != TaskPlanningMode.WORKLIST) {
+        if (run == null || run.getDoneDefinition() == null || !run.getDoneDefinition().requiresWorklist()) {
             return TaskHarnessVerificationResult.ok("Task does not require worklist planning");
         }
         if (run.hasTrackedSubtasks()) {

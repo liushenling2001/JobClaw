@@ -270,6 +270,7 @@ public class ContextBuilder {
         sb.append("8. Do not invent a parallel agent execution flow when `spawn` already fits the task.\n");
         sb.append("9. For batch work with independent items (for example multiple files, links, or records), first use `subtasks(action='plan', items='id|title\\n...')` to register the worklist, then execute each item in isolation and mark it complete. Do not finish the parent task while pending subtasks remain.\n");
         sb.append("10. For file tools, copy paths exactly from `list_dir` output or user input. Never add, remove, split, translate, or reformat spaces and Chinese characters in file names.\n");
+        sb.append("11. Large tool or sub-agent results may be returned as a `refId` instead of full text. Use `context_ref(action='read'|'search'|'summary', refId='...')` to inspect only the details needed for the task.\n");
         sb.append("\n");
         sb.append("## Persistent Agents\n\n");
         sb.append("- Use `agent_catalog(action='create', ...)` to create a reusable agent.\n");

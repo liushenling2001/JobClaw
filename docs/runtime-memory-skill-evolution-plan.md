@@ -314,11 +314,14 @@ Candidate types:
 
 Candidates are created from:
 
-- successful tasks
-- failed tasks and blocked runs
-- repeated successful flows
-- user corrections
-- user statements like "以后都这样"
+- failed tasks and blocked runs with attributable causes
+- repeated successful flows after multiple similar uses
+- explicit user corrections
+- explicit user requests such as "固化为经验", "沉淀为经验", "记录为教训"
+
+Single successful runs and ordinary "总结经验" statements are reference material, not experience candidates.
+Relevant single-run workflow references may be injected at runtime as low-priority guidance.
+Repeated similar successful workflows can be auto-promoted to formal workflow experience after the stability threshold is met.
 
 Candidates should be reviewable. They should not automatically rewrite skills, profiles, or core logic.
 

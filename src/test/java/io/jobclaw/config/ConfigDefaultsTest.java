@@ -24,6 +24,7 @@ class ConfigDefaultsTest {
         String json = Files.readString(configPath);
         assertTrue(json.contains("\"experience\""));
         assertTrue(json.contains("\"subtaskTimeoutMs\""));
+        assertTrue(json.contains("\"subtaskResultMaxChars\""));
         assertTrue(json.contains("\"baseUrl\""));
         assertTrue(json.contains("\"dashscope\""));
     }

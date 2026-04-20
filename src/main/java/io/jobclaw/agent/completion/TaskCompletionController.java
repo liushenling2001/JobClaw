@@ -26,6 +26,9 @@ public class TaskCompletionController {
 
     private static final Set<String> DOCUMENT_TOOLS = Set.of("read_pdf", "read_word", "read_excel", "read_file");
     private static final Set<String> MUTATING_FILE_TOOLS = Set.of("write_file", "edit_file", "append_file");
+    private static final Set<String> RETRYABLE_SUBTASK_FAILURE_TYPES = Set.of(
+            "timeout", "interrupted", "transient_model_error", "child_error"
+    );
     private static final Pattern JSON_PATH_PATTERN = Pattern.compile("\"path\"\\s*:\\s*\"([^\"]+)\"");
     private static final Pattern PARAM_PATH_PATTERN = Pattern.compile("path\\s*[=:]\\s*['\"]?([^,'\"\\n}]+)");
 
@@ -113,13 +116,19 @@ public class TaskCompletionController {
             );
         }
 
-        if (doneDefinition.requiresWorklist()) {
-            if (!state.worklistPlanned()) {
-                return TaskCompletionDecision.repair("Worklist task has not planned subtasks", List.of("worklist_not_planned"));
-            }
-            if (state.pendingSubtasks() > 0) {
-                return TaskCompletionDecision.cont("Pending subtasks remain", List.of("pending_subtasks"));
-            }
+        if (state.worklistPlanned() && state.pendingSubtasks() > 0) {
+            return TaskCompletionDecision.cont("Pending subtasks remain", List.of("pending_subtasks"));
+        }
+
+        if (state.worklistPlanned() && hasRetryableFailedSubtask(run)) {
+            return TaskCompletionDecision.repair(
+                    "Retryable failed subtasks remain",
+                    List.of("failed_subtasks_retryable")
+            );
+        }
+
+        if (doneDefinition.requiresWorklist() && !state.worklistPlanned()) {
+            return TaskCompletionDecision.repair("Worklist task has not planned subtasks", List.of("worklist_not_planned"));
         }
 
         if (!doneDefinition.requiredArtifacts().isEmpty() && !state.artifactsFound()) {
@@ -223,6 +232,43 @@ public class TaskCompletionController {
 
     private String stringValue(Object value) {
         return value == null ? "" : value.toString();
+    }
+
+    private boolean hasRetryableFailedSubtask(TaskHarnessRun run) {
+        if (run == null) {
+            return false;
+        }
+        int maxRetries = Math.max(0, config.getAgent().getMaxSubtaskRepairAttempts());
+        if (maxRetries <= 0) {
+            return false;
+        }
+        return run.getSubtasks().stream()
+                .filter(subtask -> subtask.status() == TaskHarnessSubtaskStatus.FAILED)
+                .anyMatch(subtask -> isRetryable(subtask) && retryCount(subtask) <= maxRetries);
+    }
+
+    private boolean isRetryable(TaskHarnessSubtask subtask) {
+        Object retryable = subtask.metadata().get("retryable");
+        if (retryable instanceof Boolean bool) {
+            return bool;
+        }
+        String failureType = stringValue(subtask.metadata().get("failureType")).toLowerCase(Locale.ROOT);
+        return RETRYABLE_SUBTASK_FAILURE_TYPES.contains(failureType);
+    }
+
+    private int retryCount(TaskHarnessSubtask subtask) {
+        Object value = subtask.metadata().get("retryCount");
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        if (value != null) {
+            try {
+                return Integer.parseInt(value.toString());
+            } catch (NumberFormatException ignored) {
+                return 0;
+            }
+        }
+        return 0;
     }
 
     private boolean hasStrongArtifactEvidence(DoneDefinition doneDefinition, TaskCompletionState state) {

@@ -22,6 +22,8 @@ import io.jobclaw.context.ContextAssembler;
 import io.jobclaw.context.ContextAssemblyPolicy;
 import io.jobclaw.context.DefaultContextAssemblyPolicy;
 import io.jobclaw.context.DefaultContextAssembler;
+import io.jobclaw.context.result.FileResultStore;
+import io.jobclaw.context.result.ResultStore;
 import io.jobclaw.cron.CronService;
 import io.jobclaw.cron.CronJobDispatcher;
 import io.jobclaw.mcp.MCPService;
@@ -172,6 +174,15 @@ public class AgentBeansConfig {
 
     @Bean
     @ConditionalOnMissingBean
+    public ResultStore resultStore(Config config) {
+        return new FileResultStore(
+                Paths.get(config.getWorkspacePath(), ".jobclaw", "results"),
+                config.getAgent().getContextRefPreviewChars()
+        );
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
     public ContextAssembler contextAssembler(Config config,
                                              SessionManager sessionManager,
                                              RetrievalService retrievalService) {
@@ -268,6 +279,7 @@ public class AgentBeansConfig {
             SharedBoardTool sharedBoardTool,
             AgentCatalogTool agentCatalogTool,
             MemoryTool memoryTool,
+            ContextRefTool contextRefTool,
             SubtasksTool subtasksTool,
             SpawnTool spawnTool,
             CollaborateTool collaborateTool) {
@@ -278,7 +290,7 @@ public class AgentBeansConfig {
                 .toolObjects(fileTools, runCommandTool, skillsTools, messageTool, cronTool,
                             mcpTool, tokenUsageTool, webSearchTool, webFetchTool, execTool,
                             sharedBoardTool,
-                            agentCatalogTool, memoryTool, subtasksTool, spawnTool, collaborateTool)
+                            agentCatalogTool, memoryTool, contextRefTool, subtasksTool, spawnTool, collaborateTool)
                 .build()
                 .getToolCallbacks();
     }
@@ -290,8 +302,9 @@ public class AgentBeansConfig {
                                io.jobclaw.agent.ContextBuilder contextBuilder,
                                ContextAssembler contextAssembler,
                                ContextAssemblyPolicy contextAssemblyPolicy,
-                               SummaryService summaryService) {
-        return new AgentLoop(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler, contextAssemblyPolicy, summaryService);
+                               SummaryService summaryService,
+                               ResultStore resultStore) {
+        return new AgentLoop(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler, contextAssemblyPolicy, summaryService, resultStore);
     }
 
     // Tool beans with dependencies

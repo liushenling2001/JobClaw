@@ -60,7 +60,7 @@ class MemoryToolTest {
 
         String result = tool.execute(
                 "remember",
-                "总结经验：以后批量审查 PDF 时，先枚举完整文件清单，再登记 subtasks worklist，最后逐个 spawn 子任务处理。",
+                "固化为经验：批量审查 PDF 多次验证有效时，先枚举完整文件清单，再登记 subtasks worklist，最后逐个 spawn 子任务处理。",
                 null,
                 null,
                 "workflow,pdf",
@@ -91,7 +91,7 @@ class MemoryToolTest {
 
         String result = tool.execute(
                 "remember",
-                "失败教训：不要在 subtasks 还有 pending 项时输出最终总结，否则长任务会被误判完成。",
+                "记录为教训：不要在 subtasks 还有 pending 项时输出最终总结，否则长任务会被误判完成。",
                 null,
                 null,
                 "lesson,subtasks",
@@ -105,5 +105,28 @@ class MemoryToolTest {
         assertEquals(LearningCandidateStatus.PENDING, candidate.getStatus());
         assertNull(candidate.getDeliveryType());
         assertTrue(candidate.getTags().contains("negative_lesson"));
+    }
+
+    @Test
+    void shouldTreatSingleRunSummaryAsReferenceMemoryOnly() {
+        Config config = Config.defaultConfig();
+        config.getAgent().setWorkspace(tempDir.toString());
+        FileLearningCandidateStore candidateStore = new FileLearningCandidateStore(
+                tempDir.resolve(".jobclaw").resolve("learning").toString()
+        );
+        MemoryTool tool = new MemoryTool(config, candidateStore);
+
+        String result = tool.execute(
+                "remember",
+                "总结经验：这次审查 PDF 时先看第一页作者，再看最后一页参考文献。",
+                null,
+                null,
+                "workflow,pdf",
+                "project",
+                0.8
+        );
+
+        assertTrue(result.contains("Remembered durable memory"));
+        assertTrue(candidateStore.list().isEmpty());
     }
 }

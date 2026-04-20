@@ -19,6 +19,7 @@ public class AgentConfig {
     private int maxFileExpectationRepairAttempts;
     private int maxTestCommandRepairAttempts;
     private int maxCommandExitRepairAttempts;
+    private int maxSubtaskRepairAttempts;
     private boolean restrictToWorkspace;
     private boolean heartbeatEnabled;
     private boolean feedbackEnabled;
@@ -27,6 +28,11 @@ public class AgentConfig {
     private int maxToolOutputLength;
     private int toolCallTimeoutSeconds;
     private long subtaskTimeoutMs;
+    private int subtaskResultMaxChars;
+    private boolean contextRefEnabled;
+    private int contextRefThresholdChars;
+    private int contextRefPreviewChars;
+    private int contextRefReadMaxChars;
     private List<String> commandBlacklist;
 
     // ==================== 上下文管理配置 ====================
@@ -69,6 +75,7 @@ public class AgentConfig {
         this.maxFileExpectationRepairAttempts = 2;
         this.maxTestCommandRepairAttempts = 1;
         this.maxCommandExitRepairAttempts = 1;
+        this.maxSubtaskRepairAttempts = 1;
         this.restrictToWorkspace = true;
         this.heartbeatEnabled = false;
         this.feedbackEnabled = false;
@@ -77,6 +84,11 @@ public class AgentConfig {
         this.maxToolOutputLength = 10000; // 工具结果在前端事件中的展示截断长度，不截断模型流程内容
         this.toolCallTimeoutSeconds = 300;
         this.subtaskTimeoutMs = 900_000L;
+        this.subtaskResultMaxChars = 4000;
+        this.contextRefEnabled = true;
+        this.contextRefThresholdChars = 20_000;
+        this.contextRefPreviewChars = 2_000;
+        this.contextRefReadMaxChars = 12_000;
         this.commandBlacklist = new ArrayList<>();
         // 上下文管理默认值（参考 TinyClaw）
         this.contextWindow = 128_000;
@@ -182,6 +194,14 @@ public class AgentConfig {
         this.maxCommandExitRepairAttempts = maxCommandExitRepairAttempts;
     }
 
+    public int getMaxSubtaskRepairAttempts() {
+        return maxSubtaskRepairAttempts;
+    }
+
+    public void setMaxSubtaskRepairAttempts(int maxSubtaskRepairAttempts) {
+        this.maxSubtaskRepairAttempts = maxSubtaskRepairAttempts;
+    }
+
     public boolean isRestrictToWorkspace() {
         return restrictToWorkspace;
     }
@@ -244,6 +264,46 @@ public class AgentConfig {
 
     public void setSubtaskTimeoutMs(long subtaskTimeoutMs) {
         this.subtaskTimeoutMs = subtaskTimeoutMs;
+    }
+
+    public int getSubtaskResultMaxChars() {
+        return subtaskResultMaxChars;
+    }
+
+    public void setSubtaskResultMaxChars(int subtaskResultMaxChars) {
+        this.subtaskResultMaxChars = subtaskResultMaxChars;
+    }
+
+    public boolean isContextRefEnabled() {
+        return contextRefEnabled;
+    }
+
+    public void setContextRefEnabled(boolean contextRefEnabled) {
+        this.contextRefEnabled = contextRefEnabled;
+    }
+
+    public int getContextRefThresholdChars() {
+        return contextRefThresholdChars;
+    }
+
+    public void setContextRefThresholdChars(int contextRefThresholdChars) {
+        this.contextRefThresholdChars = contextRefThresholdChars;
+    }
+
+    public int getContextRefPreviewChars() {
+        return contextRefPreviewChars;
+    }
+
+    public void setContextRefPreviewChars(int contextRefPreviewChars) {
+        this.contextRefPreviewChars = contextRefPreviewChars;
+    }
+
+    public int getContextRefReadMaxChars() {
+        return contextRefReadMaxChars;
+    }
+
+    public void setContextRefReadMaxChars(int contextRefReadMaxChars) {
+        this.contextRefReadMaxChars = contextRefReadMaxChars;
     }
 
     public List<String> getCommandBlacklist() {
