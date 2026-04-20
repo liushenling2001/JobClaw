@@ -41,7 +41,7 @@
         <frontend-maven-plugin.version>1.15.1</frontend-maven-plugin.version>
         <node.version>v20.19.0</node.version>
         <npm.version>10.8.2</npm.version>
-        <skip.frontend>false</skip.frontend>
+        <skip.frontend>true</skip.frontend>
     </properties>
 
     <dependencies>
