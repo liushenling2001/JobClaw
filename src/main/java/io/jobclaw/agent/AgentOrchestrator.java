@@ -371,12 +371,12 @@ public class AgentOrchestrator {
                     taskHarnessService.complete(harnessRun, true, decision.reason(), effectiveCallback);
                     workflowMemoryService.recordSuccess(harnessRun);
                     learningCandidateService.recordSuccessfulRun(harnessRun);
-                    return formatCompletedResponse(harnessRun, currentResponse);
+                    return publishAndReturnFinal(sessionKey, effectiveCallback, formatCompletedResponse(harnessRun, currentResponse));
                 }
                 if (decision.status() == TaskCompletionDecision.Status.BLOCKED) {
                     taskHarnessService.complete(harnessRun, false, decision.reason(), effectiveCallback);
                     learningCandidateService.recordFailedRun(harnessRun, decision.reason());
-                    return currentResponse;
+                    return publishAndReturnFinal(sessionKey, effectiveCallback, currentResponse);
                 }
                 if (decision.status() == TaskCompletionDecision.Status.CONTINUE) {
                     int pendingSubtasks = harnessRun.getPendingSubtaskCount();
@@ -428,7 +428,7 @@ public class AgentOrchestrator {
                 if (planReviewDecision.action() == PlanReviewAction.BLOCKED) {
                     taskHarnessService.complete(harnessRun, false, planReviewDecision.reason(), effectiveCallback);
                     learningCandidateService.recordFailedRun(harnessRun, planReviewDecision.reason());
-                    return currentResponse;
+                    return publishAndReturnFinal(sessionKey, effectiveCallback, currentResponse);
                 }
                 if (planReviewDecision.action() != PlanReviewAction.KEEP_PLAN
                         && harnessRun.getPlanReviewAttempts() <= 3) {
@@ -462,7 +462,7 @@ public class AgentOrchestrator {
                 if (!canAttemptRepair(harnessRun)) {
                     taskHarnessService.complete(harnessRun, false, decision.reason(), effectiveCallback);
                     learningCandidateService.recordFailedRun(harnessRun, decision.reason());
-                    return currentResponse;
+                    return publishAndReturnFinal(sessionKey, effectiveCallback, currentResponse);
                 }
 
                 currentResponse = attemptRepair(action, harnessRun, taskInput, failure, effectiveCallback);
@@ -548,7 +548,7 @@ public class AgentOrchestrator {
                     java.util.Map.of("requiredTools", String.join(",", requiredTools)),
                     effectiveCallback
             );
-            return action.run(taskInput, effectiveCallback);
+            return action.run(taskInput, suppressIntermediateFinalResponse(effectiveCallback));
         } finally {
             if (previousRequiredTools.isEmpty()) {
                 AgentExecutionContext.clearRuntimeRequiredToolNames();
@@ -556,6 +556,31 @@ public class AgentOrchestrator {
                 AgentExecutionContext.setRuntimeRequiredToolNames(previousRequiredTools);
             }
         }
+    }
+
+    private Consumer<ExecutionEvent> suppressIntermediateFinalResponse(Consumer<ExecutionEvent> delegate) {
+        if (delegate == null) {
+            return null;
+        }
+        return event -> {
+            if (event != null && event.getType() == ExecutionEvent.EventType.FINAL_RESPONSE) {
+                return;
+            }
+            delegate.accept(event);
+        };
+    }
+
+    private String publishAndReturnFinal(String sessionKey,
+                                         Consumer<ExecutionEvent> effectiveCallback,
+                                         String response) {
+        if (effectiveCallback != null) {
+            effectiveCallback.accept(new ExecutionEvent(
+                    sessionKey,
+                    ExecutionEvent.EventType.FINAL_RESPONSE,
+                    response != null ? response : ""
+            ));
+        }
+        return response;
     }
 
     private String buildContinueInput(String originalInput,

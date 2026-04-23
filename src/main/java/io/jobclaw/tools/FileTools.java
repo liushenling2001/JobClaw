@@ -13,11 +13,13 @@ import org.springframework.stereotype.Component;
 
 import java.io.InputStream;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
@@ -44,6 +46,9 @@ public class FileTools {
     ) {
         try {
             Path resolvedPath = resolveExistingPath(path);
+            if (!Files.exists(resolvedPath)) {
+                return "Error reading file: file not found: " + path;
+            }
             String content = Files.readString(resolvedPath);
             return content;
         } catch (Exception e) {
@@ -429,7 +434,7 @@ public class FileTools {
         if (path == null || path.isBlank()) {
             return workspace.normalize();
         }
-        Path input = Paths.get(path);
+        Path input = Paths.get(cleanPathArgument(path));
         if (input.isAbsolute()) {
             return input.normalize();
         }
@@ -465,28 +470,54 @@ public class FileTools {
     }
 
     private Path resolveExistingPath(String path) {
-        Path resolvedPath = resolvePath(path);
-        if (Files.exists(resolvedPath)) {
-            return resolvedPath;
+        String cleanedPath = cleanPathArgument(path);
+        try {
+            Path resolvedPath = resolvePath(cleanedPath);
+            if (Files.exists(resolvedPath)) {
+                return resolvedPath;
+            }
+            return recoverMutatedExistingPath(resolvedPath).orElse(resolvedPath);
+        } catch (InvalidPathException e) {
+            return recoverInvalidExistingPath(cleanedPath).orElseThrow(() -> e);
         }
-        return recoverWhitespaceMutatedPath(resolvedPath).orElse(resolvedPath);
     }
 
-    private Optional<Path> recoverWhitespaceMutatedPath(Path requestedPath) {
+    private Optional<Path> recoverInvalidExistingPath(String path) {
+        if (path == null || path.isBlank()) {
+            return Optional.empty();
+        }
+
+        int separatorIndex = Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/'));
+        String parentText = separatorIndex >= 0 ? path.substring(0, separatorIndex) : "";
+        String requestedFileName = separatorIndex >= 0 ? path.substring(separatorIndex + 1) : path;
+
+        try {
+            Path parent = parentText.isBlank() ? Paths.get(config.getWorkspacePath()) : resolvePath(parentText);
+            return recoverMutatedFileName(parent, requestedFileName);
+        } catch (Exception ignored) {
+            return Optional.empty();
+        }
+    }
+
+    private Optional<Path> recoverMutatedExistingPath(Path requestedPath) {
         Path parent = requestedPath.getParent();
         Path requestedFileName = requestedPath.getFileName();
         if (parent == null || requestedFileName == null || !Files.isDirectory(parent)) {
             return Optional.empty();
         }
 
-        String compactRequestedName = removeWhitespace(requestedFileName.toString());
-        if (compactRequestedName.equals(requestedFileName.toString())) {
+        return recoverMutatedFileName(parent, requestedFileName.toString());
+    }
+
+    private Optional<Path> recoverMutatedFileName(Path parent, String requestedFileName) {
+        if (parent == null || requestedFileName == null || !Files.isDirectory(parent)) {
             return Optional.empty();
         }
 
+        Set<String> requestedKeys = mutationKeys(requestedFileName);
         List<Path> matches = new ArrayList<>();
         try (Stream<Path> stream = Files.list(parent)) {
-            stream.filter(path -> removeWhitespace(path.getFileName().toString()).equals(compactRequestedName))
+            stream.filter(path -> hasCommonMutationKey(requestedKeys, mutationKeys(path.getFileName().toString())))
                     .forEach(matches::add);
         } catch (Exception ignored) {
             return Optional.empty();
@@ -496,6 +527,107 @@ public class FileTools {
             return Optional.of(matches.get(0).toAbsolutePath().normalize());
         }
         return Optional.empty();
+    }
+
+    private boolean hasCommonMutationKey(Set<String> left, Set<String> right) {
+        for (String key : left) {
+            if (right.contains(key)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private Set<String> mutationKeys(String value) {
+        LinkedHashSet<String> keys = new LinkedHashSet<>();
+        String stripped = stripOuterPathQuotes(value == null ? "" : value.trim());
+        String quoteNormalized = normalizeQuoteCharacters(stripped);
+        keys.add(stripped);
+        keys.add(removeWhitespace(stripped));
+        keys.add(quoteNormalized);
+        keys.add(removeWhitespace(quoteNormalized));
+        return keys;
+    }
+
+    private String cleanPathArgument(String path) {
+        if (path == null) {
+            return "";
+        }
+
+        String cleaned = path.trim();
+        int pathMarker = pathMarkerIndex(cleaned);
+        if (pathMarker >= 0) {
+            cleaned = cleaned.substring(pathMarker + "path=".length()).trim();
+        }
+        return unescapeQuotedPathCharacters(stripOuterPathQuotes(cleaned));
+    }
+
+    private int pathMarkerIndex(String value) {
+        if (value.length() >= "path=".length()
+                && value.regionMatches(true, 0, "path=", 0, "path=".length())) {
+            return 0;
+        }
+
+        int pathMarker = value.toLowerCase(Locale.ROOT).lastIndexOf("path=");
+        if (pathMarker >= 0 && value.substring(0, pathMarker).contains("|")) {
+            return pathMarker;
+        }
+        return -1;
+    }
+
+    private String stripOuterPathQuotes(String value) {
+        String cleaned = value == null ? "" : value.trim();
+        boolean changed;
+        do {
+            changed = false;
+            if (cleaned.length() >= 2
+                    && isPathQuote(cleaned.charAt(0))
+                    && isPathQuote(cleaned.charAt(cleaned.length() - 1))) {
+                cleaned = cleaned.substring(1, cleaned.length() - 1).trim();
+                changed = true;
+            }
+        } while (changed);
+        return cleaned;
+    }
+
+    private boolean isPathQuote(char ch) {
+        return ch == '"' || ch == '\'' || ch == '`'
+                || ch == '“' || ch == '”'
+                || ch == '‘' || ch == '’'
+                || ch == '＂' || ch == '＇';
+    }
+
+    private String normalizeQuoteCharacters(String value) {
+        if (value == null || value.isEmpty()) {
+            return "";
+        }
+
+        StringBuilder sb = new StringBuilder(value.length());
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (isPathQuote(ch)) {
+                sb.append('"');
+            } else {
+                sb.append(ch);
+            }
+        }
+        return sb.toString();
+    }
+
+    private String unescapeQuotedPathCharacters(String value) {
+        if (value == null || value.isEmpty()) {
+            return "";
+        }
+
+        StringBuilder sb = new StringBuilder(value.length());
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (ch == '\\' && i + 1 < value.length() && isPathQuote(value.charAt(i + 1))) {
+                continue;
+            }
+            sb.append(ch);
+        }
+        return sb.toString();
     }
 
     private String removeWhitespace(String value) {

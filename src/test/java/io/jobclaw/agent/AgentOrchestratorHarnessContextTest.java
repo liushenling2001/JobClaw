@@ -6,6 +6,8 @@ import io.jobclaw.config.Config;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -173,6 +175,70 @@ class AgentOrchestratorHarnessContextTest {
         assertNotNull(continueInput.get());
         assertFalse(continueInput.get().contains("WORKLIST_NOT_PLANNED"));
         assertTrue(result.contains("最终汇总"));
+    }
+
+    @Test
+    void shouldPublishOnlyHarnessFinalResponseAcrossInternalContinuePasses() {
+        AgentRegistry registry = mock(AgentRegistry.class);
+        TaskHarnessService harnessService = new TaskHarnessService();
+        TaskHarnessRepairPromptBuilder repairPromptBuilder = new TaskHarnessRepairPromptBuilder();
+        TaskHarnessRepairStrategy repairStrategy = new TaskHarnessRepairStrategy(Config.defaultConfig());
+        AgentLoop loop = mock(AgentLoop.class);
+        AtomicInteger calls = new AtomicInteger();
+        List<String> finalResponses = new ArrayList<>();
+
+        when(registry.getOrCreateAgent(any(AgentRole.class), anyString())).thenReturn(loop);
+        when(loop.process(anyString(), anyString(), any(java.util.function.Consumer.class)))
+                .thenAnswer(invocation -> {
+                    int call = calls.incrementAndGet();
+                    String runId = AgentExecutionContext.getCurrentRunId();
+                    Consumer<ExecutionEvent> callback = invocation.getArgument(2);
+                    callback.accept(new ExecutionEvent("session-a", ExecutionEvent.EventType.FINAL_RESPONSE,
+                            call == 1 ? "中间轮次：还需要继续。" : "最终汇总：完成。"));
+                    if (call == 1) {
+                        return "中间轮次：还需要继续。";
+                    }
+                    harnessService.planSubtask(
+                            runId,
+                            "file-a.pdf",
+                            "file-a.pdf",
+                            Map.of("source", "test"),
+                            callback
+                    );
+                    harnessService.completeSubtask(
+                            runId,
+                            "file-a.pdf",
+                            "checked",
+                            true,
+                            Map.of(),
+                            callback
+                    );
+                    return "最终汇总：完成。";
+                });
+
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                Config.defaultConfig(),
+                registry,
+                harnessService,
+                repairPromptBuilder,
+                repairStrategy,
+                new TaskPlanningPolicy()
+        );
+
+        String result = orchestrator.process(
+                "session-a",
+                "请批量审查目录 D:\\DOC\\招生 下的所有PDF文件，使用 subtasks 登记 worklist 后逐个处理",
+                event -> {
+                    if (event.getType() == ExecutionEvent.EventType.FINAL_RESPONSE) {
+                        finalResponses.add(event.getContent());
+                    }
+                }
+        );
+
+        assertEquals("最终汇总：完成。", result);
+        assertEquals(1, finalResponses.size());
+        assertEquals("最终汇总：完成。", finalResponses.get(0));
+        assertTrue(calls.get() >= 2);
     }
 
     @Test

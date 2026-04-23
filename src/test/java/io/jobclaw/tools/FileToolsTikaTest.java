@@ -121,6 +121,70 @@ class FileToolsTikaTest {
         assertTrue(content.contains("recovered content"), content);
     }
 
+    @Test
+    void readFileShouldStripOuterAsciiAndSmartQuotes() throws Exception {
+        Path file = tempDir.resolve("quoted-path.txt");
+        Files.writeString(file, "quoted path content");
+
+        FileTools tools = createTools();
+        String asciiQuoted = tools.readFile("\"" + file + "\"");
+        String smartQuoted = tools.readFile("“" + file + "”");
+        String listedPathFragment = tools.readFile("[FILE] quoted-path.txt | path=\"" + file + "\"");
+
+        assertFalse(asciiQuoted.startsWith("Error"), asciiQuoted);
+        assertFalse(smartQuoted.startsWith("Error"), smartQuoted);
+        assertFalse(listedPathFragment.startsWith("Error"), listedPathFragment);
+        assertTrue(asciiQuoted.contains("quoted path content"), asciiQuoted);
+        assertTrue(smartQuoted.contains("quoted path content"), smartQuoted);
+        assertTrue(listedPathFragment.contains("quoted path content"), listedPathFragment);
+    }
+
+    @Test
+    void readFileShouldPreserveSmartQuotesInsideFileName() throws Exception {
+        Path file = tempDir.resolve("报告“最终”.txt");
+        Files.writeString(file, "smart quote filename content");
+
+        FileTools tools = createTools();
+        String content = tools.readFile("“" + file + "”");
+
+        assertFalse(content.startsWith("Error"), content);
+        assertTrue(content.contains("smart quote filename content"), content);
+    }
+
+    @Test
+    void readFileShouldRecoverWhenModelConvertsSmartQuotesToAsciiQuotes() throws Exception {
+        Path file = tempDir.resolve("报告“最终”.txt");
+        Files.writeString(file, "recovered smart quote filename");
+
+        FileTools tools = createTools();
+        String mutatedPath = tempDir + java.io.File.separator + "报告\"最终\".txt";
+        String content = tools.readFile(mutatedPath);
+
+        assertFalse(content.startsWith("Error"), content);
+        assertTrue(content.contains("recovered smart quote filename"), content);
+    }
+
+    @Test
+    void readFileShouldRecoverWhenModelEscapesSmartQuotes() throws Exception {
+        Path file = tempDir.resolve("报告“最终”.txt");
+        Files.writeString(file, "recovered escaped smart quote filename");
+
+        FileTools tools = createTools();
+        String escapedPath = file.toString().replace("“", "\\“").replace("”", "\\”");
+        String content = tools.readFile(escapedPath);
+
+        assertFalse(content.startsWith("Error"), content);
+        assertTrue(content.contains("recovered escaped smart quote filename"), content);
+    }
+
+    @Test
+    void readFileShouldReportFileNotFoundWhenSameFolderSearchFails() {
+        FileTools tools = createTools();
+        String content = tools.readFile(tempDir.resolve("missing“file”.txt").toString());
+
+        assertTrue(content.startsWith("Error reading file: file not found:"), content);
+    }
+
     private FileTools createTools() {
         Config config = Config.defaultConfig();
         config.getAgent().setWorkspace(tempDir.toString());
