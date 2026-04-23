@@ -16,11 +16,38 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SqliteRetrievalServiceTest {
 
+    private static final String SQLITE_TMPDIR_PROPERTY = "org.sqlite.tmpdir";
+
     @TempDir
     Path tempDir;
+
+    @Test
+    void configuresSqliteNativeTempDirUnderJobclawHome() {
+        String previous = System.getProperty(SQLITE_TMPDIR_PROPERTY);
+        System.clearProperty(SQLITE_TMPDIR_PROPERTY);
+        try {
+            Path dbPath = tempDir.resolve("retrieval").resolve("search.db");
+            new SqliteRetrievalService(
+                    new FileConversationStore(tempDir.resolve("conversation").toString()),
+                    new FileSummaryService(tempDir.resolve("summary").toString()),
+                    dbPath.toString()
+            );
+
+            Path expected = Path.of(System.getProperty("user.home"), ".jobclaw", "native", "sqlite");
+            assertEquals(expected.toString(), System.getProperty(SQLITE_TMPDIR_PROPERTY));
+            assertTrue(java.nio.file.Files.isDirectory(expected));
+        } finally {
+            if (previous == null) {
+                System.clearProperty(SQLITE_TMPDIR_PROPERTY);
+            } else {
+                System.setProperty(SQLITE_TMPDIR_PROPERTY, previous);
+            }
+        }
+    }
 
     @Test
     void searchesHistorySummariesAndMemoryFacts() {

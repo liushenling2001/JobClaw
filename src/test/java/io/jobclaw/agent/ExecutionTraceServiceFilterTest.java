@@ -1,7 +1,9 @@
 package io.jobclaw.agent;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.io.IOException;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -50,5 +52,31 @@ class ExecutionTraceServiceFilterTest {
         var board1 = service.getHistoryByBoard("session-a", "board-1", 10);
         assertEquals(2, board1.size());
         assertTrue(board1.stream().allMatch(event -> "board-1".equals(event.getMetadata().get("boardId"))));
+    }
+
+    @Test
+    void shouldDropBrokenEmitterWithoutCompletingWithError() {
+        ExecutionTraceService service = new ExecutionTraceService();
+        BrokenEmitter emitter = new BrokenEmitter();
+        service.subscribe("session-a", emitter);
+
+        service.publish(new ExecutionEvent("session-a", ExecutionEvent.EventType.CUSTOM, "event", Map.of()));
+
+        assertEquals(0, service.getSubscriberCount("session-a"));
+        assertEquals(0, emitter.completeWithErrorCalls);
+    }
+
+    private static class BrokenEmitter extends SseEmitter {
+        private int completeWithErrorCalls;
+
+        @Override
+        public void send(SseEventBuilder builder) throws IOException {
+            throw new IOException("client disconnected");
+        }
+
+        @Override
+        public void completeWithError(Throwable ex) {
+            completeWithErrorCalls++;
+        }
     }
 }

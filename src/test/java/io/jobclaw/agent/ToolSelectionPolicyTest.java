@@ -13,14 +13,14 @@ class ToolSelectionPolicyTest {
     private final ToolSelectionPolicy policy = new ToolSelectionPolicy();
 
     @Test
-    void shouldSelectWorklistToolsForBatchFileTasks() {
+    void shouldNotSelectWorklistToolsFromPromptTextAlone() {
         Set<String> selected = policy.selectToolNames(
                 "批量审查目录 D:\\DOC 下的所有 PDF 文件，每个文件独立作为子任务处理",
                 allTools()
         );
 
-        assertTrue(selected.contains("subtasks"));
-        assertTrue(selected.contains("spawn"));
+        assertFalse(selected.contains("subtasks"));
+        assertFalse(selected.contains("spawn"));
         assertTrue(selected.contains("list_dir"));
         assertTrue(selected.contains("read_pdf"));
         assertTrue(selected.contains("memory"));
@@ -53,7 +53,7 @@ class ToolSelectionPolicyTest {
     }
 
     @Test
-    void shouldKeepSimpleAnswerToolsetSmall() {
+    void shouldKeepSimpleAnswerToolsetSmallButKeepCoreExecutionTools() {
         Set<String> selected = policy.selectToolNames(
                 "解释一下什么是上下文压缩",
                 allTools()
@@ -63,7 +63,9 @@ class ToolSelectionPolicyTest {
         assertTrue(selected.contains("skills"));
         assertFalse(selected.contains("read_pdf"));
         assertFalse(selected.contains("subtasks"));
-        assertFalse(selected.contains("run_command"));
+        assertTrue(selected.contains("run_command"));
+        assertTrue(selected.contains("exec"));
+        assertTrue(selected.contains("write_file"));
     }
 
     @Test
@@ -76,6 +78,21 @@ class ToolSelectionPolicyTest {
         assertTrue(selected.contains("cron"));
         assertTrue(selected.contains("query_token_usage"));
         assertTrue(selected.contains("message"));
+    }
+
+    @Test
+    void shouldMergeRuntimeRequiredToolsIntoSelectedToolset() {
+        Set<String> selected = policy.selectToolNames(
+                "批量总结目录中的 PDF 文件",
+                allTools(),
+                Set.of("write_file", "edit_file", "append_file")
+        );
+
+        assertFalse(selected.contains("subtasks"));
+        assertFalse(selected.contains("spawn"));
+        assertTrue(selected.contains("write_file"));
+        assertTrue(selected.contains("edit_file"));
+        assertTrue(selected.contains("append_file"));
     }
 
     private List<String> allTools() {

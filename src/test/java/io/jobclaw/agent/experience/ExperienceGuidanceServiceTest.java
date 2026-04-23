@@ -17,7 +17,9 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -40,7 +42,8 @@ class ExperienceGuidanceServiceTest {
         ExperienceGuidanceService service = new ExperienceGuidanceService(
                 new WorkflowMemoryService(workflowStore),
                 candidateStore,
-                new ExperienceMemoryService(experienceMemoryStore)
+                new ExperienceMemoryService(experienceMemoryStore),
+                sameTaskJudger()
         );
 
         String guidance = service.buildGuidance(
@@ -63,7 +66,9 @@ class ExperienceGuidanceServiceTest {
         workflowStore.saveAll(List.of(workflow()));
         ExperienceGuidanceService service = new ExperienceGuidanceService(
                 new WorkflowMemoryService(workflowStore),
-                candidateStore
+                candidateStore,
+                null,
+                sameTaskJudger()
         );
 
         String guidance = service.buildGuidance(
@@ -87,7 +92,9 @@ class ExperienceGuidanceServiceTest {
         candidateStore.saveAll(List.of(candidate));
         ExperienceGuidanceService service = new ExperienceGuidanceService(
                 new WorkflowMemoryService(workflowStore),
-                candidateStore
+                candidateStore,
+                null,
+                sameTaskJudger()
         );
 
         String guidance = service.buildGuidance(
@@ -109,7 +116,9 @@ class ExperienceGuidanceServiceTest {
         candidateStore.saveAll(List.of(negativeLesson(LearningCandidateStatus.REJECTED)));
         ExperienceGuidanceService service = new ExperienceGuidanceService(
                 new WorkflowMemoryService(workflowStore),
-                candidateStore
+                candidateStore,
+                null,
+                sameTaskJudger()
         );
 
         String guidance = service.buildGuidance(
@@ -119,6 +128,116 @@ class ExperienceGuidanceServiceTest {
         );
 
         assertFalse(guidance.contains("[Relevant Negative Lesson]"));
+    }
+
+    @Test
+    void shouldNotInjectWorkflowWhenSemanticJudgerRejectsMatch() {
+        FileLearningCandidateStore candidateStore = new FileLearningCandidateStore(
+                tempDir.resolve("learning-semantic").toString());
+        FileWorkflowMemoryStore workflowStore = new FileWorkflowMemoryStore(
+                tempDir.resolve("workflows-semantic").toString());
+        workflowStore.saveAll(List.of(workflow()));
+        ExperienceGuidanceService service = new ExperienceGuidanceService(
+                new WorkflowMemoryService(workflowStore),
+                candidateStore,
+                null,
+                (current, previous, planningMode, deliveryType) -> false
+        );
+
+        String guidance = service.buildGuidance(
+                "总结目录中的 PDF 文献并生成综述 Word",
+                TaskPlanningMode.WORKLIST,
+                doneDefinition()
+        );
+
+        assertFalse(guidance.contains("[Relevant Prior Workflow Reference]"));
+    }
+
+    @Test
+    void shouldSkipExperienceGuidanceWhenSemanticJudgerFails() {
+        FileLearningCandidateStore candidateStore = new FileLearningCandidateStore(
+                tempDir.resolve("learning-semantic-failure").toString());
+        FileWorkflowMemoryStore workflowStore = new FileWorkflowMemoryStore(
+                tempDir.resolve("workflows-semantic-failure").toString());
+        workflowStore.saveAll(List.of(workflow()));
+        ExperienceGuidanceService service = new ExperienceGuidanceService(
+                new WorkflowMemoryService(workflowStore),
+                candidateStore,
+                null,
+                (current, previous, planningMode, deliveryType) -> {
+                    throw new RuntimeException("classifier unavailable");
+                }
+        );
+
+        String guidance = service.buildGuidance(
+                "批量审查目录中的 PDF 文件",
+                TaskPlanningMode.WORKLIST,
+                doneDefinition()
+        );
+
+        assertFalse(guidance.contains("[Relevant Prior Workflow Reference]"));
+    }
+
+    @Test
+    void shouldCallSemanticJudgerOnlyOnceForBestLocalCandidate() {
+        FileLearningCandidateStore candidateStore = new FileLearningCandidateStore(
+                tempDir.resolve("learning-one-check").toString());
+        FileWorkflowMemoryStore workflowStore = new FileWorkflowMemoryStore(
+                tempDir.resolve("workflows-one-check").toString());
+        FileExperienceMemoryStore experienceMemoryStore = new FileExperienceMemoryStore(
+                tempDir.resolve("experience-one-check").toString());
+        candidateStore.saveAll(List.of(negativeLesson(LearningCandidateStatus.PENDING)));
+        workflowStore.saveAll(List.of(workflow()));
+        new ExperienceMemoryService(experienceMemoryStore).applyAcceptedCandidate(acceptedExperienceCandidate());
+        AtomicInteger checks = new AtomicInteger();
+        ExperienceGuidanceService service = new ExperienceGuidanceService(
+                new WorkflowMemoryService(workflowStore),
+                candidateStore,
+                new ExperienceMemoryService(experienceMemoryStore),
+                (current, previous, planningMode, deliveryType) -> {
+                    checks.incrementAndGet();
+                    return false;
+                }
+        );
+
+        String guidance = service.buildGuidance(
+                "批量审查目录中的 PDF 文件",
+                TaskPlanningMode.WORKLIST,
+                doneDefinition()
+        );
+
+        assertFalse(guidance.contains("[Accepted Experience Memory]"));
+        assertEquals(1, checks.get());
+    }
+
+    @Test
+    void shouldNotCallSemanticJudgerForWeakOrConflictingCandidate() {
+        FileLearningCandidateStore candidateStore = new FileLearningCandidateStore(
+                tempDir.resolve("learning-weak-gate").toString());
+        FileWorkflowMemoryStore workflowStore = new FileWorkflowMemoryStore(
+                tempDir.resolve("workflows-weak-gate").toString());
+        FileExperienceMemoryStore experienceMemoryStore = new FileExperienceMemoryStore(
+                tempDir.resolve("experience-weak-gate").toString());
+        new ExperienceMemoryService(experienceMemoryStore).applyAcceptedCandidate(acceptedExperienceCandidate());
+        AtomicInteger checks = new AtomicInteger();
+        ExperienceGuidanceService service = new ExperienceGuidanceService(
+                new WorkflowMemoryService(workflowStore),
+                candidateStore,
+                new ExperienceMemoryService(experienceMemoryStore),
+                (current, previous, planningMode, deliveryType) -> {
+                    checks.incrementAndGet();
+                    return true;
+                }
+        );
+
+        String guidance = service.buildGuidance(
+                "总结目录中的 PDF 文献并生成综述 Word",
+                TaskPlanningMode.WORKLIST,
+                doneDefinition()
+        );
+
+        assertFalse(guidance.contains("[Accepted Experience Memory]"));
+        assertEquals(0, checks.get());
     }
 
     private DoneDefinition doneDefinition() {
@@ -169,6 +288,10 @@ class ExperienceGuidanceServiceTest {
         recipe.setCreatedAt(Instant.now());
         recipe.setLastUsedAt(Instant.now());
         return recipe;
+    }
+
+    private TaskSimilarityJudger sameTaskJudger() {
+        return (current, previous, planningMode, deliveryType) -> true;
     }
 
     private LearningCandidate acceptedExperienceCandidate() {

@@ -15,10 +15,6 @@ public class AgentConfig {
     private double temperature;
     private int maxToolIterations;
     private int maxRepairAttempts;
-    private int maxVerificationRepairAttempts;
-    private int maxFileExpectationRepairAttempts;
-    private int maxTestCommandRepairAttempts;
-    private int maxCommandExitRepairAttempts;
     private int maxSubtaskRepairAttempts;
     private boolean restrictToWorkspace;
     private boolean heartbeatEnabled;
@@ -27,6 +23,8 @@ public class AgentConfig {
     private boolean collaborationEnabled;
     private int maxToolOutputLength;
     private int toolCallTimeoutSeconds;
+    private int llmCallTimeoutSeconds;
+    private int taskSimilarityTimeoutSeconds;
     private long subtaskTimeoutMs;
     private int subtaskResultMaxChars;
     private boolean contextRefEnabled;
@@ -71,10 +69,6 @@ public class AgentConfig {
         this.temperature = 0.7;
         this.maxToolIterations = 20;
         this.maxRepairAttempts = 1;
-        this.maxVerificationRepairAttempts = 1;
-        this.maxFileExpectationRepairAttempts = 2;
-        this.maxTestCommandRepairAttempts = 1;
-        this.maxCommandExitRepairAttempts = 1;
         this.maxSubtaskRepairAttempts = 1;
         this.restrictToWorkspace = true;
         this.heartbeatEnabled = false;
@@ -83,6 +77,8 @@ public class AgentConfig {
         this.collaborationEnabled = true;
         this.maxToolOutputLength = 10000; // 工具结果在前端事件中的展示截断长度，不截断模型流程内容
         this.toolCallTimeoutSeconds = 300;
+        this.llmCallTimeoutSeconds = 300;
+        this.taskSimilarityTimeoutSeconds = 15;
         this.subtaskTimeoutMs = 900_000L;
         this.subtaskResultMaxChars = 4000;
         this.contextRefEnabled = true;
@@ -162,38 +158,6 @@ public class AgentConfig {
         this.maxRepairAttempts = maxRepairAttempts;
     }
 
-    public int getMaxVerificationRepairAttempts() {
-        return maxVerificationRepairAttempts;
-    }
-
-    public void setMaxVerificationRepairAttempts(int maxVerificationRepairAttempts) {
-        this.maxVerificationRepairAttempts = maxVerificationRepairAttempts;
-    }
-
-    public int getMaxFileExpectationRepairAttempts() {
-        return maxFileExpectationRepairAttempts;
-    }
-
-    public void setMaxFileExpectationRepairAttempts(int maxFileExpectationRepairAttempts) {
-        this.maxFileExpectationRepairAttempts = maxFileExpectationRepairAttempts;
-    }
-
-    public int getMaxTestCommandRepairAttempts() {
-        return maxTestCommandRepairAttempts;
-    }
-
-    public void setMaxTestCommandRepairAttempts(int maxTestCommandRepairAttempts) {
-        this.maxTestCommandRepairAttempts = maxTestCommandRepairAttempts;
-    }
-
-    public int getMaxCommandExitRepairAttempts() {
-        return maxCommandExitRepairAttempts;
-    }
-
-    public void setMaxCommandExitRepairAttempts(int maxCommandExitRepairAttempts) {
-        this.maxCommandExitRepairAttempts = maxCommandExitRepairAttempts;
-    }
-
     public int getMaxSubtaskRepairAttempts() {
         return maxSubtaskRepairAttempts;
     }
@@ -256,6 +220,22 @@ public class AgentConfig {
 
     public void setToolCallTimeoutSeconds(int toolCallTimeoutSeconds) {
         this.toolCallTimeoutSeconds = toolCallTimeoutSeconds;
+    }
+
+    public int getLlmCallTimeoutSeconds() {
+        return llmCallTimeoutSeconds;
+    }
+
+    public void setLlmCallTimeoutSeconds(int llmCallTimeoutSeconds) {
+        this.llmCallTimeoutSeconds = llmCallTimeoutSeconds;
+    }
+
+    public int getTaskSimilarityTimeoutSeconds() {
+        return taskSimilarityTimeoutSeconds;
+    }
+
+    public void setTaskSimilarityTimeoutSeconds(int taskSimilarityTimeoutSeconds) {
+        this.taskSimilarityTimeoutSeconds = taskSimilarityTimeoutSeconds;
     }
 
     public long getSubtaskTimeoutMs() {

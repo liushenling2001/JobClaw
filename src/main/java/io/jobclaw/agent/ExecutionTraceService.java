@@ -125,14 +125,20 @@ public class ExecutionTraceService {
                             .data(sseData));
                 } catch (IOException e) {
                     logger.debug("Failed to send event to subscriber {}: {}", subscriberId, e.getMessage());
-                    // 标记移除，在下次清理时实际移除
-                    emitter.completeWithError(e);
+                    dropBrokenEmitter(sessionId, subscriberId);
+                } catch (IllegalStateException e) {
+                    logger.debug("SSE emitter already closed for subscriber {}: {}", subscriberId, e.getMessage());
+                    dropBrokenEmitter(sessionId, subscriberId);
                 }
             });
         }
 
         logger.debug("Published event {} to {} subscribers", event.getType(),
             emitters != null ? emitters.size() : 0);
+    }
+
+    private void dropBrokenEmitter(String sessionId, String subscriberId) {
+        unsubscribe(sessionId, subscriberId);
     }
 
     /**

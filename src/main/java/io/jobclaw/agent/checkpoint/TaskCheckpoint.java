@@ -14,8 +14,21 @@ public record TaskCheckpoint(
         String lastStableSummary,
         String nextAction,
         List<SubtaskSnapshot> subtasks,
+        String planExecutionSnapshot,
         Instant savedAt
 ) {
+    public TaskCheckpoint(String sessionId,
+                          String runId,
+                          String taskInput,
+                          TaskPlanningMode planningMode,
+                          int pendingSubtasks,
+                          String lastStableSummary,
+                          String nextAction,
+                          List<SubtaskSnapshot> subtasks,
+                          Instant savedAt) {
+        this(sessionId, runId, taskInput, planningMode, pendingSubtasks, lastStableSummary, nextAction, subtasks, "", savedAt);
+    }
+
     public record SubtaskSnapshot(
             String id,
             String title,

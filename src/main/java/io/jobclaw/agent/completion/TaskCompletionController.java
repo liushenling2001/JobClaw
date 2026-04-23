@@ -5,12 +5,14 @@ import io.jobclaw.agent.TaskHarnessRun;
 import io.jobclaw.agent.TaskHarnessStep;
 import io.jobclaw.agent.TaskHarnessSubtask;
 import io.jobclaw.agent.TaskHarnessSubtaskStatus;
-import io.jobclaw.agent.TaskHarnessVerificationResult;
+import io.jobclaw.agent.planning.PlanStepStatus;
+import io.jobclaw.agent.planning.TaskPlanningMode;
 import io.jobclaw.config.Config;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -31,6 +33,12 @@ public class TaskCompletionController {
     );
     private static final Pattern JSON_PATH_PATTERN = Pattern.compile("\"path\"\\s*:\\s*\"([^\"]+)\"");
     private static final Pattern PARAM_PATH_PATTERN = Pattern.compile("path\\s*[=:]\\s*['\"]?([^,'\"\\n}]+)");
+    private static final Pattern WINDOWS_ARTIFACT_PATH_PATTERN = Pattern.compile(
+            "(?i)([A-Z]:\\\\[^\\r\\n\"'<>|]+?\\.(?:docx|doc|pdf|xlsx|xls|pptx|txt|md|html))"
+    );
+    private static final Pattern POSIX_ARTIFACT_PATH_PATTERN = Pattern.compile(
+            "(?i)(/[^\\r\\n\"'<>|]+?\\.(?:docx|doc|pdf|xlsx|xls|pptx|txt|md|html))"
+    );
 
     private final Config config;
     private final ActiveExecutionRegistry activeExecutionRegistry;
@@ -58,8 +66,14 @@ public class TaskCompletionController {
         int activeSubagents = run != null ? activeExecutionRegistry.activeSubagents(run.getSessionId()) : 0;
         boolean documentToolUsed = false;
         boolean mutatingFileToolUsed = false;
+        int incompletePlanSteps = 0;
 
         if (run != null) {
+            if (run.getPlanExecutionState() != null && !run.getPlanExecutionState().isEmpty()) {
+                incompletePlanSteps = (int) run.getPlanExecutionState().steps().stream()
+                        .filter(step -> step.status() != PlanStepStatus.COMPLETED)
+                        .count();
+            }
             for (TaskHarnessStep step : run.getSteps()) {
                 phasesCompleted.add(step.phase());
                 Object eventType = step.metadata().get("eventType");
@@ -79,10 +93,9 @@ public class TaskCompletionController {
         }
 
         List<String> artifactPaths = resolveArtifactPaths(run, doneDefinition);
-        boolean artifactsFound = artifactPaths.stream().allMatch(this::artifactExists);
-        TaskHarnessVerificationResult verificationResult = run != null ? run.getLastVerificationResult() : null;
-        String failureType = verificationResult != null ? verificationResult.failureType() : null;
-        String failureReason = verificationResult != null ? verificationResult.reason() : (failure != null ? failure.getMessage() : null);
+        boolean artifactsFound = artifactsFound(artifactPaths, doneDefinition);
+        String failureType = failure != null ? failure.getClass().getSimpleName() : null;
+        String failureReason = failure != null ? failure.getMessage() : null;
 
         return new TaskCompletionState(
                 run != null && run.hasTrackedSubtasks(),
@@ -94,6 +107,7 @@ public class TaskCompletionController {
                 !artifactPaths.isEmpty() && artifactsFound,
                 documentToolUsed,
                 mutatingFileToolUsed,
+                incompletePlanSteps,
                 phasesCompleted,
                 finalResponse != null && !finalResponse.isBlank() && !finalResponse.startsWith("Error:"),
                 isPlanningOnly(finalResponse),
@@ -128,11 +142,11 @@ public class TaskCompletionController {
         }
 
         if (doneDefinition.requiresWorklist() && !state.worklistPlanned()) {
-            return TaskCompletionDecision.repair("Worklist task has not planned subtasks", List.of("worklist_not_planned"));
+            return TaskCompletionDecision.planReview("Active plan requires a worklist but no subtasks are tracked", List.of("worklist_not_planned"));
         }
 
         if (!doneDefinition.requiredArtifacts().isEmpty() && !state.artifactsFound()) {
-            return TaskCompletionDecision.repair("Required artifact is missing", List.of("required_artifact_missing"));
+            return TaskCompletionDecision.planReview("Required artifact is missing from the planned output location", List.of("required_artifact_missing"));
         }
 
         if (doneDefinition.deliveryType() == DeliveryType.DOCUMENT_SUMMARY && !state.documentToolUsed()) {
@@ -151,19 +165,18 @@ public class TaskCompletionController {
             return TaskCompletionDecision.complete("Artifact evidence satisfied the done definition");
         }
 
+        if (doneDefinition.planningMode() != TaskPlanningMode.DIRECT && state.incompletePlanSteps() > 0) {
+            return TaskCompletionDecision.cont("Plan still has unfinished steps", List.of("unfinished_plan_steps"));
+        }
+
         if (state.hasPlanningOnlyResponse()) {
-            return TaskCompletionDecision.repair("Final response still reads like future work", List.of("planning_only_response"));
+            return doneDefinition.planningMode() == TaskPlanningMode.DIRECT
+                    ? TaskCompletionDecision.repair("Final response still reads like future work", List.of("planning_only_response"))
+                    : TaskCompletionDecision.cont("Plan response indicates more work remains", List.of("planning_only_response"));
         }
 
         if (doneDefinition.requiresFinalSummary() && !state.hasUsableFinalResponse()) {
             return TaskCompletionDecision.repair("Missing usable final response", List.of("usable_final_response"));
-        }
-
-        if (shouldHonorVerifierFailure(doneDefinition, state)) {
-            return TaskCompletionDecision.repair(
-                    state.lastFailureReason() != null ? state.lastFailureReason() : "Verifier rejected the response",
-                    List.of(state.lastFailureType())
-            );
         }
 
         return TaskCompletionDecision.complete("Done definition satisfied");
@@ -193,22 +206,73 @@ public class TaskCompletionController {
         LinkedHashSet<String> paths = new LinkedHashSet<>();
         for (TaskHarnessStep step : run.getSteps()) {
             Object eventType = step.metadata().get("eventType");
-            if (!"TOOL_START".equals(eventType)) {
-                continue;
-            }
             String toolName = stringValue(step.metadata().get("toolName")).toLowerCase(Locale.ROOT);
-            if (!MUTATING_FILE_TOOLS.contains(toolName)) {
-                continue;
+            if ("TOOL_START".equals(eventType) && MUTATING_FILE_TOOLS.contains(toolName)) {
+                paths.addAll(extractPaths(stringValue(step.metadata().get("request"))));
             }
-            paths.addAll(extractPaths(stringValue(step.metadata().get("request"))));
+            if ("TOOL_OUTPUT".equals(eventType) || "TOOL_END".equals(eventType)) {
+                paths.addAll(extractArtifactPathsFromText(step.detail()));
+                paths.addAll(extractArtifactPathsFromText(stringValue(step.metadata().get("output"))));
+                paths.addAll(extractArtifactPathsFromText(stringValue(step.metadata().get("result"))));
+            }
         }
         return List.copyOf(paths);
     }
 
     private boolean artifactExists(String path) {
-        Path input = Paths.get(path);
-        Path resolved = input.isAbsolute() ? input.normalize() : Paths.get(config.getWorkspacePath()).resolve(input).normalize();
-        return Files.exists(resolved);
+        try {
+            Path input = Paths.get(path);
+            Path resolved = input.isAbsolute() ? input.normalize() : Paths.get(config.getWorkspacePath()).resolve(input).normalize();
+            return Files.exists(resolved);
+        } catch (InvalidPathException | SecurityException e) {
+            return false;
+        }
+    }
+
+    private boolean artifactsFound(List<String> artifactPaths, DoneDefinition doneDefinition) {
+        if (artifactPaths.isEmpty()) {
+            return false;
+        }
+        List<Path> requiredDirectories = requiredArtifactDirectories(doneDefinition);
+        if (requiredDirectories.isEmpty()) {
+            return artifactPaths.stream().allMatch(this::artifactExists);
+        }
+        return artifactPaths.stream()
+                .map(this::safeResolvePath)
+                .anyMatch(path -> path != null
+                        && Files.exists(path)
+                        && requiredDirectories.stream().anyMatch(directory -> isUnder(path, directory)));
+    }
+
+    private List<Path> requiredArtifactDirectories(DoneDefinition doneDefinition) {
+        if (doneDefinition == null || doneDefinition.requiredArtifactDirectories().isEmpty()) {
+            return List.of();
+        }
+        List<Path> directories = new ArrayList<>();
+        for (String directory : doneDefinition.requiredArtifactDirectories()) {
+            Path resolved = safeResolvePath(directory);
+            if (resolved != null) {
+                directories.add(resolved);
+            }
+        }
+        return List.copyOf(directories);
+    }
+
+    private Path safeResolvePath(String path) {
+        try {
+            Path input = Paths.get(path);
+            return input.isAbsolute()
+                    ? input.normalize()
+                    : Paths.get(config.getWorkspacePath()).resolve(input).normalize();
+        } catch (InvalidPathException | SecurityException e) {
+            return null;
+        }
+    }
+
+    private boolean isUnder(Path path, Path directory) {
+        Path normalizedPath = path.toAbsolutePath().normalize();
+        Path normalizedDirectory = directory.toAbsolutePath().normalize();
+        return normalizedPath.startsWith(normalizedDirectory);
     }
 
     private List<String> extractPaths(String request) {
@@ -221,6 +285,16 @@ public class TaskCompletionController {
         return List.copyOf(paths);
     }
 
+    private List<String> extractArtifactPathsFromText(String text) {
+        if (text == null || text.isBlank()) {
+            return List.of();
+        }
+        LinkedHashSet<String> paths = new LinkedHashSet<>();
+        collectArtifactMatches(paths, WINDOWS_ARTIFACT_PATH_PATTERN.matcher(text));
+        collectArtifactMatches(paths, POSIX_ARTIFACT_PATH_PATTERN.matcher(text));
+        return List.copyOf(paths);
+    }
+
     private void collectMatches(Set<String> paths, Matcher matcher) {
         while (matcher.find()) {
             String path = matcher.group(1);
@@ -228,6 +302,65 @@ public class TaskCompletionController {
                 paths.add(path.trim());
             }
         }
+    }
+
+    private void collectArtifactMatches(Set<String> paths, Matcher matcher) {
+        while (matcher.find()) {
+            String path = matcher.group(1);
+            if (path != null && !path.isBlank()) {
+                String cleaned = cleanArtifactPath(path);
+                if (isUsableArtifactPath(cleaned)) {
+                    paths.add(cleaned);
+                }
+            }
+        }
+    }
+
+    private String cleanArtifactPath(String path) {
+        String cleaned = path.trim();
+        int escapedNewline = cleaned.indexOf("\\n");
+        if (escapedNewline >= 0) {
+            cleaned = cleaned.substring(0, escapedNewline).trim();
+        }
+        int newline = firstIndexOf(cleaned, '\r', '\n');
+        if (newline >= 0) {
+            cleaned = cleaned.substring(0, newline).trim();
+        }
+        while (!cleaned.isEmpty() && ",.;:，。；：)）]】".indexOf(cleaned.charAt(cleaned.length() - 1)) >= 0) {
+            cleaned = cleaned.substring(0, cleaned.length() - 1).trim();
+        }
+        return cleaned;
+    }
+
+    private boolean isUsableArtifactPath(String path) {
+        if (path == null || path.isBlank()) {
+            return false;
+        }
+        String normalized = path.trim();
+        String lower = normalized.toLowerCase(Locale.ROOT);
+        if (lower.contains(" 的目录") || lower.contains(" directory of ")) {
+            return false;
+        }
+        if (normalized.contains("\\n") || normalized.contains("\n") || normalized.contains("\r")) {
+            return false;
+        }
+        try {
+            Paths.get(normalized);
+            return true;
+        } catch (InvalidPathException e) {
+            return false;
+        }
+    }
+
+    private int firstIndexOf(String value, char... chars) {
+        int found = -1;
+        for (char c : chars) {
+            int index = value.indexOf(c);
+            if (index >= 0 && (found < 0 || index < found)) {
+                found = index;
+            }
+        }
+        return found;
     }
 
     private String stringValue(Object value) {
@@ -279,16 +412,4 @@ public class TaskCompletionController {
         };
     }
 
-    private boolean shouldHonorVerifierFailure(DoneDefinition doneDefinition, TaskCompletionState state) {
-        if (state.lastFailureType() == null || state.lastFailureType().isBlank()) {
-            return false;
-        }
-
-        return switch (doneDefinition.deliveryType()) {
-            case FILE_ARTIFACT, PATCH -> false;
-            case BATCH_RESULTS -> state.pendingSubtasks() > 0 || !state.hasUsableFinalResponse();
-            case DOCUMENT_SUMMARY -> !state.documentToolUsed() || !state.hasUsableFinalResponse();
-            case ANSWER -> !state.hasUsableFinalResponse();
-        };
-    }
 }

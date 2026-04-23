@@ -172,6 +172,33 @@ class ToolRuntimeTest {
     }
 
     @Test
+    void shouldTreatErrorTextToolResponseAsToolErrorEventWithoutThrowing() {
+        Config config = Config.defaultConfig();
+        SessionManager sessionManager = new SessionManager();
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        DefaultToolExecutionStateTracker tracker = new DefaultToolExecutionStateTracker();
+        ToolRuntime toolRuntime = new ToolRuntime(config, sessionManager, executor, tracker);
+        List<ExecutionEvent> events = new ArrayList<>();
+
+        ToolExecutionResult result = toolRuntime.execute(new ToolExecutionRequest(
+                "session-error-text",
+                "run_command",
+                "{}",
+                new StaticToolCallback("run_command", "Error: Command exited with code 1"),
+                events::add
+        ));
+
+        assertFalse(result.success());
+        assertFalse(tracker.isExecuting("session-error-text"));
+        assertEquals(List.of(
+                ExecutionEvent.EventType.TOOL_START,
+                ExecutionEvent.EventType.TOOL_ERROR
+        ), events.stream().map(ExecutionEvent::getType).toList());
+
+        executor.shutdownNow();
+    }
+
+    @Test
     void shouldLetSpawnToolOwnSubtaskTimeoutWithGrace() {
         Config config = Config.defaultConfig();
         config.getAgent().setSubtaskTimeoutMs(50);

@@ -1,6 +1,8 @@
 package io.jobclaw.agent;
 
 import io.jobclaw.agent.completion.DoneDefinition;
+import io.jobclaw.agent.planning.PlanExecutionState;
+import io.jobclaw.agent.planning.PlanStep;
 import io.jobclaw.agent.planning.TaskPlanningMode;
 
 import java.time.Instant;
@@ -21,12 +23,13 @@ public class TaskHarnessRun {
     private Instant completedAt;
     private boolean success;
     private int repairAttempts;
+    private int planReviewAttempts;
     private TaskHarnessFailure lastFailure;
-    private TaskHarnessVerificationResult lastVerificationResult;
     private final Map<String, TaskHarnessSubtask> subtasks;
     private TaskPlanningMode planningMode;
     private String planningReason;
     private DoneDefinition doneDefinition;
+    private PlanExecutionState planExecutionState;
 
     public TaskHarnessRun(String sessionId, String runId, String taskInput) {
         this.sessionId = sessionId;
@@ -39,6 +42,7 @@ public class TaskHarnessRun {
         this.planningMode = TaskPlanningMode.DIRECT;
         this.planningReason = "default";
         this.doneDefinition = null;
+        this.planExecutionState = new PlanExecutionState(List.of());
     }
 
     public synchronized TaskHarnessStep addStep(TaskHarnessPhase phase,
@@ -58,13 +62,18 @@ public class TaskHarnessRun {
         this.currentPhase = success ? TaskHarnessPhase.FINISH : TaskHarnessPhase.FAILED;
     }
 
+    public synchronized int incrementPlanReviewAttempts() {
+        planReviewAttempts++;
+        return planReviewAttempts;
+    }
+
+    public synchronized int getPlanReviewAttempts() {
+        return planReviewAttempts;
+    }
+
     public synchronized int incrementRepairAttempts() {
         repairAttempts++;
         return repairAttempts;
-    }
-
-    public synchronized void recordVerificationResult(TaskHarnessVerificationResult verificationResult) {
-        this.lastVerificationResult = verificationResult;
     }
 
     public synchronized void recordFailure(TaskHarnessFailure failure) {
@@ -113,10 +122,6 @@ public class TaskHarnessRun {
 
     public synchronized TaskHarnessFailure getLastFailure() {
         return lastFailure;
-    }
-
-    public synchronized TaskHarnessVerificationResult getLastVerificationResult() {
-        return lastVerificationResult;
     }
 
     public synchronized TaskHarnessSubtask upsertPlannedSubtask(String id,
@@ -199,6 +204,18 @@ public class TaskHarnessRun {
 
     public synchronized void setDoneDefinition(DoneDefinition doneDefinition) {
         this.doneDefinition = doneDefinition;
+    }
+
+    public synchronized PlanExecutionState getPlanExecutionState() {
+        return planExecutionState;
+    }
+
+    public synchronized void initializePlanExecution(List<PlanStep> steps) {
+        this.planExecutionState = new PlanExecutionState(steps);
+    }
+
+    public synchronized String planExecutionSnapshot() {
+        return planExecutionState != null ? planExecutionState.snapshot() : "";
     }
 
     private Map<String, Object> mergeMetadata(Map<String, Object> base, Map<String, Object> updates) {

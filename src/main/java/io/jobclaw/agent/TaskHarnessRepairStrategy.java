@@ -13,24 +13,13 @@ public class TaskHarnessRepairStrategy {
     }
 
     public int maxAttempts(TaskHarnessRun run) {
-        String failureType = failureType(run);
-        if (failureType == null || failureType.isBlank() || "UNKNOWN".equals(failureType)) {
-            return Math.max(0, config.getAgent().getMaxRepairAttempts());
-        }
-        int configured = switch (failureType) {
-            case "FILE_EXPECTATION" -> config.getAgent().getMaxFileExpectationRepairAttempts();
-            case "TEST_COMMAND" -> config.getAgent().getMaxTestCommandRepairAttempts();
-            case "COMMAND_EXIT" -> config.getAgent().getMaxCommandExitRepairAttempts();
-            default -> config.getAgent().getMaxVerificationRepairAttempts();
-        };
-        return Math.max(0, configured);
+        return Math.max(0, config.getAgent().getMaxRepairAttempts());
     }
 
     public String failureType(TaskHarnessRun run) {
-        TaskHarnessVerificationResult verificationResult = run.getLastVerificationResult();
-        if (verificationResult != null && verificationResult.failureType() != null
-                && !verificationResult.failureType().isBlank()) {
-            return verificationResult.failureType();
+        TaskHarnessFailure failure = run != null ? run.getLastFailure() : null;
+        if (failure != null && failure.kind() != null) {
+            return failure.kind().name();
         }
         return "UNKNOWN";
     }

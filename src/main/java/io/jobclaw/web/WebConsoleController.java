@@ -8,7 +8,6 @@ import io.jobclaw.agent.TaskHarnessFailure;
 import io.jobclaw.agent.TaskHarnessRun;
 import io.jobclaw.agent.TaskHarnessService;
 import io.jobclaw.agent.TaskHarnessStep;
-import io.jobclaw.agent.TaskHarnessVerificationResult;
 import io.jobclaw.agent.experience.ExperienceMemoryService;
 import io.jobclaw.agent.learning.LearningCandidate;
 import io.jobclaw.agent.learning.LearningCandidateService;
@@ -262,7 +261,7 @@ public class WebConsoleController {
      */
     @PostMapping(value = "/execute/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public ResponseEntity<SseEmitter> executeStream(@RequestBody ChatRequest request) {
-        SseEmitter emitter = new SseEmitter(300000L); // 5 閸掑棝鎸撶搾鍛
+        SseEmitter emitter = new SseEmitter(0L);
 
         String sessionKey = request.getSessionKey() != null ? request.getSessionKey() : "web:default";
 
@@ -275,9 +274,11 @@ public class WebConsoleController {
         executor.submit(() -> {
             try {
                 // 閸欐垿鈧浇绻涢幒銉р€樼拋銈勭皑娴?
-                emitter.send(SseEmitter.event()
-                    .name("connected")
-                    .data(Map.of("sessionId", sessionKey, "subscriberId", subscriberId)));
+                if (!safeSend(emitter, sessionKey, subscriberId, SseEmitter.event()
+                        .name("connected")
+                        .data(Map.of("sessionId", sessionKey, "subscriberId", subscriberId)), "connected event")) {
+                    return;
+                }
                 logger.debug("Sent connected event to client");
 
                 // 閹笛嗩攽娴犺濮熼敍鍫濈敨閸ョ偠鐨熼敍? 娴ｈ法鏁?orchestrator 閺€顖涘瘮婢?Agent 濡€崇础閻ㄥ嫬娲栫拫?
@@ -290,9 +291,10 @@ public class WebConsoleController {
                             Object label = event.getMetadata().get("label");
                             Object runId = event.getMetadata().get("runId");
                             if ("task_harness".equals(source) && "run_created".equals(label) && runId != null) {
-                                emitter.send(SseEmitter.event()
+                                safeSend(emitter, sessionKey, subscriberId, SseEmitter.event()
                                         .name("task-harness-run")
-                                        .data(Map.of("sessionId", sessionKey, "runId", runId.toString())));
+                                        .data(Map.of("sessionId", sessionKey, "runId", runId.toString())),
+                                        "task harness run event");
                             }
                             logger.debug("Published execution event: {}", event.getType());
                         } catch (Exception e) {
@@ -309,14 +311,11 @@ public class WebConsoleController {
 
             } catch (Exception e) {
                 logger.error("Error during execution", e);
-                try {
-                    emitter.send(SseEmitter.event()
+                safeSend(emitter, sessionKey, subscriberId, SseEmitter.event()
                         .name("error")
-                        .data(Map.of("error", e.getMessage())));
-                } catch (Exception ex) {
-                    // ignore
-                }
-                emitter.completeWithError(e);
+                        .data(Map.of("error", e.getMessage())),
+                        "execution error event");
+                emitter.complete();
             }
         });
 
@@ -331,7 +330,7 @@ public class WebConsoleController {
     @GetMapping(value = "/execute/stream/{sessionKey}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public ResponseEntity<SseEmitter> subscribeExecution(@PathVariable String sessionKey,
                                                          @RequestParam(value = "history", required = false, defaultValue = "true") boolean history) {
-        SseEmitter emitter = new SseEmitter(300000L);
+        SseEmitter emitter = new SseEmitter(0L);
 
         String subscriberId = executionTraceService.subscribe(sessionKey, emitter);
 
@@ -340,19 +339,18 @@ public class WebConsoleController {
         // 閸欐垿鈧礁宸婚崣韫皑娴犺绱欐俊鍌涚亯閺堝娈戠拠婵撶礆
         executor.submit(() -> {
             try {
-                emitter.send(SseEmitter.event()
-                    .name("subscribed")
-                    .data(Map.of("sessionId", sessionKey, "subscriberId", subscriberId)));
+                if (!safeSend(emitter, sessionKey, subscriberId, SseEmitter.event()
+                        .name("subscribed")
+                        .data(Map.of("sessionId", sessionKey, "subscriberId", subscriberId)), "subscription confirmation")) {
+                    return;
+                }
 
                 if (history) {
                     executionTraceService.getHistory(sessionKey).forEach(event -> {
-                        try {
-                            emitter.send(SseEmitter.event()
+                        safeSend(emitter, sessionKey, subscriberId, SseEmitter.event()
                                 .name("history-event")
-                                .data(event.toSseData()));
-                        } catch (Exception e) {
-                            logger.debug("Failed to send history event: {}", e.getMessage());
-                        }
+                                .data(event.toSseData()),
+                                "history event");
                     });
                 }
             } catch (Exception e) {
@@ -361,6 +359,27 @@ public class WebConsoleController {
         });
 
         return ResponseEntity.ok(emitter);
+    }
+
+    private boolean safeSend(SseEmitter emitter,
+                             String sessionKey,
+                             String subscriberId,
+                             SseEmitter.SseEventBuilder event,
+                             String description) {
+        try {
+            emitter.send(event);
+            return true;
+        } catch (IOException | IllegalStateException e) {
+            logger.debug("SSE client disconnected while sending {} to subscriber {}: {}",
+                    description, subscriberId, e.getMessage());
+            executionTraceService.unsubscribe(sessionKey, subscriberId);
+            try {
+                emitter.complete();
+            } catch (IllegalStateException ignored) {
+                // Already closed by the servlet container.
+            }
+            return false;
+        }
     }
 
     @GetMapping("/sessions")
@@ -519,7 +538,6 @@ public class WebConsoleController {
         result.put("success", run.isSuccess());
         result.put("repairAttempts", run.getRepairAttempts());
         result.put("lastFailure", toTaskHarnessFailureResult(run.getLastFailure()));
-        result.put("lastVerificationResult", toTaskHarnessVerificationResult(run.getLastVerificationResult()));
         result.put("steps", run.getSteps().stream().map(this::toTaskHarnessStepResult).toList());
         return result;
     }
@@ -532,17 +550,6 @@ public class WebConsoleController {
         result.put("kind", failure.kind().name());
         result.put("reason", failure.reason());
         result.put("evidence", failure.evidence());
-        return result;
-    }
-
-    private Map<String, Object> toTaskHarnessVerificationResult(TaskHarnessVerificationResult verificationResult) {
-        if (verificationResult == null) {
-            return null;
-        }
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("success", verificationResult.success());
-        result.put("reason", verificationResult.reason());
-        result.put("failureType", verificationResult.failureType());
         return result;
     }
 

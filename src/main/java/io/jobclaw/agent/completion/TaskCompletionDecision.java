@@ -10,6 +10,7 @@ public record TaskCompletionDecision(
     public enum Status {
         COMPLETE,
         CONTINUE,
+        PLAN_REVIEW,
         REPAIR,
         BLOCKED
     }
@@ -24,6 +25,10 @@ public record TaskCompletionDecision(
 
     public static TaskCompletionDecision repair(String reason, List<String> missingRequirements) {
         return new TaskCompletionDecision(Status.REPAIR, reason, missingRequirements == null ? List.of() : List.copyOf(missingRequirements));
+    }
+
+    public static TaskCompletionDecision planReview(String reason, List<String> missingRequirements) {
+        return new TaskCompletionDecision(Status.PLAN_REVIEW, reason, missingRequirements == null ? List.of() : List.copyOf(missingRequirements));
     }
 
     public static TaskCompletionDecision blocked(String reason, List<String> missingRequirements) {

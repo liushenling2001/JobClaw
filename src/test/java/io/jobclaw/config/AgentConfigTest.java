@@ -11,10 +11,8 @@ class AgentConfigTest {
         AgentConfig config = new AgentConfig();
 
         assertEquals(1, config.getMaxRepairAttempts());
-        assertEquals(1, config.getMaxVerificationRepairAttempts());
-        assertEquals(2, config.getMaxFileExpectationRepairAttempts());
-        assertEquals(1, config.getMaxTestCommandRepairAttempts());
-        assertEquals(1, config.getMaxCommandExitRepairAttempts());
+        assertEquals(1, config.getMaxSubtaskRepairAttempts());
+        assertEquals(300, config.getLlmCallTimeoutSeconds());
     }
 
     @Test
@@ -22,9 +20,7 @@ class AgentConfigTest {
         Config config = Config.defaultConfig();
 
         assertEquals(1, config.getAgent().getMaxRepairAttempts());
-        assertEquals(1, config.getAgent().getMaxVerificationRepairAttempts());
-        assertEquals(2, config.getAgent().getMaxFileExpectationRepairAttempts());
-        assertEquals(1, config.getAgent().getMaxTestCommandRepairAttempts());
-        assertEquals(1, config.getAgent().getMaxCommandExitRepairAttempts());
+        assertEquals(1, config.getAgent().getMaxSubtaskRepairAttempts());
+        assertEquals(300, config.getAgent().getLlmCallTimeoutSeconds());
     }
 }

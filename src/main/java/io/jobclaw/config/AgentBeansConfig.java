@@ -1,6 +1,8 @@
 package io.jobclaw.config;
 
 import io.jobclaw.agent.AgentLoop;
+import io.jobclaw.agent.artifact.FileRunArtifactStore;
+import io.jobclaw.agent.artifact.RunArtifactStore;
 import io.jobclaw.agent.checkpoint.FileTaskCheckpointStore;
 import io.jobclaw.agent.checkpoint.TaskCheckpointStore;
 import io.jobclaw.agent.catalog.AgentCatalogService;
@@ -145,6 +147,14 @@ public class AgentBeansConfig {
     public TaskCheckpointStore taskCheckpointStore(Config config) {
         return new FileTaskCheckpointStore(
                 Paths.get(config.getWorkspacePath(), ".jobclaw", "checkpoints").toString()
+        );
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public RunArtifactStore runArtifactStore(Config config) {
+        return new FileRunArtifactStore(
+                Paths.get(config.getWorkspacePath(), ".jobclaw", "runs").toString()
         );
     }
 

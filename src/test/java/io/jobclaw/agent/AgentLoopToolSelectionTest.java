@@ -30,7 +30,7 @@ class AgentLoopToolSelectionTest {
         assertTrue(names.contains("skills"));
         assertFalse(names.contains("read_pdf"));
         assertFalse(names.contains("subtasks"));
-        assertFalse(names.contains("run_command"));
+        assertTrue(names.contains("run_command"));
     }
 
     @Test

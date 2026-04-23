@@ -27,6 +27,8 @@ public class ExecTool {
 
     private static final int MAX_OUTPUT_LENGTH = 10000;         // 输出最大长度
     private static final long THREAD_JOIN_TIMEOUT_MS = 1000;    // 线程等待超时（毫秒）
+    private static final int MAX_INLINE_SCRIPT_COMMAND_LENGTH = 2000;
+    private static final int MAX_INLINE_SCRIPT_LINES = 8;
     private final Config config;
 
     public ExecTool(Config config) {
@@ -41,6 +43,11 @@ public class ExecTool {
     ) {
         if (command == null || command.isEmpty()) {
             return "Error: command is required";
+        }
+        if (looksLikeUnsafeInlineScript(command)) {
+            return "Error: Inline script command is too large or complex for reliable shell execution. "
+                    + "Write the script to a temporary .py/.ps1/.sh file with write_file first, then run that file with exec. "
+                    + "This allows stderr, exit code, and repair to work reliably.";
         }
 
         // Resolve working directory
@@ -63,6 +70,18 @@ public class ExecTool {
             return 300;
         }
         return config.getAgent().getToolCallTimeoutSeconds();
+    }
+
+    private boolean looksLikeUnsafeInlineScript(String command) {
+        String normalized = command == null ? "" : command.toLowerCase();
+        long lines = normalized.lines().count();
+        boolean multilineScript = lines > MAX_INLINE_SCRIPT_LINES
+                && (normalized.contains("python")
+                || normalized.contains("powershell")
+                || normalized.contains("bash")
+                || normalized.contains("node "));
+        boolean heredoc = normalized.contains("<<") || normalized.contains("\neof") || normalized.contains("@'");
+        return command.length() > MAX_INLINE_SCRIPT_COMMAND_LENGTH || multilineScript || heredoc;
     }
 
     /**
@@ -166,9 +185,9 @@ public class ExecTool {
             result += "\nSTDERR:\n" + output.getStderr();
         }
 
-        // Add exit code
         if (exitCode != 0) {
-            result += "\nExit code: " + exitCode;
+            result = "Error: Command exited with code " + exitCode
+                    + (result.isBlank() ? "" : "\n" + result);
         }
 
         // Handle empty output

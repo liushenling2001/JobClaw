@@ -2,6 +2,7 @@ package io.jobclaw.agent.checkpoint;
 
 import io.jobclaw.agent.TaskHarnessPhase;
 import io.jobclaw.agent.TaskHarnessRun;
+import io.jobclaw.agent.planning.PlanStep;
 import io.jobclaw.agent.planning.TaskPlanningMode;
 import org.junit.jupiter.api.Test;
 
@@ -50,5 +51,28 @@ class TaskCheckpointServiceTest {
         service.save(run);
 
         assertFalse(service.latestResumable("session-a", "另外一个任务", TaskPlanningMode.WORKLIST).isPresent());
+    }
+
+    @Test
+    void shouldResumeLatestCheckpointForContinueRequest() throws Exception {
+        Path root = Files.createTempDirectory("jobclaw-checkpoints");
+        TaskCheckpointStore store = new FileTaskCheckpointStore(root.toString());
+        TaskCheckpointService service = new TaskCheckpointService(store);
+
+        TaskHarnessRun run = new TaskHarnessRun("session-a", "run-3", "生成目录 D:\\DOC\\招生 的汇总报告");
+        run.setPlanningMode(TaskPlanningMode.PHASED, "multi-step");
+        run.initializePlanExecution(java.util.List.of(new PlanStep(
+                "inspect-inputs",
+                "检查输入目录",
+                "确认目录可读取"
+        )));
+        service.save(run);
+
+        assertTrue(service.latestForResumeRequest("session-a", "继续").isPresent());
+        assertTrue(service.latestResumable("session-a", "continue", TaskPlanningMode.DIRECT).isPresent());
+        assertFalse(service.latestForResumeRequest("session-a", "另外一个任务").isPresent());
+
+        String guidance = service.buildResumeGuidance(store.latest("session-a").orElseThrow());
+        assertTrue(guidance.contains("Plan Execution State"));
     }
 }

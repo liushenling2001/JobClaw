@@ -5,6 +5,6 @@ public enum TaskHarnessFailureKind {
     EXECUTION_ERROR,
     EMPTY_RESPONSE,
     ERROR_RESPONSE,
-    VERIFICATION_FAILURE,
+    OUTCOME_FAILURE,
     UNKNOWN
 }

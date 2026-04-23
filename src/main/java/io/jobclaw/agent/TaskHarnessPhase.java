@@ -4,7 +4,7 @@ public enum TaskHarnessPhase {
     PLAN,
     ACT,
     OBSERVE,
-    VERIFY,
+    REVIEW,
     REPAIR,
     FINISH,
     FAILED

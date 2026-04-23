@@ -1,16 +1,21 @@
 package io.jobclaw.agent;
 
 import io.jobclaw.agent.checkpoint.TaskCheckpointService;
+import io.jobclaw.agent.checkpoint.TaskCheckpoint;
 import io.jobclaw.agent.completion.DeliveryType;
 import io.jobclaw.agent.completion.DoneDefinition;
 import io.jobclaw.agent.completion.TaskCompletionController;
 import io.jobclaw.agent.completion.TaskCompletionDecision;
 import io.jobclaw.agent.experience.ExperienceGuidanceService;
 import io.jobclaw.agent.learning.LearningCandidateService;
+import io.jobclaw.agent.planning.AgentPlanService;
 import io.jobclaw.agent.planning.TaskPlanningDecision;
 import io.jobclaw.agent.planning.TaskPlanningMode;
 import io.jobclaw.agent.planning.TaskPlan;
 import io.jobclaw.agent.planning.TaskPlanningPolicy;
+import io.jobclaw.agent.planning.PlanReviewAction;
+import io.jobclaw.agent.planning.PlanReviewController;
+import io.jobclaw.agent.planning.PlanReviewDecision;
 import io.jobclaw.agent.runtime.AgentRunIds;
 import io.jobclaw.agent.workflow.WorkflowMemoryService;
 import org.slf4j.Logger;
@@ -45,54 +50,59 @@ public class AgentOrchestrator {
 
     private final AgentRegistry agentRegistry;
     private final TaskHarnessService taskHarnessService;
-    private final TaskHarnessVerifier taskHarnessVerifier;
     private final TaskHarnessRepairPromptBuilder taskHarnessRepairPromptBuilder;
     private final TaskHarnessRepairStrategy taskHarnessRepairStrategy;
     private final TaskPlanningPolicy taskPlanningPolicy;
+    private final AgentPlanService agentPlanService;
+    private final PlanReviewController planReviewController;
     private final TaskCheckpointService taskCheckpointService;
     private final TaskCompletionController taskCompletionController;
     private final WorkflowMemoryService workflowMemoryService;
     private final LearningCandidateService learningCandidateService;
     private final ExperienceGuidanceService experienceGuidanceService;
+    private final ToolsetRuntimePolicy toolsetRuntimePolicy;
     private final io.jobclaw.config.Config config;
 
     @Autowired
     public AgentOrchestrator(io.jobclaw.config.Config config,
-                             AgentRegistry agentRegistry,
-                             TaskHarnessService taskHarnessService,
-                             TaskHarnessVerifier taskHarnessVerifier,
-                             TaskHarnessRepairPromptBuilder taskHarnessRepairPromptBuilder,
-                             TaskHarnessRepairStrategy taskHarnessRepairStrategy,
+                              AgentRegistry agentRegistry,
+                              TaskHarnessService taskHarnessService,
+                              TaskHarnessRepairPromptBuilder taskHarnessRepairPromptBuilder,
+                              TaskHarnessRepairStrategy taskHarnessRepairStrategy,
                              TaskPlanningPolicy taskPlanningPolicy,
+                             AgentPlanService agentPlanService,
+                             PlanReviewController planReviewController,
                              TaskCheckpointService taskCheckpointService,
                              TaskCompletionController taskCompletionController,
                              WorkflowMemoryService workflowMemoryService,
                              LearningCandidateService learningCandidateService,
-                             ExperienceGuidanceService experienceGuidanceService) {
+                             ExperienceGuidanceService experienceGuidanceService,
+                             ToolsetRuntimePolicy toolsetRuntimePolicy) {
         this.config = config;
         this.agentRegistry = agentRegistry;
         this.taskHarnessService = taskHarnessService;
-        this.taskHarnessVerifier = taskHarnessVerifier;
         this.taskHarnessRepairPromptBuilder = taskHarnessRepairPromptBuilder;
         this.taskHarnessRepairStrategy = taskHarnessRepairStrategy;
         this.taskPlanningPolicy = taskPlanningPolicy;
+        this.agentPlanService = agentPlanService;
+        this.planReviewController = planReviewController;
         this.taskCheckpointService = taskCheckpointService;
         this.taskCompletionController = taskCompletionController;
         this.workflowMemoryService = workflowMemoryService;
         this.learningCandidateService = learningCandidateService;
         this.experienceGuidanceService = experienceGuidanceService;
+        this.toolsetRuntimePolicy = toolsetRuntimePolicy != null ? toolsetRuntimePolicy : new ToolsetRuntimePolicy();
         logger.info("AgentOrchestrator initialized");
     }
 
     public AgentOrchestrator(io.jobclaw.config.Config config,
                              AgentRegistry agentRegistry,
                              TaskHarnessService taskHarnessService,
-                             TaskHarnessVerifier taskHarnessVerifier,
                              TaskHarnessRepairPromptBuilder taskHarnessRepairPromptBuilder,
                              TaskHarnessRepairStrategy taskHarnessRepairStrategy,
                              TaskPlanningPolicy taskPlanningPolicy) {
-        this(config, agentRegistry, taskHarnessService, taskHarnessVerifier, taskHarnessRepairPromptBuilder,
-                taskHarnessRepairStrategy, taskPlanningPolicy,
+        this(config, agentRegistry, taskHarnessService, taskHarnessRepairPromptBuilder,
+                taskHarnessRepairStrategy, taskPlanningPolicy, new AgentPlanService(taskPlanningPolicy), new PlanReviewController(),
                 new TaskCheckpointService(new io.jobclaw.agent.checkpoint.TaskCheckpointStore() {
                     @Override
                     public void save(io.jobclaw.agent.checkpoint.TaskCheckpoint checkpoint) {
@@ -146,7 +156,8 @@ public class AgentOrchestrator {
                             }
                         },
                         null
-                ));
+                ),
+                new ToolsetRuntimePolicy());
     }
 
     public String processWithRole(String sessionKey, String userContent, AgentRole role) {
@@ -272,22 +283,29 @@ public class AgentOrchestrator {
                                       Consumer<ExecutionEvent> eventCallback,
                                       HarnessAction action) {
         String runId = AgentRunIds.newTopLevelRunId();
+        TaskCheckpoint resumeCheckpoint = taskCheckpointService.latestForResumeRequest(sessionKey, userContent)
+                .orElse(null);
+        String taskInput = resumeCheckpoint != null && resumeCheckpoint.taskInput() != null && !resumeCheckpoint.taskInput().isBlank()
+                ? resumeCheckpoint.taskInput()
+                : userContent;
         TaskHarnessRun harnessRun = taskHarnessService.startRun(
                 sessionKey,
                 runId,
-                userContent,
+                taskInput,
                 eventCallback
         );
         AgentExecutionContext.ExecutionScope previousScope = AgentExecutionContext.getCurrentScope();
-        TaskPlan taskPlan = adaptPlanForRunScope(taskPlanningPolicy.decide(userContent), previousScope);
+        TaskPlan taskPlan = adaptPlanForRunScope(createInitialPlan(sessionKey, taskInput), previousScope);
         TaskPlanningDecision planningDecision = new TaskPlanningDecision(taskPlan.planningMode(), taskPlan.reason());
         harnessRun.setPlanningMode(taskPlan.planningMode(), taskPlan.reason());
         harnessRun.setDoneDefinition(taskPlan.doneDefinition());
-        String experienceGuidance = experienceGuidanceService.buildGuidance(
-                userContent,
+        String experienceGuidance = shouldApplyExperienceGuidance(previousScope)
+                ? experienceGuidanceService.buildGuidance(
+                taskInput,
                 taskPlan.planningMode(),
                 taskPlan.doneDefinition()
-        );
+        )
+                : "";
         Consumer<ExecutionEvent> effectiveCallback = taskHarnessService.wrapEventCallback(harnessRun, eventCallback);
         if (effectiveCallback != null) {
             effectiveCallback.accept(new ExecutionEvent(
@@ -305,6 +323,7 @@ public class AgentOrchestrator {
                     "Task Harness"
             ));
         }
+        taskHarnessService.initializePlan(harnessRun, taskPlan.steps(), effectiveCallback);
         taskHarnessService.transition(
                 harnessRun,
                 TaskHarnessPhase.PLAN,
@@ -331,12 +350,11 @@ public class AgentOrchestrator {
 
         try {
             String plannedTaskInput = applyWorkflowGuidance(
-                    applyPlanningGuidance(userContent, planningDecision),
+                    applyPlanningGuidance(taskInput, planningDecision, harnessRun),
                     experienceGuidance
             );
-            String currentResponse = action.run(plannedTaskInput, effectiveCallback);
-            TaskHarnessVerificationResult currentResult =
-                    taskHarnessService.verify(harnessRun, currentResponse, null, taskHarnessVerifier, effectiveCallback);
+            plannedTaskInput = applyStepRuntimeGuidance(plannedTaskInput, harnessRun);
+            String currentResponse = runWithRuntimeToolset(action, harnessRun, plannedTaskInput, effectiveCallback);
             TaskCompletionDecision decision =
                     taskCompletionController.evaluate(harnessRun, harnessRun.getDoneDefinition(), currentResponse, null);
             taskHarnessService.recordCompletionDecision(
@@ -346,12 +364,8 @@ public class AgentOrchestrator {
                     decision.missingRequirements(),
                     effectiveCallback
             );
+            recordStepOutcomeIfUseful(harnessRun, decision, currentResponse, effectiveCallback);
             int continuePasses = 0;
-            int stalledContinuePasses = 0;
-            int previousPendingSubtasks = Integer.MAX_VALUE;
-            int previousCompletedSubtasks = harnessRun.getSubtasks().size() - harnessRun.getPendingSubtaskCount();
-            String previousResponse = currentResponse;
-
             while (true) {
                 if (decision.status() == TaskCompletionDecision.Status.COMPLETE) {
                     taskHarnessService.complete(harnessRun, true, decision.reason(), effectiveCallback);
@@ -366,28 +380,13 @@ public class AgentOrchestrator {
                 }
                 if (decision.status() == TaskCompletionDecision.Status.CONTINUE) {
                     int pendingSubtasks = harnessRun.getPendingSubtaskCount();
-                    int completedSubtasks = completedSubtaskCount(harnessRun);
-                    boolean progressed = hasContinueProgress(
-                            previousPendingSubtasks,
-                            pendingSubtasks,
-                            previousCompletedSubtasks,
-                            completedSubtasks,
-                            previousResponse,
-                            currentResponse
-                    );
-                    stalledContinuePasses = progressed ? 0 : stalledContinuePasses + 1;
-                    boolean canEscalateStalledContinue = !(harnessRun.hasTrackedSubtasks() && pendingSubtasks > 0);
-                    if (continuePasses >= maxContinuePasses()
-                            || (canEscalateStalledContinue && stalledContinuePasses >= 2)) {
-                        decision = TaskCompletionDecision.repair(
-                                "Pending work did not make progress, escalate to repair",
-                                java.util.List.of("continue_stalled")
+                    if (continuePasses >= maxContinuePasses()) {
+                        decision = TaskCompletionDecision.planReview(
+                                "Continue limit reached; review the active plan before repair",
+                                java.util.List.of("continue_limit_reached")
                         );
                     } else {
                         continuePasses++;
-                        previousPendingSubtasks = pendingSubtasks;
-                        previousCompletedSubtasks = completedSubtasks;
-                        previousResponse = currentResponse;
                         taskHarnessService.transition(
                                 harnessRun,
                                 TaskHarnessPhase.OBSERVE,
@@ -400,8 +399,12 @@ public class AgentOrchestrator {
                                 ),
                                 effectiveCallback
                         );
-                        currentResponse = action.run(buildContinueInput(userContent, harnessRun, decision), effectiveCallback);
-                        currentResult = taskHarnessService.verify(harnessRun, currentResponse, null, taskHarnessVerifier, effectiveCallback);
+                        currentResponse = runWithRuntimeToolset(
+                                action,
+                                harnessRun,
+                                buildContinueInput(taskInput, harnessRun, decision),
+                                effectiveCallback
+                        );
                         decision = taskCompletionController.evaluate(harnessRun, harnessRun.getDoneDefinition(), currentResponse, null);
                         taskHarnessService.recordCompletionDecision(
                                 harnessRun,
@@ -410,6 +413,7 @@ public class AgentOrchestrator {
                                 decision.missingRequirements(),
                                 effectiveCallback
                         );
+                        recordStepOutcomeIfUseful(harnessRun, decision, currentResponse, effectiveCallback);
                         continue;
                     }
                 }
@@ -419,16 +423,49 @@ public class AgentOrchestrator {
                         taskHarnessRepairPromptBuilder.classify(harnessRun, currentResponse, null),
                         effectiveCallback
                 );
+                PlanReviewDecision planReviewDecision = planReviewController.evaluate(harnessRun, failure, currentResponse);
+                taskHarnessService.recordPlanReviewDecision(harnessRun, planReviewDecision, effectiveCallback);
+                if (planReviewDecision.action() == PlanReviewAction.BLOCKED) {
+                    taskHarnessService.complete(harnessRun, false, planReviewDecision.reason(), effectiveCallback);
+                    learningCandidateService.recordFailedRun(harnessRun, planReviewDecision.reason());
+                    return currentResponse;
+                }
+                if (planReviewDecision.action() != PlanReviewAction.KEEP_PLAN
+                        && harnessRun.getPlanReviewAttempts() <= 3) {
+                    taskHarnessService.transition(
+                            harnessRun,
+                            TaskHarnessPhase.PLAN,
+                            "continue",
+                            "plan_review_continue",
+                            "Continuing with plan review adjustment: " + planReviewDecision.action(),
+                            java.util.Map.of("action", planReviewDecision.action().name()),
+                            effectiveCallback
+                    );
+                    currentResponse = runWithRuntimeToolset(
+                            action,
+                            harnessRun,
+                            buildPlanReviewInput(taskInput, harnessRun, failure, planReviewDecision),
+                            effectiveCallback
+                    );
+                    decision = taskCompletionController.evaluate(harnessRun, harnessRun.getDoneDefinition(), currentResponse, null);
+                    taskHarnessService.recordCompletionDecision(
+                            harnessRun,
+                            decision.status().name(),
+                            decision.reason(),
+                            decision.missingRequirements(),
+                            effectiveCallback
+                    );
+                    recordStepOutcomeIfUseful(harnessRun, decision, currentResponse, effectiveCallback);
+                    continue;
+                }
 
                 if (!canAttemptRepair(harnessRun)) {
-                    taskHarnessService.complete(harnessRun, false, currentResult.reason(), effectiveCallback);
-                    learningCandidateService.recordFailedRun(harnessRun, currentResult.reason());
+                    taskHarnessService.complete(harnessRun, false, decision.reason(), effectiveCallback);
+                    learningCandidateService.recordFailedRun(harnessRun, decision.reason());
                     return currentResponse;
                 }
 
-                currentResponse = attemptRepair(action, harnessRun, userContent, failure, effectiveCallback);
-                currentResult =
-                        taskHarnessService.verify(harnessRun, currentResponse, null, taskHarnessVerifier, effectiveCallback);
+                currentResponse = attemptRepair(action, harnessRun, taskInput, failure, effectiveCallback);
                 decision = taskCompletionController.evaluate(harnessRun, harnessRun.getDoneDefinition(), currentResponse, null);
                 taskHarnessService.recordCompletionDecision(
                         harnessRun,
@@ -444,15 +481,14 @@ public class AgentOrchestrator {
                 effectiveCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.ERROR,
                         "Error: " + e.getMessage()));
             }
-            TaskHarnessVerificationResult failedResult =
-                    taskHarnessService.verify(harnessRun, null, e, taskHarnessVerifier, effectiveCallback);
             taskHarnessService.recordFailure(
                     harnessRun,
                     taskHarnessRepairPromptBuilder.classify(harnessRun, null, e),
                     effectiveCallback
             );
-            taskHarnessService.complete(harnessRun, false, failedResult.reason(), effectiveCallback);
-            learningCandidateService.recordFailedRun(harnessRun, failedResult.reason());
+            String failureReason = e.getMessage() != null ? e.getMessage() : e.toString();
+            taskHarnessService.complete(harnessRun, false, failureReason, effectiveCallback);
+            learningCandidateService.recordFailedRun(harnessRun, failureReason);
             return "Error: " + e.getMessage();
         } finally {
             if (previousScope != null) {
@@ -488,8 +524,38 @@ public class AgentOrchestrator {
 
         String repairInput = taskHarnessRepairPromptBuilder.build(harnessRun, originalInput, failure, attempt);
         repairInput = applyPlanningGuidance(repairInput,
-                new TaskPlanningDecision(harnessRun.getPlanningMode(), harnessRun.getPlanningReason()));
-        return action.run(repairInput, effectiveCallback);
+                new TaskPlanningDecision(harnessRun.getPlanningMode(), harnessRun.getPlanningReason()),
+                harnessRun);
+        repairInput = applyStepRuntimeGuidance(repairInput, harnessRun);
+        return runWithRuntimeToolset(action, harnessRun, repairInput, effectiveCallback);
+    }
+
+    private String runWithRuntimeToolset(HarnessAction action,
+                                         TaskHarnessRun harnessRun,
+                                         String taskInput,
+                                         Consumer<ExecutionEvent> effectiveCallback) throws Exception {
+        Set<String> previousRequiredTools = AgentExecutionContext.getRuntimeRequiredToolNames();
+        Set<String> requiredTools = toolsetRuntimePolicy.requiredToolsFor(harnessRun);
+        AgentExecutionContext.setRuntimeRequiredToolNames(requiredTools);
+        try {
+            logger.debug("Runtime required tools for run {}: {}", harnessRun.getRunId(), requiredTools);
+            taskHarnessService.transition(
+                    harnessRun,
+                    TaskHarnessPhase.ACT,
+                    "running",
+                    "agent_action",
+                    "Executing current plan step",
+                    java.util.Map.of("requiredTools", String.join(",", requiredTools)),
+                    effectiveCallback
+            );
+            return action.run(taskInput, effectiveCallback);
+        } finally {
+            if (previousRequiredTools.isEmpty()) {
+                AgentExecutionContext.clearRuntimeRequiredToolNames();
+            } else {
+                AgentExecutionContext.setRuntimeRequiredToolNames(previousRequiredTools);
+            }
+        }
     }
 
     private String buildContinueInput(String originalInput,
@@ -497,6 +563,8 @@ public class AgentOrchestrator {
                                       TaskCompletionDecision decision) {
         StringBuilder sb = new StringBuilder();
         sb.append("Continue the existing task. Do not restate prior completed work as the final answer.\n");
+        sb.append("Use the active plan as the only task contract. Do not change the task type or create a worklist unless the active plan explicitly requires one.\n");
+        sb.append("Reuse completed step evidence and artifact paths from the plan state. Do not repeat completed reads or completed subtasks unless the plan requires a targeted outcome check.\n");
         sb.append("Completion controller reason: ").append(decision.reason()).append("\n");
         if (!decision.missingRequirements().isEmpty()) {
             sb.append("Missing requirements:\n");
@@ -507,9 +575,49 @@ public class AgentOrchestrator {
         if (harnessRun.getPlanningMode() == TaskPlanningMode.WORKLIST) {
             sb.append("If you are unsure, call `subtasks(action='status')` and continue processing remaining items.\n");
         }
+        String snapshot = taskHarnessService.buildPlanExecutionSnapshot(harnessRun);
+        if (!snapshot.isBlank()) {
+            sb.append("\n").append(snapshot).append("\n");
+        }
         sb.append("\nOriginal task:\n").append(originalInput);
-        return applyPlanningGuidance(sb.toString(),
-                new TaskPlanningDecision(harnessRun.getPlanningMode(), harnessRun.getPlanningReason()));
+        String input = applyPlanningGuidance(sb.toString(),
+                new TaskPlanningDecision(harnessRun.getPlanningMode(), harnessRun.getPlanningReason()),
+                harnessRun);
+        return applyStepRuntimeGuidance(input, harnessRun);
+    }
+
+    private String buildPlanReviewInput(String originalInput,
+                                        TaskHarnessRun harnessRun,
+                                        TaskHarnessFailure failure,
+                                        PlanReviewDecision decision) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("[Plan Review Adjustment]\n");
+        sb.append("The previous attempt should not enter blind repair yet. Adjust execution according to the active plan review decision.\n");
+        sb.append("Preserve completed work. If the plan was wrong, revise only the missing or invalid part and reuse existing evidence/artifacts.\n");
+        sb.append("Do not reclassify the task from the original text. The active plan contract is the source of truth unless this plan review explicitly changes it.\n");
+        sb.append("Action: ").append(decision.action()).append("\n");
+        sb.append("Reason: ").append(decision.reason()).append("\n");
+        if (!decision.instructions().isEmpty()) {
+            sb.append("Instructions:\n");
+            for (String instruction : decision.instructions()) {
+                sb.append("- ").append(instruction).append("\n");
+            }
+        }
+        sb.append("\nFailure evidence:\n");
+        sb.append("kind: ").append(failure.kind()).append("\n");
+        sb.append("reason: ").append(failure.reason()).append("\n");
+        if (failure.evidence() != null && !failure.evidence().isBlank()) {
+            sb.append("evidence: ").append(failure.evidence()).append("\n");
+        }
+        String snapshot = taskHarnessService.buildPlanExecutionSnapshot(harnessRun);
+        if (!snapshot.isBlank()) {
+            sb.append("\n").append(snapshot).append("\n");
+        }
+        sb.append("\nOriginal task:\n").append(originalInput);
+        String input = applyPlanningGuidance(sb.toString(),
+                new TaskPlanningDecision(harnessRun.getPlanningMode(), harnessRun.getPlanningReason()),
+                harnessRun);
+        return applyStepRuntimeGuidance(input, harnessRun);
     }
 
     private boolean canAttemptRepair(TaskHarnessRun harnessRun) {
@@ -519,6 +627,19 @@ public class AgentOrchestrator {
     private int maxContinuePasses() {
         return Math.max(MIN_CONTINUE_PASSES,
                 Math.min(MAX_CONTINUE_PASSES, Math.max(1, config.getAgent().getMaxToolIterations())));
+    }
+
+    private TaskPlan createInitialPlan(String sessionKey, String userContent) {
+        try {
+            AgentLoop plannerAgent = agentRegistry.getOrCreateAgent(AgentRole.ASSISTANT, sessionKey);
+            TaskPlan plan = agentPlanService.plan(plannerAgent, userContent);
+            if (plan != null) {
+                return plan;
+            }
+        } catch (Exception e) {
+            logger.warn("Agent planner failed, falling back to policy planner: {}", e.getMessage());
+        }
+        return taskPlanningPolicy.decide(userContent);
     }
 
     private TaskPlan adaptPlanForRunScope(TaskPlan taskPlan, AgentExecutionContext.ExecutionScope previousScope) {
@@ -536,6 +657,7 @@ public class AgentOrchestrator {
                 TaskPlanningMode.DIRECT,
                 done.deliveryType(),
                 done.requiredArtifacts(),
+                done.requiredArtifactDirectories(),
                 done.requiredPhases(),
                 false,
                 done.requiresFinalSummary(),
@@ -545,8 +667,15 @@ public class AgentOrchestrator {
         return new TaskPlan(
                 TaskPlanningMode.DIRECT,
                 childDone,
-                taskPlan.reason() + "_child_contract"
+                taskPlan.reason() + "_child_contract",
+                taskPlan.steps()
         );
+    }
+
+    private boolean shouldApplyExperienceGuidance(AgentExecutionContext.ExecutionScope previousScope) {
+        return previousScope == null
+                || previousScope.parentRunId() == null
+                || previousScope.parentRunId().isBlank();
     }
 
     private String applyWorkflowGuidance(String taskInput, String experienceGuidance) {
@@ -554,29 +683,6 @@ public class AgentOrchestrator {
             return taskInput;
         }
         return experienceGuidance + "\n\n" + taskInput;
-    }
-
-    private int completedSubtaskCount(TaskHarnessRun harnessRun) {
-        return (int) harnessRun.getSubtasks().stream()
-                .filter(subtask -> subtask.status() == TaskHarnessSubtaskStatus.COMPLETED)
-                .count();
-    }
-
-    private boolean hasContinueProgress(int previousPendingSubtasks,
-                                        int pendingSubtasks,
-                                        int previousCompletedSubtasks,
-                                        int completedSubtasks,
-                                        String previousResponse,
-                                        String currentResponse) {
-        if (pendingSubtasks < previousPendingSubtasks) {
-            return true;
-        }
-        if (completedSubtasks > previousCompletedSubtasks) {
-            return true;
-        }
-        String previous = previousResponse == null ? "" : previousResponse.trim();
-        String current = currentResponse == null ? "" : currentResponse.trim();
-        return !current.isBlank() && !current.equals(previous);
     }
 
     private String formatCompletedResponse(TaskHarnessRun harnessRun, String currentResponse) {
@@ -642,7 +748,7 @@ public class AgentOrchestrator {
         }
     }
 
-    private String applyPlanningGuidance(String taskInput, TaskPlanningDecision planningDecision) {
+    private String applyPlanningGuidance(String taskInput, TaskPlanningDecision planningDecision, TaskHarnessRun harnessRun) {
         if (planningDecision == null || planningDecision.mode() == null) {
             return taskInput;
         }
@@ -654,13 +760,16 @@ public class AgentOrchestrator {
                         planningDecision.mode()
                 ).map(taskCheckpointService::buildResumeGuidance)
                 .orElse("");
+        String planSnapshot = taskHarnessService.buildPlanExecutionSnapshot(harnessRun);
+        String planState = planSnapshot.isBlank() ? "" : planSnapshot + "\n\n";
         return switch (planningDecision.mode()) {
             case DIRECT -> taskInput;
             case PHASED -> """
                     [Runtime Planning Policy]
                     This is a phased task. Break the work into concrete stages, complete the stages in order, and do not stop at a plan or progress note. Only finish after delivering the requested artifact or result.
+                    Do not create a worklist unless the current plan state or the user explicitly requires one. The harness will not require subtasks for a phased task.
 
-                    """ + (resumeGuidance.isBlank() ? "" : resumeGuidance + "\n\n") + taskInput;
+                    """ + (resumeGuidance.isBlank() ? "" : resumeGuidance + "\n\n") + planState + taskInput;
             case WORKLIST -> """
                     [Runtime Planning Policy]
                     This is a worklist task with independent items.
@@ -670,8 +779,40 @@ public class AgentOrchestrator {
                     4. Do not finish while pending subtasks remain.
                     5. If you are unsure about progress, call `subtasks(action='status')`.
 
-                    """ + (resumeGuidance.isBlank() ? "" : resumeGuidance + "\n\n") + taskInput;
+                    """ + (resumeGuidance.isBlank() ? "" : resumeGuidance + "\n\n") + planState + taskInput;
         };
+    }
+
+    private String applyStepRuntimeGuidance(String taskInput, TaskHarnessRun harnessRun) {
+        if (harnessRun == null || harnessRun.getPlanningMode() == TaskPlanningMode.DIRECT) {
+            return taskInput;
+        }
+        String stepRuntimeContext = taskHarnessService.buildStepRuntimeContext(harnessRun);
+        if (stepRuntimeContext == null || stepRuntimeContext.isBlank()) {
+            return taskInput;
+        }
+        return stepRuntimeContext + "\n\n[Task Input]\n" + taskInput;
+    }
+
+    private void recordStepOutcomeIfUseful(TaskHarnessRun harnessRun,
+                                           TaskCompletionDecision decision,
+                                           String response,
+                                           Consumer<ExecutionEvent> effectiveCallback) {
+        if (harnessRun == null
+                || harnessRun.getPlanningMode() == TaskPlanningMode.DIRECT
+                || harnessRun.getPlanExecutionState() == null
+                || harnessRun.getPlanExecutionState().isEmpty()
+                || decision == null) {
+            return;
+        }
+        if (decision.status() == TaskCompletionDecision.Status.BLOCKED
+                || decision.status() == TaskCompletionDecision.Status.REPAIR) {
+            return;
+        }
+        if (response == null || response.isBlank() || response.startsWith("Error:")) {
+            return;
+        }
+        taskHarnessService.completeCurrentPlanStep(harnessRun, response, effectiveCallback);
     }
 
     @FunctionalInterface

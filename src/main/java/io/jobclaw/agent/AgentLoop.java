@@ -32,6 +32,8 @@ import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.openai.api.OpenAiApi;
 import org.springframework.ai.tool.ToolCallback;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.web.client.RestClient;
 import reactor.core.publisher.Flux;
 
 import java.time.Instant;
@@ -176,10 +178,7 @@ public class AgentLoop {
                 this.model, resolvedProvider.apiBase(), resolvedProvider.springAiBaseUrl());
 
         // 创建 OpenAI API 客户端（支持自定义 baseUrl，兼容 DashScope Coding Plan）
-        OpenAiApi openAiApi = OpenAiApi.builder()
-                .apiKey(resolvedProvider.apiKey())
-                .baseUrl(resolvedProvider.springAiBaseUrl())
-                .build();
+        OpenAiApi openAiApi = createOpenAiApi(resolvedProvider);
 
         // 创建 ChatModel（带工具调用）
         OpenAiChatModel chatModel = OpenAiChatModel.builder()
@@ -346,6 +345,7 @@ public class AgentLoop {
 
             // 使用流式响应获取 LLM 回复
             StringBuilder fullResponse = new StringBuilder();
+            StreamDeltaNormalizer streamDeltaNormalizer = new StreamDeltaNormalizer();
 
             Flux<String> contentStream = executionClientBundle.chatClient().prompt()
                     .messages(promptMessages)
@@ -357,15 +357,19 @@ public class AgentLoop {
             // 阻塞等待流完成，同时收集所有响应内容
             contentStream.toStream().forEach(content -> {
                 if (content != null && !content.isEmpty()) {
-                    fullResponse.append(content);
+                    String delta = streamDeltaNormalizer.normalize(fullResponse, content);
+                    if (delta.isEmpty()) {
+                        return;
+                    }
+                    fullResponse.append(delta);
                     if (eventCallback != null) {
                         if (toolExecutionStateTracker.isExecuting(sessionKey)) {
-                            toolExecutionStateTracker.bufferThink(sessionKey, content);
+                            toolExecutionStateTracker.bufferThink(sessionKey, delta);
                         } else {
                             eventCallback.accept(new ExecutionEvent(
                                     sessionKey,
                                     ExecutionEvent.EventType.THINK_STREAM,
-                                    content
+                                    delta
                             ));
                         }
                     }
@@ -659,11 +663,16 @@ public class AgentLoop {
         Set<String> availableNames = Arrays.stream(allToolCallbacks)
                 .map(tool -> tool.getToolDefinition().name())
                 .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
-        Set<String> selectedNames = toolSelectionPolicy.selectToolNames(userContent, availableNames);
+        Set<String> selectedNames = toolSelectionPolicy.selectToolNames(
+                userContent,
+                availableNames,
+                AgentExecutionContext.getRuntimeRequiredToolNames()
+        );
         ToolCallback[] selectedTools = Arrays.stream(allToolCallbacks)
                 .filter(tool -> selectedNames.contains(tool.getToolDefinition().name()))
                 .toArray(ToolCallback[]::new);
-        logger.debug("Selected task toolset: {}", toolNames(selectedTools));
+        logger.debug("Selected task toolset: {} (runtime required: {})",
+                toolNames(selectedTools), AgentExecutionContext.getRuntimeRequiredToolNames());
         return selectedTools;
     }
 
@@ -685,6 +694,45 @@ public class AgentLoop {
         return Arrays.stream(callbacks)
                 .map(callback -> callback.getToolDefinition().name())
                 .toList();
+    }
+
+    static String normalizeStreamDelta(CharSequence currentResponse, String nextChunk) {
+        return new StreamDeltaNormalizer().normalize(currentResponse, nextChunk);
+    }
+
+    static final class StreamDeltaNormalizer {
+        private StreamMode mode = StreamMode.UNKNOWN;
+
+        String normalize(CharSequence currentResponse, String nextChunk) {
+            if (nextChunk == null || nextChunk.isEmpty()) {
+                return "";
+            }
+            String current = currentResponse == null ? "" : currentResponse.toString();
+            if (current.isEmpty()) {
+                return nextChunk;
+            }
+            if (current.endsWith(nextChunk)) {
+                return "";
+            }
+            if (mode == StreamMode.CUMULATIVE) {
+                return nextChunk.startsWith(current) ? nextChunk.substring(current.length()) : nextChunk;
+            }
+            if (mode == StreamMode.DELTA) {
+                return nextChunk;
+            }
+            if (nextChunk.startsWith(current)) {
+                mode = StreamMode.CUMULATIVE;
+                return nextChunk.substring(current.length());
+            }
+            mode = StreamMode.DELTA;
+            return nextChunk;
+        }
+    }
+
+    enum StreamMode {
+        UNKNOWN,
+        DELTA,
+        CUMULATIVE
     }
 
     /**
@@ -741,10 +789,7 @@ public class AgentLoop {
                 apiBaseOverride,
                 modelOverride
         );
-        OpenAiApi openAiApi = OpenAiApi.builder()
-                .apiKey(resolved.apiKey())
-                .baseUrl(resolved.springAiBaseUrl())
-                .build();
+        OpenAiApi openAiApi = createOpenAiApi(resolved);
         OpenAiChatModel chatModel = OpenAiChatModel.builder()
                 .openAiApi(openAiApi)
                 .build();
@@ -753,6 +798,28 @@ public class AgentLoop {
     }
 
     private record ExecutionClientBundle(ChatClient chatClient, String model) {
+    }
+
+    private OpenAiApi createOpenAiApi(ResolvedProviderConfig resolvedProvider) {
+        return OpenAiApi.builder()
+                .apiKey(resolvedProvider.apiKey())
+                .baseUrl(resolvedProvider.springAiBaseUrl())
+                .restClientBuilder(RestClient.builder().requestFactory(openAiRequestFactory()))
+                .build();
+    }
+
+    private SimpleClientHttpRequestFactory openAiRequestFactory() {
+        int timeoutMillis = safeTimeoutMillis(config.getAgent().getLlmCallTimeoutSeconds(), 300);
+        SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
+        requestFactory.setConnectTimeout(timeoutMillis);
+        requestFactory.setReadTimeout(timeoutMillis);
+        return requestFactory;
+    }
+
+    private int safeTimeoutMillis(int seconds, int fallbackSeconds) {
+        long effectiveSeconds = seconds > 0 ? seconds : fallbackSeconds;
+        long millis = effectiveSeconds * 1_000L;
+        return (int) Math.min(Integer.MAX_VALUE, Math.max(1_000L, millis));
     }
     
     /**
@@ -799,18 +866,7 @@ public class AgentLoop {
 
     public String callLLM(String prompt, Map<String, Object> options) {
         try {
-            OpenAiChatOptions.Builder optionsBuilder = OpenAiChatOptions.builder();
-
-            if (options != null) {
-                if (options.containsKey("max_tokens")) {
-                    optionsBuilder.maxTokens((Integer) options.get("max_tokens"));
-                }
-                if (options.containsKey("temperature")) {
-                    optionsBuilder.temperature((Double) options.get("temperature"));
-                }
-            }
-
-            OpenAiChatOptions chatOptions = optionsBuilder.build();
+            OpenAiChatOptions chatOptions = buildSimpleCallOptions(options);
 
             String response = simpleChatClient.prompt()
                     .system("You are a helpful assistant.")
@@ -825,5 +881,26 @@ public class AgentLoop {
             logger.error("LLM call failed: {}", e.getMessage());
             return "";
         }
+    }
+
+    private OpenAiChatOptions buildSimpleCallOptions(Map<String, Object> options) {
+        OpenAiChatOptions.Builder optionsBuilder = OpenAiChatOptions.builder()
+                .model(model);
+
+        if (options != null) {
+            if (options.containsKey("model")) {
+                Object modelOverride = options.get("model");
+                if (modelOverride != null && !modelOverride.toString().isBlank()) {
+                    optionsBuilder.model(modelOverride.toString());
+                }
+            }
+            if (options.containsKey("max_tokens")) {
+                optionsBuilder.maxTokens((Integer) options.get("max_tokens"));
+            }
+            if (options.containsKey("temperature")) {
+                optionsBuilder.temperature((Double) options.get("temperature"));
+            }
+        }
+        return optionsBuilder.build();
     }
 }

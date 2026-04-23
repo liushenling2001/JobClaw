@@ -10,6 +10,7 @@ import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.tool.ToolCallback;
 
 import java.lang.reflect.Method;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.Mockito.mock;
@@ -50,5 +51,54 @@ class AgentLoopExecutionOptionsTest {
         assertEquals("custom-model", options.getModel());
         assertEquals(4096, options.getMaxTokens());
         assertEquals(0.25, options.getTemperature());
+    }
+
+    @Test
+    void shouldApplyMainModelToSimpleLlmCalls() throws Exception {
+        Config config = Config.defaultConfig();
+        config.getAgent().setProvider("ollama");
+        config.getAgent().setModel("llama3.1");
+        AgentLoop loop = new AgentLoop(
+                config,
+                new SessionManager(),
+                new ToolCallback[0],
+                mock(ContextBuilder.class),
+                mock(ContextAssembler.class),
+                mock(ContextAssemblyPolicy.class),
+                mock(SummaryService.class)
+        );
+
+        Method method = AgentLoop.class.getDeclaredMethod("buildSimpleCallOptions", Map.class);
+        method.setAccessible(true);
+        OpenAiChatOptions options = (OpenAiChatOptions) method.invoke(loop, Map.of(
+                "temperature", 0.0,
+                "max_tokens", 8
+        ));
+
+        assertEquals("llama3.1", options.getModel());
+        assertEquals(8, options.getMaxTokens());
+        assertEquals(0.0, options.getTemperature());
+    }
+
+    @Test
+    void shouldUseConfiguredLlmCallTimeoutForOpenAiCallClient() throws Exception {
+        Config config = Config.defaultConfig();
+        config.getAgent().setProvider("ollama");
+        config.getAgent().setModel("llama3.1");
+        config.getAgent().setLlmCallTimeoutSeconds(240);
+        AgentLoop loop = new AgentLoop(
+                config,
+                new SessionManager(),
+                new ToolCallback[0],
+                mock(ContextBuilder.class),
+                mock(ContextAssembler.class),
+                mock(ContextAssemblyPolicy.class),
+                mock(SummaryService.class)
+        );
+
+        Method method = AgentLoop.class.getDeclaredMethod("safeTimeoutMillis", int.class, int.class);
+        method.setAccessible(true);
+
+        assertEquals(240_000, method.invoke(loop, config.getAgent().getLlmCallTimeoutSeconds(), 300));
     }
 }

@@ -217,12 +217,10 @@ public class Config {
         config.getAgent().setTemperature(0.7);
         config.getAgent().setMaxToolIterations(20);
         config.getAgent().setMaxRepairAttempts(1);
-        config.getAgent().setMaxVerificationRepairAttempts(1);
-        config.getAgent().setMaxFileExpectationRepairAttempts(2);
-        config.getAgent().setMaxTestCommandRepairAttempts(1);
-        config.getAgent().setMaxCommandExitRepairAttempts(1);
         config.getAgent().setMaxToolOutputLength(10000);
         config.getAgent().setToolCallTimeoutSeconds(300);
+        config.getAgent().setLlmCallTimeoutSeconds(300);
+        config.getAgent().setTaskSimilarityTimeoutSeconds(15);
         config.getAgent().setSubtaskTimeoutMs(900_000L);
         config.getAgent().setSubtaskResultMaxChars(4000);
         config.getAgent().setContextRefEnabled(true);

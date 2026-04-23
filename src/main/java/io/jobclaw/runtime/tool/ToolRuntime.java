@@ -17,6 +17,9 @@ import java.util.List;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.regex.Matcher;
@@ -27,7 +30,13 @@ public class ToolRuntime {
     private static final Logger logger = LoggerFactory.getLogger(ToolRuntime.class);
     private static final long MIN_TIMEOUT_MILLIS = 1_000L;
     private static final long SPAWN_TIMEOUT_GRACE_MILLIS = 30_000L;
+    private static final long TOOL_PROGRESS_INTERVAL_MILLIS = 15_000L;
     private static final Pattern TIMEOUT_MS_PATTERN = Pattern.compile("\"?timeoutMs\"?\\s*[:=]\\s*(\\d+)");
+    private static final ScheduledExecutorService TOOL_PROGRESS_EXECUTOR = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread thread = new Thread(r, "jobclaw-tool-progress");
+        thread.setDaemon(true);
+        return thread;
+    });
 
     private final Config config;
     private final SessionManager sessionManager;
@@ -88,6 +97,7 @@ public class ToolRuntime {
                 toolId,
                 truncatedRequest
         );
+        ScheduledFuture<?> progressFuture = scheduleProgressEvents(executionRequest, toolId, truncatedRequest, toolStartAt);
 
         try {
             String response = callWithTimeout(
@@ -98,6 +108,19 @@ public class ToolRuntime {
             String modelResponse = prepareModelResponse(executionRequest, response);
             long durationMs = System.currentTimeMillis() - toolStartAt;
             sessionManager.addFullMessage(executionRequest.sessionKey(), Message.tool(toolId, modelResponse));
+
+            if (isToolErrorResponse(response)) {
+                eventPublisher.publishError(
+                        executionRequest.eventCallback(),
+                        executionRequest.sessionKey(),
+                        executionRequest.toolName(),
+                        toolId,
+                        truncatedRequest,
+                        durationMs,
+                        response
+                );
+                return new ToolExecutionResult(toolId, modelResponse, durationMs, false, response);
+            }
 
             eventPublisher.publishEnd(
                     executionRequest.eventCallback(),
@@ -134,6 +157,7 @@ public class ToolRuntime {
             );
             throw asRuntimeException(e);
         } finally {
+            progressFuture.cancel(false);
             stateTracker.markIdle(executionRequest.sessionKey());
             activeExecutionRegistry.toolFinished(executionRequest.sessionKey());
             if (throwable == null) {
@@ -142,6 +166,29 @@ public class ToolRuntime {
                 stateTracker.clearBufferedThink(executionRequest.sessionKey());
             }
         }
+    }
+
+    private ScheduledFuture<?> scheduleProgressEvents(ToolExecutionRequest executionRequest,
+                                                      String toolId,
+                                                      String truncatedRequest,
+                                                      long toolStartAt) {
+        return TOOL_PROGRESS_EXECUTOR.scheduleAtFixedRate(
+                () -> eventPublisher.publishProgress(
+                        executionRequest.eventCallback(),
+                        executionRequest.sessionKey(),
+                        executionRequest.toolName(),
+                        toolId,
+                        truncatedRequest,
+                        System.currentTimeMillis() - toolStartAt
+                ),
+                TOOL_PROGRESS_INTERVAL_MILLIS,
+                TOOL_PROGRESS_INTERVAL_MILLIS,
+                TimeUnit.MILLISECONDS
+        );
+    }
+
+    private boolean isToolErrorResponse(String response) {
+        return response != null && response.stripLeading().startsWith("Error:");
     }
 
     private String callWithTimeout(ToolCallback callback, String request, String toolName) {

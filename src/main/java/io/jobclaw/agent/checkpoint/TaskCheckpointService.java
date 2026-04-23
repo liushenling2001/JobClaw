@@ -22,7 +22,15 @@ public class TaskCheckpointService {
     }
 
     public void save(TaskHarnessRun run) {
-        if (run == null || run.getPlanningMode() != TaskPlanningMode.WORKLIST || !run.hasTrackedSubtasks()) {
+        if (run == null) {
+            return;
+        }
+        String planSnapshot = run.planExecutionSnapshot();
+        boolean hasPlanSnapshot = planSnapshot != null && !planSnapshot.isBlank();
+        if (run.getPlanningMode() == TaskPlanningMode.DIRECT && !run.hasTrackedSubtasks() && !hasPlanSnapshot) {
+            return;
+        }
+        if (run.getPlanningMode() == TaskPlanningMode.WORKLIST && !run.hasTrackedSubtasks() && !hasPlanSnapshot) {
             return;
         }
         List<TaskHarnessSubtask> subtasks = run.getSubtasks();
@@ -34,7 +42,9 @@ public class TaskCheckpointService {
                         || subtask.status() == TaskHarnessSubtaskStatus.RUNNING)
                 .findFirst();
 
-        String lastStableSummary = completedCount > 0
+        String lastStableSummary = hasPlanSnapshot
+                ? firstLine(planSnapshot)
+                : completedCount > 0
                 ? "已完成 " + completedCount + " 个子任务"
                 : "尚未完成任何子任务";
         String nextAction = nextPending
@@ -57,18 +67,27 @@ public class TaskCheckpointService {
                                 subtask.summary()
                         ))
                         .toList(),
+                hasPlanSnapshot ? planSnapshot : "",
                 Instant.now()
         ));
     }
 
     public Optional<TaskCheckpoint> latestResumable(String sessionId, String taskInput, TaskPlanningMode planningMode) {
-        if (planningMode != TaskPlanningMode.WORKLIST) {
+        if (planningMode == TaskPlanningMode.DIRECT && !isResumeRequest(taskInput)) {
             return Optional.empty();
         }
         return store.latest(sessionId)
-                .filter(checkpoint -> checkpoint.taskInput() != null
-                        && normalize(checkpoint.taskInput()).equals(normalize(taskInput)))
-                .filter(checkpoint -> checkpoint.pendingSubtasks() > 0);
+                .filter(checkpoint -> isResumeRequest(taskInput)
+                        || (checkpoint.taskInput() != null
+                        && normalize(checkpoint.taskInput()).equals(normalize(taskInput))))
+                .filter(this::isResumable);
+    }
+
+    public Optional<TaskCheckpoint> latestForResumeRequest(String sessionId, String taskInput) {
+        if (!isResumeRequest(taskInput)) {
+            return Optional.empty();
+        }
+        return store.latest(sessionId).filter(this::isResumable);
     }
 
     public String buildResumeGuidance(TaskCheckpoint checkpoint) {
@@ -86,6 +105,9 @@ public class TaskCheckpointService {
         StringBuilder sb = new StringBuilder();
         sb.append("[Resume From Checkpoint]\n");
         sb.append(checkpoint.lastStableSummary()).append("\n");
+        if (checkpoint.planExecutionSnapshot() != null && !checkpoint.planExecutionSnapshot().isBlank()) {
+            sb.append(checkpoint.planExecutionSnapshot()).append("\n");
+        }
         if (!completed.isEmpty()) {
             sb.append("已完成子任务:\n");
             for (TaskCheckpoint.SubtaskSnapshot snapshot : completed.stream().limit(20).toList()) {
@@ -104,6 +126,34 @@ public class TaskCheckpointService {
 
     private String normalize(String value) {
         return value == null ? "" : value.trim().replace("\r", "").toLowerCase(Locale.ROOT);
+    }
+
+    private boolean isResumeRequest(String value) {
+        String normalized = normalize(value);
+        return normalized.equals("继续")
+                || normalized.equals("继续执行")
+                || normalized.equals("继续任务")
+                || normalized.equals("恢复")
+                || normalized.equals("恢复执行")
+                || normalized.equals("resume")
+                || normalized.equals("continue")
+                || normalized.equals("retry")
+                || normalized.equals("重试");
+    }
+
+    private boolean isResumable(TaskCheckpoint checkpoint) {
+        return checkpoint != null
+                && (checkpoint.pendingSubtasks() > 0
+                || (checkpoint.planExecutionSnapshot() != null && !checkpoint.planExecutionSnapshot().isBlank()));
+    }
+
+    private String firstLine(String value) {
+        if (value == null || value.isBlank()) {
+            return "";
+        }
+        String normalized = value.replace("\r", "").trim();
+        int newline = normalized.indexOf('\n');
+        return newline >= 0 ? normalized.substring(0, newline) : normalized;
     }
 
     private String titleOrId(TaskHarnessSubtask subtask) {

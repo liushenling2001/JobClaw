@@ -181,7 +181,7 @@ class LearningCandidateServiceTest {
         run.addStep(TaskHarnessPhase.ACT, "event", "tool_start", "list",
                 Map.of("eventType", "TOOL_START", "toolName", "list_dir"));
         run.recordFailure(new TaskHarnessFailure(
-                TaskHarnessFailureKind.VERIFICATION_FAILURE,
+                TaskHarnessFailureKind.OUTCOME_FAILURE,
                 "worklist incomplete",
                 "pending subtasks remain"
         ));

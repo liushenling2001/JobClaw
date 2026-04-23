@@ -17,7 +17,7 @@ import java.util.Set;
  */
 public class ToolSelectionPolicy {
 
-    private static final Set<String> BASE_TOOLS = Set.of("memory", "skills", "context_ref");
+    private static final Set<String> BASE_TOOLS = Set.of("memory", "skills", "context_ref", "run_command", "exec", "write_file");
     private static final Set<String> FILE_READ_TOOLS = Set.of(
             "list_dir", "read_file", "read_pdf", "read_word", "read_excel"
     );
@@ -41,6 +41,12 @@ public class ToolSelectionPolicy {
     }
 
     public Set<String> selectToolNames(String taskInput, Collection<String> availableToolNames) {
+        return selectToolNames(taskInput, availableToolNames, Set.of());
+    }
+
+    public Set<String> selectToolNames(String taskInput,
+                                       Collection<String> availableToolNames,
+                                       Collection<String> runtimeRequiredToolNames) {
         LinkedHashSet<String> selected = new LinkedHashSet<>();
         Set<String> available = new LinkedHashSet<>(availableToolNames != null ? availableToolNames : Set.of());
         String normalized = normalize(taskInput);
@@ -105,6 +111,9 @@ public class ToolSelectionPolicy {
         if (looksLikeCollaborationTask(normalized)) {
             addIfAvailable(selected, available, AGENT_TOOLS);
             addIfAvailable(selected, available, BOARD_TOOLS);
+        }
+        if (runtimeRequiredToolNames != null && !runtimeRequiredToolNames.isEmpty()) {
+            addIfAvailable(selected, available, new LinkedHashSet<>(runtimeRequiredToolNames));
         }
 
         if (selected.isEmpty()) {

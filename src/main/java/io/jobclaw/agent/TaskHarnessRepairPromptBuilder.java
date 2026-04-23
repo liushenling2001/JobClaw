@@ -14,8 +14,8 @@ public class TaskHarnessRepairPromptBuilder {
 
     public String build(TaskHarnessRun run, String originalInput, TaskHarnessFailure failure, int attempt) {
         String evidence = buildStructuredEvidence(run, failure);
-        String verifierFailureType = resolveVerifierFailureType(run);
-        String repairGuidance = buildRepairGuidance(run, verifierFailureType, failure.kind());
+        String failureType = resolveFailureType(run, failure);
+        String repairGuidance = buildRepairGuidance(run, failureType, failure.kind());
 
         return """
                 Previous attempt did not complete successfully.
@@ -23,7 +23,7 @@ public class TaskHarnessRepairPromptBuilder {
 
                 Failure kind: %s
                 Failure reason: %s
-                Verifier failure type: %s
+                Failure type: %s
                 Repair attempt: %d
 
                 Repair guidance:
@@ -37,7 +37,7 @@ public class TaskHarnessRepairPromptBuilder {
                 """.formatted(
                 failure.kind(),
                 failure.reason(),
-                verifierFailureType,
+                failureType,
                 attempt,
                 repairGuidance,
                 evidence,
@@ -74,7 +74,7 @@ public class TaskHarnessRepairPromptBuilder {
 
         if (finalResponse.startsWith("Error:")) {
             return new TaskHarnessFailure(
-                    mapVerificationFailureKind(run, TaskHarnessFailureKind.ERROR_RESPONSE),
+                    TaskHarnessFailureKind.ERROR_RESPONSE,
                     finalResponse,
                     buildStepEvidence(latestStep(run, candidate ->
                             candidate.phase() == TaskHarnessPhase.REPAIR || "TOOL_ERROR".equals(candidate.metadata().get("eventType"))))
@@ -82,8 +82,8 @@ public class TaskHarnessRepairPromptBuilder {
         }
 
         return new TaskHarnessFailure(
-                mapVerificationFailureKind(run, TaskHarnessFailureKind.VERIFICATION_FAILURE),
-                "Verifier rejected the final response",
+                TaskHarnessFailureKind.OUTCOME_FAILURE,
+                "Completion controller requested repair",
                 safeMessage(finalResponse, "No final response evidence")
         );
     }
@@ -91,6 +91,20 @@ public class TaskHarnessRepairPromptBuilder {
     private String buildStructuredEvidence(TaskHarnessRun run, TaskHarnessFailure failure) {
         StringJoiner joiner = new StringJoiner("\n");
         joiner.add("Classifier evidence: " + safeMessage(failure.evidence(), "No classifier evidence"));
+        if (run != null) {
+            joiner.add("Active plan contract:");
+            joiner.add("- planningMode=" + run.getPlanningMode());
+            if (run.getDoneDefinition() != null) {
+                joiner.add("- deliveryType=" + run.getDoneDefinition().deliveryType());
+                joiner.add("- requiresWorklist=" + run.getDoneDefinition().requiresWorklist());
+                joiner.add("- requiresFinalSummary=" + run.getDoneDefinition().requiresFinalSummary());
+            }
+            String snapshot = run.planExecutionSnapshot();
+            if (snapshot != null && !snapshot.isBlank()) {
+                joiner.add("Plan execution snapshot:");
+                joiner.add(snapshot);
+            }
+        }
 
         TaskHarnessStep toolError = latestStep(run, step -> "TOOL_ERROR".equals(step.metadata().get("eventType")));
         if (toolError != null) {
@@ -106,12 +120,6 @@ public class TaskHarnessRepairPromptBuilder {
         TaskHarnessStep finalResponse = latestStep(run, step -> "FINAL_RESPONSE".equals(step.metadata().get("eventType")));
         if (finalResponse != null) {
             joiner.add("Recent final response: " + buildStepEvidence(finalResponse));
-        }
-
-        TaskHarnessStep verifyFailure = latestStep(run, step -> "verify_failed".equals(step.label()));
-        if (verifyFailure != null) {
-            joiner.add("Verification failure:");
-            joiner.add(buildVerificationEvidence(verifyFailure));
         }
 
         if (run.hasTrackedSubtasks()) {
@@ -184,16 +192,6 @@ public class TaskHarnessRepairPromptBuilder {
         return joiner.toString();
     }
 
-    private String buildVerificationEvidence(TaskHarnessStep verifyFailure) {
-        StringJoiner joiner = new StringJoiner("\n");
-        joiner.add(buildStepEvidence(verifyFailure));
-        Object finalResponse = verifyFailure.metadata().get("finalResponse");
-        if (finalResponse != null && !finalResponse.toString().isBlank()) {
-            joiner.add("verifier_final_response=" + finalResponse);
-        }
-        return joiner.toString();
-    }
-
     private boolean sameTool(TaskHarnessStep left, TaskHarnessStep right) {
         String leftToolId = stringValue(left.metadata().get("toolId"));
         String rightToolId = stringValue(right.metadata().get("toolId"));
@@ -221,19 +219,7 @@ public class TaskHarnessRepairPromptBuilder {
         return value == null || value.isBlank() ? fallback : value;
     }
 
-    private String resolveVerifierFailureType(TaskHarnessRun run) {
-        TaskHarnessVerificationResult verificationResult = run.getLastVerificationResult();
-        if (verificationResult != null && verificationResult.failureType() != null
-                && !verificationResult.failureType().isBlank()) {
-            return verificationResult.failureType();
-        }
-        TaskHarnessStep verifyFailure = latestStep(run, step -> "verify_failed".equals(step.label()));
-        if (verifyFailure != null) {
-            Object failureType = verifyFailure.metadata().get("failureType");
-            if (failureType != null && !failureType.toString().isBlank()) {
-                return failureType.toString();
-            }
-        }
+    private String resolveFailureType(TaskHarnessRun run, TaskHarnessFailure failure) {
         TaskHarnessStep completionDecision = latestStep(run, step -> "completion_decision".equals(step.label()));
         if (completionDecision != null) {
             Object missingRequirements = completionDecision.metadata().get("missingRequirements");
@@ -241,6 +227,9 @@ public class TaskHarnessRepairPromptBuilder {
             if (!failureType.isBlank()) {
                 return failureType;
             }
+        }
+        if (failure != null && failure.kind() != null) {
+            return failure.kind().name();
         }
         return "UNKNOWN";
     }
@@ -262,37 +251,20 @@ public class TaskHarnessRepairPromptBuilder {
         return "";
     }
 
-    private TaskHarnessFailureKind mapVerificationFailureKind(TaskHarnessRun run, TaskHarnessFailureKind fallback) {
-        String failureType = resolveVerifierFailureType(run);
-        return switch (failureType) {
-            case "EXECUTION_FAILURE" -> TaskHarnessFailureKind.EXECUTION_ERROR;
-            case "EMPTY_RESPONSE" -> TaskHarnessFailureKind.EMPTY_RESPONSE;
-            case "ERROR_RESPONSE" -> TaskHarnessFailureKind.ERROR_RESPONSE;
-            case "TEST_COMMAND", "FILE_EXPECTATION", "COMMAND_EXIT" -> TaskHarnessFailureKind.VERIFICATION_FAILURE;
-            default -> fallback;
-        };
-    }
-
     private String buildRepairGuidance(TaskHarnessRun run,
-                                       String verifierFailureType,
+                                       String failureType,
                                        TaskHarnessFailureKind failureKind) {
-        return switch (verifierFailureType) {
-            case "TEST_COMMAND" ->
-                    "Focus on the failing test command. Identify the code or config issue, change the relevant files, then rerun the same test command to produce passing evidence.";
-            case "FILE_EXPECTATION" ->
-                    "Focus on the missing or unchanged file. Use the recorded file path and write/edit the file so the expected artifact exists with the intended content.";
-            case "COMMAND_EXIT" ->
-                    "Focus on the non-zero command exit. Inspect the command request, fix the underlying cause, and rerun the command until the output no longer reports a non-zero exit.";
+        return switch (failureType) {
             case "EMPTY_RESPONSE" ->
-                    "Do not stop at silence. Perform the missing action, verify the result, and return a concrete completion response.";
+                "Do not stop at silence. Perform the missing action, verify the result, and return a concrete completion response.";
             case "PENDING_SUBTASKS" ->
-                    "Do not end the parent task yet. Continue the planned worklist, execute the remaining subtasks, and mark each one complete or failed before finishing.";
+                    "Do not end the parent task yet. Continue only the active plan's tracked subtasks. Do not recreate the worklist and do not repeat completed subtasks.";
             case "FAILED_SUBTASKS_RETRYABLE" ->
                     "Retry only the failed subtasks that are marked retryable. Do not repeat completed subtasks. Use the same subtaskId when spawning the retry. If a retried subtask still fails or is not recoverable, keep it failed and produce a final summary that lists the failed item and reason.";
             case "WORKLIST_NOT_PLANNED" ->
-                    "Before continuing, create the missing worklist with `subtasks(action='plan', items='id|title\\n...')`. If a local directory path is available, enumerate files first and plan one subtask per file. Do not answer with a final summary before tracked subtasks exist.";
-            case "ERROR_RESPONSE", "EXECUTION_FAILURE" ->
-                    "Focus on the runtime failure. Use the tool and error evidence to remove the immediate execution error before continuing.";
+                "The active plan explicitly requires a worklist, but no tracked subtasks exist. Create only the missing worklist required by the active plan. Do not reinterpret the original task type, and do not redo completed evidence.";
+            case "ERROR_RESPONSE", "EXECUTION_FAILURE", "EXECUTION_ERROR" ->
+                "Focus on the runtime failure. Use the tool and error evidence to remove the immediate execution error before continuing.";
             default -> buildGenericGuidance(run, failureKind);
         };
     }

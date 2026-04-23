@@ -15,6 +15,7 @@ public record TaskCompletionState(
         boolean artifactsFound,
         boolean documentToolUsed,
         boolean mutatingFileToolUsed,
+        int incompletePlanSteps,
         Set<TaskHarnessPhase> phasesCompleted,
         boolean hasUsableFinalResponse,
         boolean hasPlanningOnlyResponse,

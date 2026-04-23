@@ -3,6 +3,9 @@ package io.jobclaw.agent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Collection;
+import java.util.LinkedHashSet;
+import java.util.Set;
 import java.util.function.Consumer;
 
 /**
@@ -24,6 +27,7 @@ public class AgentExecutionContext {
     }
 
     private static final ThreadLocal<ExecutionScope> currentScope = new ThreadLocal<>();
+    private static final ThreadLocal<Set<String>> runtimeRequiredToolNames = new ThreadLocal<>();
 
     private AgentExecutionContext() {
     }
@@ -76,8 +80,26 @@ public class AgentExecutionContext {
         return scope != null ? scope.definition() : null;
     }
 
+    public static void setRuntimeRequiredToolNames(Collection<String> toolNames) {
+        if (toolNames == null || toolNames.isEmpty()) {
+            runtimeRequiredToolNames.remove();
+            return;
+        }
+        runtimeRequiredToolNames.set(new LinkedHashSet<>(toolNames));
+    }
+
+    public static Set<String> getRuntimeRequiredToolNames() {
+        Set<String> toolNames = runtimeRequiredToolNames.get();
+        return toolNames == null ? Set.of() : Set.copyOf(toolNames);
+    }
+
+    public static void clearRuntimeRequiredToolNames() {
+        runtimeRequiredToolNames.remove();
+    }
+
     public static void clear() {
         currentScope.remove();
+        runtimeRequiredToolNames.remove();
         logger.debug("Cleared execution context");
     }
 

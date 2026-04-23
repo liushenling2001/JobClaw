@@ -29,6 +29,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class SqliteRetrievalService implements RetrievalService {
 
     private static final Logger logger = LoggerFactory.getLogger(SqliteRetrievalService.class);
+    private static final String SQLITE_TMPDIR_PROPERTY = "org.sqlite.tmpdir";
 
     private final ConversationStore conversationStore;
     private final SummaryService summaryService;
@@ -45,11 +46,26 @@ public class SqliteRetrievalService implements RetrievalService {
         Path dbPath = databasePath == null || databasePath.isBlank()
                 ? Paths.get(System.getProperty("user.home"), ".jobclaw", "workspace", "sessions", "conversation", "search.db")
                 : Paths.get(databasePath);
+        configureSqliteNativeTempDir();
         this.jdbcUrl = "jdbc:sqlite:" + dbPath.toAbsolutePath();
         try {
             Files.createDirectories(dbPath.toAbsolutePath().getParent());
         } catch (Exception e) {
             logger.warn("Failed to create sqlite directory: {}", e.getMessage());
+        }
+    }
+
+    private void configureSqliteNativeTempDir() {
+        if (System.getProperty(SQLITE_TMPDIR_PROPERTY) != null
+                && !System.getProperty(SQLITE_TMPDIR_PROPERTY).isBlank()) {
+            return;
+        }
+        Path nativeTempDir = Paths.get(System.getProperty("user.home"), ".jobclaw", "native", "sqlite");
+        try {
+            Files.createDirectories(nativeTempDir);
+            System.setProperty(SQLITE_TMPDIR_PROPERTY, nativeTempDir.toString());
+        } catch (Exception e) {
+            logger.warn("Failed to configure sqlite native temp directory: {}", e.getMessage());
         }
     }
 

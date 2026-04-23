@@ -7,7 +7,10 @@ import io.jobclaw.agent.learning.LearningCandidateStore;
 import io.jobclaw.agent.learning.LearningCandidateType;
 import io.jobclaw.agent.planning.TaskPlanningMode;
 import io.jobclaw.agent.workflow.WorkflowMemoryService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 
 import java.util.Comparator;
@@ -20,19 +23,48 @@ import java.util.Set;
 @Component
 public class ExperienceGuidanceService {
 
+    private static final Logger logger = LoggerFactory.getLogger(ExperienceGuidanceService.class);
     private static final double MIN_NEGATIVE_LESSON_CONFIDENCE = 0.85;
+    private static final Set<String> FORMAT_AND_CONTAINER_TERMS = Set.of(
+            "pdf", "word", "excel", "doc", "docx", "xls", "xlsx", "文件", "目录", "文件夹", "文档"
+    );
+    private static final Set<String> REVIEW_INTENTS = Set.of("审查", "检查", "审核", "校验", "验证", "是否符合", "格式要求");
+    private static final Set<String> SUMMARY_INTENTS = Set.of("总结", "综述", "概括", "提炼", "归纳", "分析");
+    private static final Set<String> WRITE_INTENTS = Set.of("撰写", "写", "生成", "创建", "完善", "修改", "报告", "word");
 
     private final WorkflowMemoryService workflowMemoryService;
     private final LearningCandidateStore learningCandidateStore;
     private final ExperienceMemoryService experienceMemoryService;
+    private final ObjectProvider<TaskSimilarityJudger> taskSimilarityJudgerProvider;
+    private final TaskSimilarityJudger testTaskSimilarityJudger;
 
     @Autowired
     public ExperienceGuidanceService(WorkflowMemoryService workflowMemoryService,
                                      LearningCandidateStore learningCandidateStore,
-                                     ExperienceMemoryService experienceMemoryService) {
+                                     ExperienceMemoryService experienceMemoryService,
+                                     ObjectProvider<TaskSimilarityJudger> taskSimilarityJudgerProvider) {
         this.workflowMemoryService = workflowMemoryService;
         this.learningCandidateStore = learningCandidateStore;
         this.experienceMemoryService = experienceMemoryService;
+        this.taskSimilarityJudgerProvider = taskSimilarityJudgerProvider;
+        this.testTaskSimilarityJudger = null;
+    }
+
+    public ExperienceGuidanceService(WorkflowMemoryService workflowMemoryService,
+                                     LearningCandidateStore learningCandidateStore,
+                                     ExperienceMemoryService experienceMemoryService) {
+        this(workflowMemoryService, learningCandidateStore, experienceMemoryService, (TaskSimilarityJudger) null);
+    }
+
+    ExperienceGuidanceService(WorkflowMemoryService workflowMemoryService,
+                              LearningCandidateStore learningCandidateStore,
+                              ExperienceMemoryService experienceMemoryService,
+                              TaskSimilarityJudger taskSimilarityJudger) {
+        this.workflowMemoryService = workflowMemoryService;
+        this.learningCandidateStore = learningCandidateStore;
+        this.experienceMemoryService = experienceMemoryService;
+        this.taskSimilarityJudgerProvider = null;
+        this.testTaskSimilarityJudger = taskSimilarityJudger;
     }
 
     public ExperienceGuidanceService(WorkflowMemoryService workflowMemoryService,
@@ -43,28 +75,44 @@ public class ExperienceGuidanceService {
     public String buildGuidance(String taskInput,
                                 TaskPlanningMode planningMode,
                                 DoneDefinition doneDefinition) {
-        String acceptedGuidance = buildAcceptedExperienceGuidance(taskInput, planningMode, doneDefinition);
-        if (!acceptedGuidance.isBlank()) {
-            return acceptedGuidance;
-        }
-
-        String workflowGuidance = workflowMemoryService.findRelevant(taskInput, planningMode, doneDefinition)
-                .map(workflowMemoryService::buildGuidance)
-                .orElse("");
-        if (!workflowGuidance.isBlank()) {
-            return workflowGuidance;
-        }
-
-        return findRelevantNegativeLesson(taskInput, planningMode, doneDefinition)
-                .map(this::buildNegativeLessonGuidance)
+        return findBestLocalCandidate(taskInput, planningMode, doneDefinition)
+                .filter(candidate -> isSemanticallySameTask(
+                        taskInput,
+                        candidate.applicability(),
+                        planningMode,
+                        doneDefinition
+                ))
+                .map(GuidanceCandidate::guidance)
                 .orElse("");
     }
 
-    private String buildAcceptedExperienceGuidance(String taskInput,
-                                                   TaskPlanningMode planningMode,
-                                                   DoneDefinition doneDefinition) {
+    private Optional<GuidanceCandidate> findBestLocalCandidate(String taskInput,
+                                                               TaskPlanningMode planningMode,
+                                                               DoneDefinition doneDefinition) {
+        Optional<GuidanceCandidate> accepted = findAcceptedExperienceGuidance(taskInput, planningMode, doneDefinition);
+        if (accepted.isPresent()) {
+            return accepted;
+        }
+        Optional<GuidanceCandidate> workflow = workflowMemoryService.findRelevant(taskInput, planningMode, doneDefinition)
+                .map(recipe -> new GuidanceCandidate(
+                        recipe.getApplicability(),
+                        workflowMemoryService.buildGuidance(recipe)
+                ));
+        if (workflow.isPresent()) {
+            return workflow;
+        }
+        return findRelevantNegativeLesson(taskInput, planningMode, doneDefinition)
+                .map(candidate -> new GuidanceCandidate(
+                        candidate.getTaskInput(),
+                        buildNegativeLessonGuidance(candidate)
+                ));
+    }
+
+    private Optional<GuidanceCandidate> findAcceptedExperienceGuidance(String taskInput,
+                                                                       TaskPlanningMode planningMode,
+                                                                       DoneDefinition doneDefinition) {
         if (experienceMemoryService == null) {
-            return "";
+            return Optional.empty();
         }
         Set<String> taskTerms = signatureTerms(taskInput);
         return experienceMemoryService.listActive().stream()
@@ -78,8 +126,10 @@ public class ExperienceGuidanceService {
                         .thenComparing(scored -> scored.memory().getConfidence(), Comparator.reverseOrder()))
                 .map(ScoredMemory::memory)
                 .findFirst()
-                .map(this::buildAcceptedExperienceGuidance)
-                .orElse("");
+                .map(memory -> new GuidanceCandidate(
+                        memory.getApplicability(),
+                        buildAcceptedExperienceGuidance(memory)
+                ));
     }
 
     private String buildAcceptedExperienceGuidance(ExperienceMemory memory) {
@@ -126,6 +176,99 @@ public class ExperienceGuidanceService {
                         .thenComparing(scored -> scored.candidate().getConfidence(), Comparator.reverseOrder()))
                 .map(ScoredCandidate::candidate)
                 .findFirst();
+    }
+
+    private boolean isSemanticallySameTask(String currentTask,
+                                           String previousTask,
+                                           TaskPlanningMode planningMode,
+                                           DoneDefinition doneDefinition) {
+        TaskSimilarityJudger judger = taskSimilarityJudger();
+        if (judger == null) {
+            return false;
+        }
+        if (!shouldAskSemanticJudger(currentTask, previousTask)) {
+            logger.debug("Task similarity gate rejected weak candidate; skipping LLM similarity check");
+            return false;
+        }
+        try {
+            return judger.isSameTask(
+                    currentTask,
+                    previousTask,
+                    planningMode,
+                    doneDefinition != null ? doneDefinition.deliveryType() : null
+            );
+        } catch (Throwable e) {
+            logger.warn("Task similarity check failed; skipping experience guidance: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    private TaskSimilarityJudger taskSimilarityJudger() {
+        if (testTaskSimilarityJudger != null) {
+            return testTaskSimilarityJudger;
+        }
+        return taskSimilarityJudgerProvider != null ? taskSimilarityJudgerProvider.getIfAvailable() : null;
+    }
+
+    private boolean shouldAskSemanticJudger(String currentTask, String previousTask) {
+        Set<String> currentTerms = signatureTerms(currentTask);
+        Set<String> previousTerms = signatureTerms(previousTask);
+        if (currentTerms.isEmpty() || previousTerms.isEmpty()) {
+            return false;
+        }
+        Set<String> currentIntents = intentFamilies(currentTask, currentTerms);
+        Set<String> previousIntents = intentFamilies(previousTask, previousTerms);
+        if (currentIntents.isEmpty() || previousIntents.isEmpty()) {
+            return false;
+        }
+        if (!hasOverlap(currentIntents, previousIntents)) {
+            return false;
+        }
+
+        Set<String> sharedTerms = new LinkedHashSet<>(currentTerms);
+        sharedTerms.retainAll(previousTerms);
+        sharedTerms.removeAll(FORMAT_AND_CONTAINER_TERMS);
+
+        int currentSemanticIntentCount = currentIntents.contains("batch") ? currentIntents.size() - 1 : currentIntents.size();
+        int previousSemanticIntentCount = previousIntents.contains("batch") ? previousIntents.size() - 1 : previousIntents.size();
+        int requiredSharedTerms = currentSemanticIntentCount > 1 || previousSemanticIntentCount > 1 ? 3 : 2;
+        return sharedTerms.size() >= requiredSharedTerms;
+    }
+
+    private Set<String> intentFamilies(String text, Set<String> terms) {
+        String value = text == null ? "" : text.toLowerCase(Locale.ROOT);
+        LinkedHashSet<String> intents = new LinkedHashSet<>();
+        if (containsAny(value, terms, REVIEW_INTENTS)) {
+            intents.add("review");
+        }
+        if (containsAny(value, terms, SUMMARY_INTENTS)) {
+            intents.add("summary");
+        }
+        if (containsAny(value, terms, WRITE_INTENTS)) {
+            intents.add("write");
+        }
+        if (terms.contains("批量")) {
+            intents.add("batch");
+        }
+        return intents;
+    }
+
+    private boolean containsAny(String text, Set<String> terms, Set<String> markers) {
+        for (String marker : markers) {
+            if (terms.contains(marker) || text.contains(marker)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean hasOverlap(Set<String> left, Set<String> right) {
+        for (String item : left) {
+            if (right.contains(item)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private String buildNegativeLessonGuidance(LearningCandidate candidate) {
@@ -191,8 +334,21 @@ public class ExperienceGuidanceService {
         addIfPresent(terms, text, "word");
         addIfPresent(terms, text, "批量");
         addIfPresent(terms, text, "审查");
+        addIfPresent(terms, text, "检查");
+        addIfPresent(terms, text, "审核");
+        addIfPresent(terms, text, "格式");
+        addIfPresent(terms, text, "参考文献");
+        addIfPresent(terms, text, "作者");
         addIfPresent(terms, text, "报告");
         addIfPresent(terms, text, "总结");
+        addIfPresent(terms, text, "综述");
+        addIfPresent(terms, text, "分析");
+        addIfPresent(terms, text, "撰写");
+        addIfPresent(terms, text, "生成");
+        addIfPresent(terms, text, "创建");
+        addIfPresent(terms, text, "完善");
+        addIfPresent(terms, text, "修改");
+        addIfPresent(terms, text, "招生");
         return terms;
     }
 
@@ -210,5 +366,8 @@ public class ExperienceGuidanceService {
     }
 
     private record ScoredMemory(ExperienceMemory memory, int score) {
+    }
+
+    private record GuidanceCandidate(String applicability, String guidance) {
     }
 }

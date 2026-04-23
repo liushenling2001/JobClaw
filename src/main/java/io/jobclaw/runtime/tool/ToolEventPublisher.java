@@ -65,6 +65,27 @@ public class ToolEventPublisher {
         ));
     }
 
+    public void publishProgress(Consumer<ExecutionEvent> callback,
+                                String sessionKey,
+                                String toolName,
+                                String toolId,
+                                String truncatedRequest,
+                                long durationMs) {
+        publish(callback, new ExecutionEvent(
+                sessionKey,
+                ExecutionEvent.EventType.CUSTOM,
+                "工具仍在执行：" + toolName + "，已运行 " + durationMs / 1000 + " 秒",
+                Map.of(
+                        "source", "tool_runtime",
+                        "label", "tool_progress",
+                        "toolName", toolName,
+                        "toolId", toolId,
+                        "request", truncatedRequest,
+                        "durationMs", durationMs
+                )
+        ));
+    }
+
     public void publishError(Consumer<ExecutionEvent> callback,
                              String sessionKey,
                              String toolName,
