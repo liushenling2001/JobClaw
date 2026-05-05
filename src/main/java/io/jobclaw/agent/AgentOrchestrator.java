@@ -371,12 +371,12 @@ public class AgentOrchestrator {
                     taskHarnessService.complete(harnessRun, true, decision.reason(), effectiveCallback);
                     workflowMemoryService.recordSuccess(harnessRun);
                     learningCandidateService.recordSuccessfulRun(harnessRun);
-                    return publishAndReturnFinal(sessionKey, effectiveCallback, formatCompletedResponse(harnessRun, currentResponse));
+                    return publishAndReturnFinal(sessionKey, eventCallback, formatCompletedResponse(harnessRun, currentResponse));
                 }
                 if (decision.status() == TaskCompletionDecision.Status.BLOCKED) {
                     taskHarnessService.complete(harnessRun, false, decision.reason(), effectiveCallback);
                     learningCandidateService.recordFailedRun(harnessRun, decision.reason());
-                    return publishAndReturnFinal(sessionKey, effectiveCallback, currentResponse);
+                    return publishAndReturnFinal(sessionKey, eventCallback, currentResponse);
                 }
                 if (decision.status() == TaskCompletionDecision.Status.CONTINUE) {
                     int pendingSubtasks = harnessRun.getPendingSubtaskCount();
@@ -428,7 +428,7 @@ public class AgentOrchestrator {
                 if (planReviewDecision.action() == PlanReviewAction.BLOCKED) {
                     taskHarnessService.complete(harnessRun, false, planReviewDecision.reason(), effectiveCallback);
                     learningCandidateService.recordFailedRun(harnessRun, planReviewDecision.reason());
-                    return publishAndReturnFinal(sessionKey, effectiveCallback, currentResponse);
+                    return publishAndReturnFinal(sessionKey, eventCallback, currentResponse);
                 }
                 if (planReviewDecision.action() != PlanReviewAction.KEEP_PLAN
                         && harnessRun.getPlanReviewAttempts() <= 3) {
@@ -462,7 +462,7 @@ public class AgentOrchestrator {
                 if (!canAttemptRepair(harnessRun)) {
                     taskHarnessService.complete(harnessRun, false, decision.reason(), effectiveCallback);
                     learningCandidateService.recordFailedRun(harnessRun, decision.reason());
-                    return publishAndReturnFinal(sessionKey, effectiveCallback, currentResponse);
+                    return publishAndReturnFinal(sessionKey, eventCallback, currentResponse);
                 }
 
                 currentResponse = attemptRepair(action, harnessRun, taskInput, failure, effectiveCallback);
@@ -834,10 +834,22 @@ public class AgentOrchestrator {
                 || decision.status() == TaskCompletionDecision.Status.REPAIR) {
             return;
         }
+        if (decision.status() == TaskCompletionDecision.Status.CONTINUE
+                && !canTreatContinueAsStepHandoff(decision)) {
+            return;
+        }
         if (response == null || response.isBlank() || response.startsWith("Error:")) {
             return;
         }
         taskHarnessService.completeCurrentPlanStep(harnessRun, response, effectiveCallback);
+    }
+
+    private boolean canTreatContinueAsStepHandoff(TaskCompletionDecision decision) {
+        if (decision == null || decision.missingRequirements() == null) {
+            return false;
+        }
+        return decision.missingRequirements().contains("unfinished_plan_steps")
+                || decision.missingRequirements().contains("planning_only_response");
     }
 
     @FunctionalInterface

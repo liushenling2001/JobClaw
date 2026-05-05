@@ -9,6 +9,7 @@ import io.jobclaw.agent.BoardEventSummarizer;
 import io.jobclaw.agent.ExecutionEvent;
 import io.jobclaw.agent.ExecutionTraceService;
 import io.jobclaw.agent.catalog.AgentCatalogService;
+import io.jobclaw.agent.runtime.AgentRunIds;
 import io.jobclaw.board.BoardEntry;
 import io.jobclaw.board.BoardRecord;
 import io.jobclaw.board.SharedBoardService;
@@ -21,6 +22,7 @@ import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
@@ -28,6 +30,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.function.Consumer;
 
 /**
  * Multi-agent collaboration based on persistent agents or built-in roles.
@@ -82,15 +85,24 @@ public class CollaborateTool {
             int rounds = maxRounds != null ? maxRounds : (collabMode == CollaborationMode.DEBATE ? 3 : 1);
             long timeout = timeoutMs != null ? timeoutMs : config.getAgent().getSubtaskTimeoutMs();
             String collabSessionKey = "collab-" + System.currentTimeMillis();
+            CollaborationRuntime runtime = createRuntime(collabSessionKey, collabMode);
 
             logger.info("Starting collaboration: mode={}, agents={}, sessionKey={}",
                     mode, agentDefs.size(), collabSessionKey);
 
-            return switch (collabMode) {
-                case TEAM -> executeTeamMode(collabSessionKey, task, agentDefs, timeout);
-                case SEQUENTIAL -> executeSequentialMode(collabSessionKey, task, agentDefs);
-                case DEBATE -> executeDebateMode(collabSessionKey, task, agentDefs, rounds);
-            };
+            publishCollaborationStarted(runtime, task, agentDefs);
+            try {
+                String result = switch (collabMode) {
+                    case TEAM -> executeTeamMode(runtime, task, agentDefs, timeout);
+                    case SEQUENTIAL -> executeSequentialMode(runtime, task, agentDefs);
+                    case DEBATE -> executeDebateMode(runtime, task, agentDefs, rounds);
+                };
+                publishCollaborationCompleted(runtime, task, agentDefs.size());
+                return result;
+            } catch (Exception e) {
+                publishCollaborationFailed(runtime, task, e.getMessage());
+                throw e;
+            }
         } catch (ToolGuidanceException e) {
             logger.warn("Collaboration guidance: {}", e.getMessage());
             return e.getMessage();
@@ -100,15 +112,15 @@ public class CollaborateTool {
         }
     }
 
-    private String executeTeamMode(String collabSessionKey,
+    private String executeTeamMode(CollaborationRuntime runtime,
                                    String task,
                                    List<AgentDefinition> agents,
                                    long timeout) {
         StringBuilder result = new StringBuilder();
         List<String> results = new ArrayList<>();
-        BoardRecord board = sharedBoardService.createBoard(collabSessionKey, "Collaboration board for " + collabSessionKey);
-        publishBoardCreated(collabSessionKey, board, "TEAM");
-        writeBoardEntry(collabSessionKey, board.boardId(),
+        BoardRecord board = sharedBoardService.createBoard(runtime.collabSessionKey(), "Collaboration board for " + runtime.collabSessionKey());
+        publishBoardCreated(runtime, board);
+        writeBoardEntry(runtime, board.boardId(),
                 "task",
                 "Team task",
                 task,
@@ -135,12 +147,13 @@ public class CollaborateTool {
         long startTime = System.currentTimeMillis();
 
         for (AgentDefinition def : agents) {
-            String agentSessionKey = collabSessionKey + "-" + def.getCode();
+            String agentSessionKey = runtime.collabSessionKey() + "-" + def.getCode();
             futures.add(executor.submit(() -> {
                 try {
                     AgentLoop agent = agentRegistry.getOrCreateAgent(def, agentSessionKey);
                     String agentTask = buildTeamAgentTask(task, board.boardId(), def);
-                    return agent.processWithDefinition(agentSessionKey, agentTask, def);
+                    return agent.processWithDefinition(agentSessionKey, agentTask, def,
+                            childEventCallback(runtime, agentSessionKey, def, def.getDisplayName()));
                 } catch (Exception e) {
                     return "Error: " + e.getMessage();
                 }
@@ -151,7 +164,7 @@ public class CollaborateTool {
             try {
                 String agentResult = futures.get(i).get(timeout, TimeUnit.MILLISECONDS);
                 results.add(agentResult);
-                writeBoardEntry(collabSessionKey, board.boardId(),
+                writeBoardEntry(runtime, board.boardId(),
                         "artifact",
                         agents.get(i).getDisplayName() + " result",
                         agentResult,
@@ -161,7 +174,7 @@ public class CollaborateTool {
                 result.append("**").append(agents.get(i).getDisplayName()).append("**:\n")
                         .append(agentResult).append("\n\n");
             } catch (TimeoutException e) {
-                writeBoardEntry(collabSessionKey, board.boardId(),
+                writeBoardEntry(runtime, board.boardId(),
                         "risk",
                         agents.get(i).getDisplayName() + " timeout",
                         "Execution timed out after " + timeout + "ms",
@@ -170,7 +183,7 @@ public class CollaborateTool {
                         "team");
                 result.append("**").append(agents.get(i).getDisplayName()).append("**: Timeout\n\n");
             } catch (Exception e) {
-                writeBoardEntry(collabSessionKey, board.boardId(),
+                writeBoardEntry(runtime, board.boardId(),
                         "risk",
                         agents.get(i).getDisplayName() + " error",
                         e.getMessage(),
@@ -191,11 +204,12 @@ public class CollaborateTool {
 
         result.append("### Summary\n\n");
         AgentDefinition summarizerDef = AgentDefinition.fromRole(AgentRole.WRITER);
-        String summarizerSessionKey = collabSessionKey + "-summarizer";
+        String summarizerSessionKey = runtime.collabSessionKey() + "-summarizer";
         AgentLoop summarizer = agentRegistry.getOrCreateAgent(summarizerDef, summarizerSessionKey);
         String summaryTask = buildBoardSummaryTask(board.boardId(), sharedBoardService.readEntries(board.boardId(), 200));
-        String summary = summarizer.processWithDefinition(summarizerSessionKey, summaryTask, summarizerDef);
-        writeBoardEntry(collabSessionKey, board.boardId(),
+        String summary = summarizer.processWithDefinition(summarizerSessionKey, summaryTask, summarizerDef,
+                childEventCallback(runtime, summarizerSessionKey, summarizerDef, "Final team summary"));
+        writeBoardEntry(runtime, board.boardId(),
                 "summary",
                 "Final team summary",
                 summary,
@@ -207,13 +221,13 @@ public class CollaborateTool {
         return result.toString();
     }
 
-    private String executeSequentialMode(String collabSessionKey,
+    private String executeSequentialMode(CollaborationRuntime runtime,
                                          String task,
                                          List<AgentDefinition> agents) {
         StringBuilder result = new StringBuilder();
-        BoardRecord board = sharedBoardService.createBoard(collabSessionKey, "Sequential board for " + collabSessionKey);
-        publishBoardCreated(collabSessionKey, board, "SEQUENTIAL");
-        writeBoardEntry(collabSessionKey, board.boardId(),
+        BoardRecord board = sharedBoardService.createBoard(runtime.collabSessionKey(), "Sequential board for " + runtime.collabSessionKey());
+        publishBoardCreated(runtime, board);
+        writeBoardEntry(runtime, board.boardId(),
                 "task",
                 "Sequential task",
                 task,
@@ -240,13 +254,14 @@ public class CollaborateTool {
             result.append("**Step ").append(i + 1).append(": ").append(def.getDisplayName()).append("**\n\n");
 
             try {
-                String agentSessionKey = collabSessionKey + "-" + def.getCode() + "-" + i;
+                String agentSessionKey = runtime.collabSessionKey() + "-" + def.getCode() + "-" + i;
                 AgentLoop agent = agentRegistry.getOrCreateAgent(def, agentSessionKey);
                 String agentTask = buildSequentialAgentTask(task, currentContext, board.boardId(), def, i + 1);
-                String agentResult = agent.processWithDefinition(agentSessionKey, agentTask, def);
+                String agentResult = agent.processWithDefinition(agentSessionKey, agentTask, def,
+                        childEventCallback(runtime, agentSessionKey, def, "Step " + (i + 1)));
 
                 result.append(agentResult).append("\n\n");
-                writeBoardEntry(collabSessionKey, board.boardId(),
+                writeBoardEntry(runtime, board.boardId(),
                         "artifact",
                         "Step " + (i + 1) + " result - " + def.getDisplayName(),
                         agentResult,
@@ -256,7 +271,7 @@ public class CollaborateTool {
                 currentContext = "Previous result:\n" + agentResult + "\n\nContinue the task: " + task;
             } catch (Exception e) {
                 result.append("Error: ").append(e.getMessage()).append("\n\n");
-                writeBoardEntry(collabSessionKey, board.boardId(),
+                writeBoardEntry(runtime, board.boardId(),
                         "risk",
                         "Step " + (i + 1) + " failed - " + def.getDisplayName(),
                         e.getMessage(),
@@ -270,14 +285,14 @@ public class CollaborateTool {
         return result.toString();
     }
 
-    private String executeDebateMode(String collabSessionKey,
+    private String executeDebateMode(CollaborationRuntime runtime,
                                      String topic,
                                      List<AgentDefinition> agents,
                                      int rounds) {
         StringBuilder result = new StringBuilder();
-        BoardRecord board = sharedBoardService.createBoard(collabSessionKey, "Debate board for " + collabSessionKey);
-        publishBoardCreated(collabSessionKey, board, "DEBATE");
-        writeBoardEntry(collabSessionKey, board.boardId(),
+        BoardRecord board = sharedBoardService.createBoard(runtime.collabSessionKey(), "Debate board for " + runtime.collabSessionKey());
+        publishBoardCreated(runtime, board);
+        writeBoardEntry(runtime, board.boardId(),
                 "task",
                 "Debate topic",
                 topic,
@@ -304,8 +319,8 @@ public class CollaborateTool {
 
         String proponentArg = "";
         String opponentArg = "";
-        String proponentSessionKey = collabSessionKey + "-side-a";
-        String opponentSessionKey = collabSessionKey + "-side-b";
+        String proponentSessionKey = runtime.collabSessionKey() + "-side-a";
+        String opponentSessionKey = runtime.collabSessionKey() + "-side-b";
 
         for (int round = 1; round <= rounds; round++) {
             result.append("### Round ").append(round).append("\n\n");
@@ -316,9 +331,10 @@ public class CollaborateTool {
                 if (!opponentArg.isEmpty()) {
                     proTask = "Other side:\n" + opponentArg + "\n\nRespond and strengthen your case: " + topic;
                 }
-                proponentArg = proAgent.processWithDefinition(proponentSessionKey, proTask, proponent);
+                proponentArg = proAgent.processWithDefinition(proponentSessionKey, proTask, proponent,
+                        childEventCallback(runtime, proponentSessionKey, proponent, "Round " + round + " Side A"));
                 result.append("**Side A**:\n").append(proponentArg).append("\n\n");
-                writeBoardEntry(collabSessionKey, board.boardId(),
+                writeBoardEntry(runtime, board.boardId(),
                         "artifact",
                         "Round " + round + " Side A",
                         proponentArg,
@@ -327,7 +343,7 @@ public class CollaborateTool {
                         "team");
             } catch (Exception e) {
                 result.append("**Side A**: Error: ").append(e.getMessage()).append("\n\n");
-                writeBoardEntry(collabSessionKey, board.boardId(),
+                writeBoardEntry(runtime, board.boardId(),
                         "risk",
                         "Round " + round + " Side A error",
                         e.getMessage(),
@@ -339,9 +355,10 @@ public class CollaborateTool {
             try {
                 AgentLoop oppAgent = agentRegistry.getOrCreateAgent(opponent, opponentSessionKey);
                 String oppTask = "Other side:\n" + proponentArg + "\n\nRespond and rebut: " + topic;
-                opponentArg = oppAgent.processWithDefinition(opponentSessionKey, oppTask, opponent);
+                opponentArg = oppAgent.processWithDefinition(opponentSessionKey, oppTask, opponent,
+                        childEventCallback(runtime, opponentSessionKey, opponent, "Round " + round + " Side B"));
                 result.append("**Side B**:\n").append(opponentArg).append("\n\n");
-                writeBoardEntry(collabSessionKey, board.boardId(),
+                writeBoardEntry(runtime, board.boardId(),
                         "artifact",
                         "Round " + round + " Side B",
                         opponentArg,
@@ -350,7 +367,7 @@ public class CollaborateTool {
                         "team");
             } catch (Exception e) {
                 result.append("**Side B**: Error: ").append(e.getMessage()).append("\n\n");
-                writeBoardEntry(collabSessionKey, board.boardId(),
+                writeBoardEntry(runtime, board.boardId(),
                         "risk",
                         "Round " + round + " Side B error",
                         e.getMessage(),
@@ -362,11 +379,12 @@ public class CollaborateTool {
 
         result.append("### Summary\n\n");
         AgentDefinition summarizerDef = AgentDefinition.fromRole(AgentRole.WRITER);
-        String summarizerSessionKey = collabSessionKey + "-summarizer";
+        String summarizerSessionKey = runtime.collabSessionKey() + "-summarizer";
         AgentLoop summarizer = agentRegistry.getOrCreateAgent(summarizerDef, summarizerSessionKey);
         String summaryTask = buildBoardSummaryTask(board.boardId(), sharedBoardService.readEntries(board.boardId(), 200));
-        String summary = summarizer.processWithDefinition(summarizerSessionKey, summaryTask, summarizerDef);
-        writeBoardEntry(collabSessionKey, board.boardId(),
+        String summary = summarizer.processWithDefinition(summarizerSessionKey, summaryTask, summarizerDef,
+                childEventCallback(runtime, summarizerSessionKey, summarizerDef, "Final debate summary"));
+        writeBoardEntry(runtime, board.boardId(),
                 "summary",
                 "Final debate summary",
                 summary,
@@ -536,20 +554,100 @@ public class CollaborateTool {
         return sb.toString();
     }
 
-    private void publishBoardCreated(String collabSessionKey, BoardRecord board, String mode) {
-        executionTraceService.publish(new ExecutionEvent(
-                resolveEventSessionId(collabSessionKey),
-                ExecutionEvent.EventType.CUSTOM,
-                "Shared board created for " + mode + ": " + board.boardId(),
+    private CollaborationRuntime createRuntime(String collabSessionKey, CollaborationMode mode) {
+        AgentExecutionContext.ExecutionScope parentScope = AgentExecutionContext.getCurrentScope();
+        String parentSessionKey = parentScope != null && parentScope.sessionKey() != null && !parentScope.sessionKey().isBlank()
+                ? parentScope.sessionKey()
+                : collabSessionKey;
+        String parentRunId = parentScope != null ? parentScope.runId() : null;
+        Consumer<ExecutionEvent> parentEventCallback = parentScope != null ? parentScope.eventCallback() : null;
+        return new CollaborationRuntime(
+                collabSessionKey,
+                parentSessionKey,
+                AgentRunIds.newChildRunId(),
+                parentRunId,
+                mode.name(),
+                parentEventCallback
+        );
+    }
+
+    private void publishCollaborationStarted(CollaborationRuntime runtime,
+                                             String task,
+                                             List<AgentDefinition> agents) {
+        publishCollaborationEvent(
+                runtime,
+                "collaboration_started",
+                "Multi-agent collaboration started: " + runtime.mode(),
                 Map.of(
-                        "boardId", board.boardId(),
-                        "boardTitle", board.title(),
-                        "mode", mode
+                        "task", task,
+                        "agentCount", agents.size()
                 )
+        );
+    }
+
+    private void publishCollaborationCompleted(CollaborationRuntime runtime,
+                                               String task,
+                                               int agentCount) {
+        publishCollaborationEvent(
+                runtime,
+                "collaboration_completed",
+                "Multi-agent collaboration completed: " + runtime.mode(),
+                Map.of(
+                        "task", task,
+                        "agentCount", agentCount
+                )
+        );
+    }
+
+    private void publishCollaborationFailed(CollaborationRuntime runtime,
+                                            String task,
+                                            String errorMessage) {
+        publishCollaborationEvent(
+                runtime,
+                "collaboration_failed",
+                "Multi-agent collaboration failed: " + runtime.mode(),
+                Map.of(
+                        "task", task,
+                        "error", errorMessage != null ? errorMessage : ""
+                )
+        );
+    }
+
+    private void publishCollaborationEvent(CollaborationRuntime runtime,
+                                           String status,
+                                           String content,
+                                           Map<String, Object> extraMetadata) {
+        Map<String, Object> metadata = collaborationMetadata(runtime);
+        metadata.put("collaborationStatus", status);
+        if (extraMetadata != null) {
+            metadata.putAll(extraMetadata);
+        }
+        executionTraceService.publish(new ExecutionEvent(
+                runtime.parentSessionKey(),
+                ExecutionEvent.EventType.CUSTOM,
+                content,
+                metadata,
+                runtime.collaborationRunId(),
+                runtime.parentRunId(),
+                "collaborate",
+                "Collaborate Tool"
         ));
     }
 
-    private void writeBoardEntry(String collabSessionKey,
+    private void publishBoardCreated(CollaborationRuntime runtime, BoardRecord board) {
+        executionTraceService.publish(new ExecutionEvent(
+                runtime.parentSessionKey(),
+                ExecutionEvent.EventType.CUSTOM,
+                "Shared board created for " + runtime.mode() + ": " + board.boardId(),
+                metadataWithBoard(runtime, board.boardId(), board.title()),
+                runtime.collaborationRunId(),
+                runtime.parentRunId(),
+                "collaborate",
+                "Collaborate Tool"
+        ));
+    }
+
+    private void writeBoardEntry(CollaborationRuntime runtime,
                                  String boardId,
                                  String entryType,
                                  String title,
@@ -566,24 +664,105 @@ public class CollaborateTool {
                 authorAgentName,
                 visibility
         );
-        ExecutionEvent event = boardEventSummarizer.toProgressEvent(resolveEventSessionId(collabSessionKey), entry)
+        ExecutionEvent event = boardEventSummarizer.toProgressEvent(runtime.parentSessionKey(), entry)
                 .withMetadata("authorAgentId", entry.authorAgentId())
                 .withMetadata("authorAgentName", entry.authorAgentName());
-        executionTraceService.publish(event);
+        event.getMetadata().putAll(collaborationMetadata(runtime));
+        executionTraceService.publish(event.routedTo(
+                runtime.parentSessionKey(),
+                runtime.collaborationRunId(),
+                runtime.parentRunId(),
+                authorAgentId,
+                authorAgentName
+        ));
     }
 
-    private String resolveEventSessionId(String collabSessionKey) {
-        AgentExecutionContext.ExecutionScope scope = AgentExecutionContext.getCurrentScope();
-        if (scope != null && scope.sessionKey() != null && !scope.sessionKey().isBlank()) {
-            return scope.sessionKey();
+    private Consumer<ExecutionEvent> childEventCallback(CollaborationRuntime runtime,
+                                                       String childSessionKey,
+                                                       AgentDefinition definition,
+                                                       String label) {
+        String agentId = definition != null ? definition.getCode() : "assistant";
+        String agentName = definition != null ? definition.getDisplayName() : "Assistant";
+        String childRunId = AgentRunIds.newChildRunId();
+        return event -> executionTraceService.publish(remapChildEvent(
+                event,
+                runtime,
+                childSessionKey,
+                childRunId,
+                agentId,
+                agentName,
+                label
+        ));
+    }
+
+    private ExecutionEvent remapChildEvent(ExecutionEvent childEvent,
+                                           CollaborationRuntime runtime,
+                                           String childSessionKey,
+                                           String childRunId,
+                                           String agentId,
+                                           String agentName,
+                                           String label) {
+        Map<String, Object> metadata = collaborationMetadata(runtime);
+        if (childEvent.getMetadata() != null) {
+            metadata.putAll(childEvent.getMetadata());
         }
-        return collabSessionKey;
+        metadata.put("collaborationChildLabel", label);
+        metadata.put("childSessionId", childSessionKey);
+        metadata.put("originalEventType", childEvent.getType().name());
+
+        ExecutionEvent.EventType eventType = childEvent.getType();
+        String content = childEvent.getContent();
+        if (eventType == ExecutionEvent.EventType.FINAL_RESPONSE) {
+            eventType = ExecutionEvent.EventType.CUSTOM;
+            metadata.put("collaborationChildStatus", "completed");
+            content = "Collaboration agent completed: " + label;
+        }
+
+        return new ExecutionEvent(
+                runtime.parentSessionKey(),
+                eventType,
+                content,
+                metadata,
+                childRunId,
+                runtime.collaborationRunId(),
+                agentId,
+                agentName
+        );
+    }
+
+    private Map<String, Object> metadataWithBoard(CollaborationRuntime runtime,
+                                                  String boardId,
+                                                  String boardTitle) {
+        Map<String, Object> metadata = collaborationMetadata(runtime);
+        metadata.put("boardId", boardId);
+        metadata.put("boardTitle", boardTitle);
+        return metadata;
+    }
+
+    private Map<String, Object> collaborationMetadata(CollaborationRuntime runtime) {
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("source", "collaborate");
+        metadata.put("collabSessionKey", runtime.collabSessionKey());
+        metadata.put("collaborationRunId", runtime.collaborationRunId());
+        metadata.put("mode", runtime.mode());
+        metadata.put("collaborationMode", runtime.mode());
+        return metadata;
     }
 
     private enum CollaborationMode {
         TEAM,
         SEQUENTIAL,
         DEBATE
+    }
+
+    private record CollaborationRuntime(
+            String collabSessionKey,
+            String parentSessionKey,
+            String collaborationRunId,
+            String parentRunId,
+            String mode,
+            Consumer<ExecutionEvent> parentEventCallback
+    ) {
     }
 
     private static final class ToolGuidanceException extends RuntimeException {

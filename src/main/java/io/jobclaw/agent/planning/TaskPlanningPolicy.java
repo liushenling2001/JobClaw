@@ -158,14 +158,6 @@ public class TaskPlanningPolicy {
         );
     }
 
-    private List<PlanStep> worklistSteps() {
-        return List.of(
-                new PlanStep("inspect-inputs", "枚举待处理对象", "完整识别待处理文件、记录或链接"),
-                new PlanStep("execute-worklist", "登记并逐项执行 subtasks", "每个子项都有完成、失败或可重试状态"),
-                new PlanStep("produce-summary", "汇总批量结果", "输出总数、成功、失败和简短明细")
-        );
-    }
-
     private DoneDefinition doneDefinition(TaskPlanningMode planningMode, DeliveryType deliveryType, String taskInput) {
         List<String> artifactDirectories = deliveryType == DeliveryType.FILE_ARTIFACT || deliveryType == DeliveryType.PATCH
                 ? extractLikelyDirectories(taskInput)

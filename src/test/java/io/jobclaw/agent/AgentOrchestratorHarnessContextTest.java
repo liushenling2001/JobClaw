@@ -1,5 +1,8 @@
 package io.jobclaw.agent;
 
+import io.jobclaw.agent.completion.TaskCompletionDecision;
+import io.jobclaw.agent.planning.PlanStep;
+import io.jobclaw.agent.planning.PlanStepStatus;
 import io.jobclaw.agent.planning.TaskPlanningPolicy;
 import io.jobclaw.agent.planning.TaskPlanningMode;
 import io.jobclaw.config.Config;
@@ -186,12 +189,14 @@ class AgentOrchestratorHarnessContextTest {
         AgentLoop loop = mock(AgentLoop.class);
         AtomicInteger calls = new AtomicInteger();
         List<String> finalResponses = new ArrayList<>();
+        AtomicReference<String> runIdRef = new AtomicReference<>();
 
         when(registry.getOrCreateAgent(any(AgentRole.class), anyString())).thenReturn(loop);
         when(loop.process(anyString(), anyString(), any(java.util.function.Consumer.class)))
                 .thenAnswer(invocation -> {
                     int call = calls.incrementAndGet();
                     String runId = AgentExecutionContext.getCurrentRunId();
+                    runIdRef.compareAndSet(null, runId);
                     Consumer<ExecutionEvent> callback = invocation.getArgument(2);
                     callback.accept(new ExecutionEvent("session-a", ExecutionEvent.EventType.FINAL_RESPONSE,
                             call == 1 ? "中间轮次：还需要继续。" : "最终汇总：完成。"));
@@ -239,6 +244,44 @@ class AgentOrchestratorHarnessContextTest {
         assertEquals(1, finalResponses.size());
         assertEquals("最终汇总：完成。", finalResponses.get(0));
         assertTrue(calls.get() >= 2);
+        assertEquals(TaskHarnessPhase.FINISH, harnessService.getRun(runIdRef.get()).getCurrentPhase());
+    }
+
+    @Test
+    void shouldNotCompletePlanStepForPendingSubtaskContinueDecision() throws Exception {
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                Config.defaultConfig(),
+                mock(AgentRegistry.class),
+                new TaskHarnessService(),
+                new TaskHarnessRepairPromptBuilder(),
+                new TaskHarnessRepairStrategy(Config.defaultConfig()),
+                new TaskPlanningPolicy()
+        );
+        TaskHarnessRun run = new TaskHarnessRun("session-a", "run-a", "批量处理文件");
+        run.setPlanningMode(TaskPlanningMode.PHASED, "test");
+        run.initializePlanExecution(List.of(
+                new PlanStep("inspect-inputs", "枚举文件", "文件已定位"),
+                new PlanStep("process-sources", "处理文件", "形成结果")
+        ));
+        run.getPlanExecutionState().startCurrentStep();
+
+        java.lang.reflect.Method method = AgentOrchestrator.class.getDeclaredMethod(
+                "recordStepOutcomeIfUseful",
+                TaskHarnessRun.class,
+                TaskCompletionDecision.class,
+                String.class,
+                java.util.function.Consumer.class
+        );
+        method.setAccessible(true);
+        method.invoke(
+                orchestrator,
+                run,
+                TaskCompletionDecision.cont("Pending subtasks remain", List.of("pending_subtasks")),
+                "已处理一部分，仍有子任务待完成。",
+                (Consumer<ExecutionEvent>) event -> {}
+        );
+
+        assertEquals(PlanStepStatus.RUNNING, run.getPlanExecutionState().steps().get(0).status());
     }
 
     @Test

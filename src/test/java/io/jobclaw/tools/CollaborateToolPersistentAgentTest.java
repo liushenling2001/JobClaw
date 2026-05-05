@@ -1,9 +1,11 @@
 package io.jobclaw.tools;
 
 import io.jobclaw.agent.AgentDefinition;
+import io.jobclaw.agent.AgentExecutionContext;
 import io.jobclaw.agent.AgentLoop;
 import io.jobclaw.agent.AgentRegistry;
 import io.jobclaw.agent.BoardEventSummarizer;
+import io.jobclaw.agent.ExecutionEvent;
 import io.jobclaw.agent.ExecutionTraceService;
 import io.jobclaw.agent.catalog.AgentCatalogService;
 import io.jobclaw.agent.catalog.SqliteAgentCatalogStore;
@@ -14,6 +16,7 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -43,7 +46,7 @@ class CollaborateToolPersistentAgentTest {
         );
 
         AgentLoop loop = mock(AgentLoop.class);
-        when(loop.processWithDefinition(anyString(), anyString(), any(AgentDefinition.class)))
+        when(loop.processWithDefinition(anyString(), anyString(), any(AgentDefinition.class), any()))
                 .thenAnswer(invocation -> {
                     AgentDefinition definition = invocation.getArgument(2);
                     return "processed by " + definition.getDisplayName();
@@ -129,7 +132,7 @@ class CollaborateToolPersistentAgentTest {
         SharedBoardService sharedBoardService = new FileSharedBoardService(tempDir.resolve("boards").toString());
 
         AgentLoop loop = mock(AgentLoop.class);
-        when(loop.processWithDefinition(anyString(), anyString(), any(AgentDefinition.class)))
+        when(loop.processWithDefinition(anyString(), anyString(), any(AgentDefinition.class), any()))
                 .thenAnswer(invocation -> {
                     AgentDefinition definition = invocation.getArgument(2);
                     return "processed by " + definition.getDisplayName();
@@ -169,7 +172,7 @@ class CollaborateToolPersistentAgentTest {
         SharedBoardService sharedBoardService = new FileSharedBoardService(tempDir.resolve("boards").toString());
 
         AgentLoop loop = mock(AgentLoop.class);
-        when(loop.processWithDefinition(anyString(), anyString(), any(AgentDefinition.class)))
+        when(loop.processWithDefinition(anyString(), anyString(), any(AgentDefinition.class), any()))
                 .thenAnswer(invocation -> {
                     AgentDefinition definition = invocation.getArgument(2);
                     return "sequential output by " + definition.getDisplayName();
@@ -208,7 +211,7 @@ class CollaborateToolPersistentAgentTest {
         SharedBoardService sharedBoardService = new FileSharedBoardService(tempDir.resolve("boards").toString());
 
         AgentLoop loop = mock(AgentLoop.class);
-        when(loop.processWithDefinition(anyString(), anyString(), any(AgentDefinition.class)))
+        when(loop.processWithDefinition(anyString(), anyString(), any(AgentDefinition.class), any()))
                 .thenAnswer(invocation -> {
                     AgentDefinition definition = invocation.getArgument(2);
                     if ("writer".equalsIgnoreCase(definition.getCode())) {
@@ -243,6 +246,74 @@ class CollaborateToolPersistentAgentTest {
         assertTrue(entries.stream().anyMatch(entry -> "task".equals(entry.entryType())));
         assertTrue(entries.stream().anyMatch(entry -> "artifact".equals(entry.entryType()) && entry.content().contains("debate output by")));
         assertTrue(entries.stream().anyMatch(entry -> "summary".equals(entry.entryType()) && entry.content().contains("debate summary")));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void shouldRemapChildEventsIntoCollaborationRunWithoutChildFinalResponse() throws Exception {
+        Path tempDir = Files.createTempDirectory("collaborate-events");
+        SharedBoardService sharedBoardService = new FileSharedBoardService(tempDir.resolve("boards").toString());
+        ExecutionTraceService traceService = new ExecutionTraceService();
+
+        AgentLoop loop = mock(AgentLoop.class);
+        when(loop.processWithDefinition(anyString(), anyString(), any(AgentDefinition.class), any()))
+                .thenAnswer(invocation -> {
+                    String childSessionKey = invocation.getArgument(0);
+                    AgentDefinition definition = invocation.getArgument(2);
+                    Consumer<ExecutionEvent> callback = invocation.getArgument(3);
+                    callback.accept(new ExecutionEvent(childSessionKey,
+                            ExecutionEvent.EventType.THINK_STREAM,
+                            "thinking as " + definition.getDisplayName()));
+                    callback.accept(new ExecutionEvent(childSessionKey,
+                            ExecutionEvent.EventType.FINAL_RESPONSE,
+                            "child final should not be treated as page final"));
+                    return "processed by " + definition.getDisplayName();
+                });
+
+        AgentRegistry registry = mock(AgentRegistry.class);
+        when(registry.getOrCreateAgent(any(AgentDefinition.class), anyString())).thenReturn(loop);
+
+        CollaborateTool tool = new CollaborateTool(
+                registry,
+                new AgentCatalogService(new SqliteAgentCatalogStore(tempDir.resolve("agents.db").toString())),
+                sharedBoardService,
+                traceService,
+                new BoardEventSummarizer(),
+                Config.defaultConfig()
+        );
+
+        AgentExecutionContext.setCurrentContext(new AgentExecutionContext.ExecutionScope(
+                "web:parent-session",
+                traceService::publish,
+                "run-parent",
+                null,
+                "assistant",
+                "Assistant",
+                null
+        ));
+        try {
+            tool.collaborate(
+                    "TEAM",
+                    "analyze and summarize",
+                    "[{\"role\":\"coder\"}]",
+                    1,
+                    1000L
+            );
+        } finally {
+            AgentExecutionContext.clear();
+        }
+
+        var events = traceService.getHistory("web:parent-session");
+        assertTrue(events.stream().anyMatch(event ->
+                event.getMetadata().containsKey("collaborationRunId")
+                        && "TEAM".equals(event.getMetadata().get("collaborationMode"))));
+        assertTrue(events.stream().anyMatch(event ->
+                event.getType() == ExecutionEvent.EventType.CUSTOM
+                        && "FINAL_RESPONSE".equals(event.getMetadata().get("originalEventType"))
+                        && "completed".equals(event.getMetadata().get("collaborationChildStatus"))));
+        assertTrue(events.stream().noneMatch(event ->
+                event.getType() == ExecutionEvent.EventType.FINAL_RESPONSE
+                        && "child final should not be treated as page final".equals(event.getContent())));
     }
 
     private String extractBoardId(String result) {
