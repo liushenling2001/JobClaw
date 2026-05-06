@@ -36,3 +36,6 @@ Thumbs.db
 ui/node_modules/
 ui/package-lock.json
 ui/
+
+# Local voice sidecar deployment (models, virtualenvs, cloned runtimes)
+voice-sidecar-local/
