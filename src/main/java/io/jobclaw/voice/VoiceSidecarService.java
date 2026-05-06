@@ -3,6 +3,7 @@ package io.jobclaw.voice;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.jobclaw.config.Config;
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -135,17 +136,18 @@ public class VoiceSidecarService {
         return response.body();
     }
 
+    @PreDestroy
+    public synchronized void shutdown() {
+        stopOwnedSidecar();
+    }
+
     private synchronized void ensureStarted() throws IOException, InterruptedException {
         if (isRunningForCurrentConfig()) {
             return;
         }
         if (isRunning()) {
             if (process != null && process.isAlive()) {
-                process.destroy();
-                if (!process.waitFor(5, TimeUnit.SECONDS)) {
-                    process.destroyForcibly();
-                    process.waitFor(5, TimeUnit.SECONDS);
-                }
+                stopOwnedSidecar();
             } else {
                 throw new IOException("Voice sidecar is already running on " + endpoint()
                         + " with a different TTS configuration. Stop the old sidecar process and retry.");
@@ -193,6 +195,35 @@ public class VoiceSidecarService {
             Thread.sleep(500);
         }
         throw new IOException("Voice sidecar did not become ready within 45 seconds. Check " + logDir.resolve("voice-sidecar.log"));
+    }
+
+    private void stopOwnedSidecar() {
+        Process owned = process;
+        process = null;
+        if (owned == null) {
+            return;
+        }
+        try {
+            ProcessHandle handle = owned.toHandle();
+            handle.descendants().forEach(ProcessHandle::destroy);
+            if (owned.isAlive()) {
+                owned.destroy();
+            }
+            if (!owned.waitFor(5, TimeUnit.SECONDS)) {
+                handle.descendants().forEach(ProcessHandle::destroyForcibly);
+                owned.destroyForcibly();
+                owned.waitFor(5, TimeUnit.SECONDS);
+            }
+            logger.info("Stopped local voice sidecar on {}", endpoint());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            if (owned.isAlive()) {
+                owned.destroyForcibly();
+            }
+            logger.warn("Interrupted while stopping local voice sidecar");
+        } catch (Exception e) {
+            logger.warn("Failed to stop local voice sidecar cleanly: {}", e.getMessage());
+        }
     }
 
     private boolean isRunning() {
