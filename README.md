@@ -16,6 +16,7 @@ JobClaw 是一个本地优先的智能体运行时与工作台，用于把大模
 - 经验系统：区分 Memory、Workflow Memory、Learning Candidates、Experience Memory 和 Skills。
 - 工具体系：文件、命令、网络、记忆、MCP、Cron、多智能体、协作黑板等能力统一接入。
 - Web Console：聊天、会话、智能体配置、任务事件流、学习候选、经验和运行配置可视化。
+- 本地语音交互：Web 聊天支持麦克风输入和流式语音播报，语音运行时可选部署。
 - 多通道接入：Web、CLI、Feishu、Telegram、Discord、DingTalk、QQ 等通道通过 Gateway 进入主执行链路。
 - Jar 分发：前端静态资源会打入 Spring Boot jar，离线环境无需单独部署前端。
 
@@ -36,6 +37,8 @@ flowchart LR
     Loop --> Tools["Tools / Skills / MCP"]
     Tools --> ResultStore["ResultStore / context_ref"]
     Tools --> Files["Workspace Files"]
+    Gateway --> Voice["Voice Sidecar 可选"]
+    Voice --> Speech["STT / TTS"]
 ```
 
 ## 任务运行时
@@ -233,6 +236,57 @@ GET  /api/execute/stream/{sessionKey}
 ```
 
 Web 和 Feishu 等通道都会进入 `AgentOrchestrator + TaskHarness` 主链路。
+
+## 本地语音交互
+
+JobClaw 的语音能力是可选模块，不改变主智能体执行链路。
+
+```text
+麦克风音频 -> /api/voice/transcribe -> 本地 STT -> 普通聊天输入
+助手文本流 -> 前端分段 -> /api/voice/tts -> 本地 TTS -> 浏览器顺序播放
+```
+
+设计边界：
+
+- 语音模块只负责输入和输出，不接管计划、工具、记忆、子智能体或 harness。
+- 未部署本地语音环境时，系统可以正常启动和聊天，前端显示“语音不可用”。
+- 只有实际调用 STT/TTS 时，后端才会尝试启动本地 sidecar。
+- 由 JobClaw 自动启动的 Python sidecar 会在 jar 关闭时一起关闭。
+- 用户手动启动的外部 sidecar 不会被 JobClaw 关闭，避免误杀用户进程。
+- 工具日志、harness 事件和子智能体内部过程默认不播报。
+
+默认本地目录：
+
+```text
+voice-sidecar-local/
+  python/
+  models/
+    asr/faster-whisper-small/
+    tts/Kokoro-82M-v1.1-zh/
+  logs/
+```
+
+该目录被 `.gitignore` 排除，不随仓库提交。部署说明见：
+
+```text
+docs/VOICE_LOCAL_DEPLOYMENT.md
+```
+
+语音接口：
+
+```text
+GET  /api/voice/status
+GET  /api/voice/voices
+POST /api/voice/transcribe
+POST /api/voice/tts
+```
+
+默认 TTS 优先使用本地 `Kokoro-82M-v1.1-zh`。如果需要强制指定引擎：
+
+```powershell
+$env:JOBCLAW_TTS_ENGINE="kokoro"
+java -jar target/jobclaw-1.0.0.jar gateway
+```
 
 ## 配置文件
 
