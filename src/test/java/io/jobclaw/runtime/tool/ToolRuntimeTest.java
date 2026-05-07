@@ -246,6 +246,29 @@ class ToolRuntimeTest {
         executor.shutdownNow();
     }
 
+    @Test
+    void shouldLetCommandToolTimeoutExtendOuterRuntimeTimeout() {
+        Config config = Config.defaultConfig();
+        config.getAgent().setToolCallTimeoutSeconds(1);
+        SessionManager sessionManager = new SessionManager();
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        DefaultToolExecutionStateTracker tracker = new DefaultToolExecutionStateTracker();
+        ToolRuntime toolRuntime = new ToolRuntime(config, sessionManager, executor, tracker);
+
+        ToolExecutionResult result = toolRuntime.execute(new ToolExecutionRequest(
+                "session-run-command-timeout",
+                "run_command",
+                "{\"command\":\"demo\",\"timeout\":2}",
+                new SleepingToolCallback("run_command", "command completed", 1_200),
+                event -> {}
+        ));
+
+        assertEquals("command completed", result.response());
+        assertFalse(tracker.isExecuting("session-run-command-timeout"));
+
+        executor.shutdownNow();
+    }
+
     private static class StaticToolCallback implements ToolCallback {
         private final ToolDefinition toolDefinition;
         private final String response;

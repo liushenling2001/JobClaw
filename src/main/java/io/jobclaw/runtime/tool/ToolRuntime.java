@@ -30,8 +30,11 @@ public class ToolRuntime {
     private static final Logger logger = LoggerFactory.getLogger(ToolRuntime.class);
     private static final long MIN_TIMEOUT_MILLIS = 1_000L;
     private static final long SPAWN_TIMEOUT_GRACE_MILLIS = 30_000L;
+    private static final long COMMAND_TIMEOUT_GRACE_MILLIS = 10_000L;
+    private static final long MAX_REQUESTED_TOOL_TIMEOUT_MILLIS = TimeUnit.HOURS.toMillis(6);
     private static final long TOOL_PROGRESS_INTERVAL_MILLIS = 15_000L;
     private static final Pattern TIMEOUT_MS_PATTERN = Pattern.compile("\"?timeoutMs\"?\\s*[:=]\\s*(\\d+)");
+    private static final Pattern TIMEOUT_SECONDS_PATTERN = Pattern.compile("\"?timeout(?:Seconds)?\"?\\s*[:=]\\s*(\\d+)");
     private static final ScheduledExecutorService TOOL_PROGRESS_EXECUTOR = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread thread = new Thread(r, "jobclaw-tool-progress");
         thread.setDaemon(true);
@@ -327,7 +330,42 @@ public class ToolRuntime {
             long grace = Math.max(SPAWN_TIMEOUT_GRACE_MILLIS, subtaskTimeout / 10);
             return Math.max(MIN_TIMEOUT_MILLIS, subtaskTimeout + grace);
         }
-        return Math.max(MIN_TIMEOUT_MILLIS, config.getAgent().getToolCallTimeoutSeconds() * 1_000L);
+        long configuredTimeout = Math.max(MIN_TIMEOUT_MILLIS, config.getAgent().getToolCallTimeoutSeconds() * 1_000L);
+        if ("run_command".equals(toolName) || "exec".equals(toolName)) {
+            return resolveCommandTimeoutMillis(request, configuredTimeout);
+        }
+        return configuredTimeout;
+    }
+
+    private long resolveCommandTimeoutMillis(String request, long configuredTimeoutMillis) {
+        Long requestedTimeoutMillis = parsePositiveMillis(request, TIMEOUT_SECONDS_PATTERN, 1_000L);
+        if (requestedTimeoutMillis == null) {
+            requestedTimeoutMillis = parsePositiveMillis(request, TIMEOUT_MS_PATTERN, 1L);
+        }
+        if (requestedTimeoutMillis == null) {
+            return configuredTimeoutMillis;
+        }
+        long withGrace = Math.min(MAX_REQUESTED_TOOL_TIMEOUT_MILLIS, requestedTimeoutMillis + COMMAND_TIMEOUT_GRACE_MILLIS);
+        return Math.max(configuredTimeoutMillis, withGrace);
+    }
+
+    private Long parsePositiveMillis(String request, Pattern pattern, long multiplier) {
+        if (request == null || request.isBlank()) {
+            return null;
+        }
+        Matcher matcher = pattern.matcher(request);
+        if (!matcher.find()) {
+            return null;
+        }
+        try {
+            long parsed = Long.parseLong(matcher.group(1));
+            if (parsed <= 0) {
+                return null;
+            }
+            return Math.multiplyExact(parsed, multiplier);
+        } catch (ArithmeticException | NumberFormatException ignored) {
+            return MAX_REQUESTED_TOOL_TIMEOUT_MILLIS;
+        }
     }
 
     private long resolveSubtaskTimeoutMillis(String request) {
