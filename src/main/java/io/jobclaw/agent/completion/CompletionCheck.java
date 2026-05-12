@@ -4,6 +4,8 @@ public record CompletionCheck(
         String id,
         String type,
         String path,
-        String manifestId
+        String manifestId,
+        String artifactType,
+        String outputDir
 ) {
 }

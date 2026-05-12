@@ -13,11 +13,14 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Component
 public class CompletionRegistry {
@@ -25,6 +28,9 @@ public class CompletionRegistry {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper()
             .registerModule(new JavaTimeModule());
     private static final int DEFAULT_MAX_ATTEMPTS = 2;
+    private static final Pattern WINDOWS_ABSOLUTE_PATH = Pattern.compile(
+            "[A-Za-z]:\\\\[^\\r\\n<>|?*\"]+"
+    );
 
     private final Path manifestRootDir;
     private final ConcurrentHashMap<String, CompletionContract> contracts = new ConcurrentHashMap<>();
@@ -64,11 +70,15 @@ public class CompletionRegistry {
     }
 
     public CompletionGateResult evaluateForFinal(String sessionKey, String runId) {
+        return evaluateForFinal(sessionKey, runId, "");
+    }
+
+    public CompletionGateResult evaluateForFinal(String sessionKey, String runId, String finalResponse) {
         CompletionContract contract = contracts.get(key(sessionKey, runId));
         if (contract == null) {
             return CompletionGateResult.unregistered();
         }
-        List<String> failures = evaluateFailures(sessionKey, contract);
+        List<String> failures = evaluateFailures(sessionKey, contract, finalResponse);
         if (failures.isEmpty()) {
             clear(sessionKey, runId);
             return new CompletionGateResult(true, true, false,
@@ -93,7 +103,7 @@ public class CompletionRegistry {
         if (contract == null) {
             return CompletionGateResult.unregistered();
         }
-        List<String> failures = evaluateFailures(sessionKey, contract);
+        List<String> failures = evaluateFailures(sessionKey, contract, "");
         return new CompletionGateResult(
                 true,
                 failures.isEmpty(),
@@ -125,17 +135,19 @@ public class CompletionRegistry {
                     firstNonBlank(stringValue(raw.get("id")), type + "-" + index),
                     type,
                     stringValue(raw.get("path")),
-                    stringValue(raw.get("manifestId"))
+                    stringValue(raw.get("manifestId")),
+                    stringValue(raw.get("artifactType")),
+                    stringValue(raw.get("outputDir"))
             ));
             index++;
         }
         return checks;
     }
 
-    private List<String> evaluateFailures(String sessionKey, CompletionContract contract) {
+    private List<String> evaluateFailures(String sessionKey, CompletionContract contract, String finalResponse) {
         List<String> failures = new ArrayList<>();
         for (CompletionCheck check : contract.checks()) {
-            String failure = evaluateCheck(sessionKey, check);
+            String failure = evaluateCheck(sessionKey, check, finalResponse);
             if (failure != null && !failure.isBlank()) {
                 failures.add(failure);
             }
@@ -143,14 +155,125 @@ public class CompletionRegistry {
         return failures;
     }
 
-    private String evaluateCheck(String sessionKey, CompletionCheck check) {
+    private String evaluateCheck(String sessionKey, CompletionCheck check, String finalResponse) {
         String type = check.type() == null ? "" : check.type().trim().toLowerCase(Locale.ROOT);
         return switch (type) {
             case "file_exists" -> checkFileExists(check);
             case "file_non_empty" -> checkFileNonEmpty(check);
+            case "directory_exists" -> checkDirectoryExists(check);
+            case "directory_non_empty" -> checkDirectoryNonEmpty(check);
             case "manifest_done" -> checkManifestDone(sessionKey, check);
+            case "artifact_expected" -> checkArtifactExpected(check, finalResponse);
             default -> check.id() + ": unsupported check type: " + check.type();
         };
+    }
+
+    private String checkArtifactExpected(CompletionCheck check, String finalResponse) {
+        String artifactType = firstNonBlank(check.artifactType(), "unspecified");
+        String outputDir = firstNonBlank(check.outputDir(), "unspecified");
+        List<Path> candidates = extractArtifactPaths(finalResponse, artifactType);
+        if (candidates.isEmpty()) {
+            return check.id() + ": expected artifact path was not found in the final response: type=" + artifactType
+                    + ", outputDir=" + outputDir
+                    + ". Before final response, state the full generated artifact path if it already exists; "
+                    + "if it does not exist, continue the task and create it.";
+        }
+        if (candidates.size() > 1) {
+            return check.id() + ": multiple candidate artifact paths were found in the final response for type="
+                    + artifactType + ": " + candidates
+                    + ". Before final response, state exactly one final artifact path.";
+        }
+        Path path = candidates.get(0);
+        if ("directory".equalsIgnoreCase(artifactType)) {
+            if (!Files.isDirectory(path)) {
+                return check.id() + ": directory artifact missing: " + path
+                        + ". Continue the task and create the directory artifact, then final answer with its full path.";
+            }
+            return null;
+        }
+        if (!Files.exists(path)) {
+            return check.id() + ": artifact file missing: " + path
+                    + ". Continue the task and create the artifact, then final answer with its full path.";
+        }
+        try {
+            if (Files.size(path) <= 0) {
+                return check.id() + ": artifact file is empty: " + path
+                        + ". Continue the task and create a non-empty artifact, then final answer with its full path.";
+            }
+        } catch (IOException e) {
+            return check.id() + ": cannot read artifact file size: " + e.getMessage();
+        }
+        return null;
+    }
+
+    private List<Path> extractArtifactPaths(String text, String artifactType) {
+        if (text == null || text.isBlank()) {
+            return List.of();
+        }
+        String normalizedType = firstNonBlank(artifactType, "").toLowerCase(Locale.ROOT);
+        List<String> extensions = knownExtensionsForArtifactType(normalizedType);
+        Matcher matcher = WINDOWS_ABSOLUTE_PATH.matcher(text);
+        List<Path> paths = new ArrayList<>();
+        while (matcher.find()) {
+            String rawPath = trimPathCandidate(matcher.group());
+            if (rawPath.isBlank()) {
+                continue;
+            }
+            if (!extensions.isEmpty()) {
+                rawPath = trimToKnownExtension(rawPath, extensions);
+                if (rawPath.isBlank()) {
+                    continue;
+                }
+            }
+            paths.add(Paths.get(rawPath));
+        }
+        return paths.stream()
+                .distinct()
+                .sorted(Comparator.comparing(Path::toString))
+                .toList();
+    }
+
+    private List<String> knownExtensionsForArtifactType(String artifactType) {
+        return switch (artifactType) {
+            case "xlsx" -> List.of(".xlsx");
+            case "xls" -> List.of(".xls");
+            case "excel", "spreadsheet", "workbook" -> List.of(".xlsx", ".xls");
+            case "jsonl" -> List.of(".jsonl");
+            case "json" -> List.of(".json");
+            case "pdf" -> List.of(".pdf");
+            case "doc" -> List.of(".doc");
+            case "docx", "word" -> List.of(".docx");
+            case "csv" -> List.of(".csv");
+            case "md", "markdown" -> List.of(".md");
+            case "html" -> List.of(".html", ".htm");
+            case "pptx", "slides", "presentation" -> List.of(".pptx");
+            case "zip", "archive" -> List.of(".zip");
+            case "txt", "text" -> List.of(".txt");
+            default -> List.of();
+        };
+    }
+
+    private String trimPathCandidate(String value) {
+        String result = value == null ? "" : value.trim();
+        while (!result.isEmpty() && ".,;，。；、)）]】'\"`".indexOf(result.charAt(result.length() - 1)) >= 0) {
+            result = result.substring(0, result.length() - 1).trim();
+        }
+        return result;
+    }
+
+    private String trimToKnownExtension(String value, List<String> extensions) {
+        String lower = value.toLowerCase(Locale.ROOT);
+        int end = -1;
+        for (String extension : extensions) {
+            int index = lower.indexOf(extension);
+            if (index >= 0) {
+                int candidateEnd = index + extension.length();
+                if (end < 0 || candidateEnd < end) {
+                    end = candidateEnd;
+                }
+            }
+        }
+        return end < 0 ? "" : trimPathCandidate(value.substring(0, end));
     }
 
     private String checkFileExists(CompletionCheck check) {
@@ -176,6 +299,32 @@ public class CompletionRegistry {
             return null;
         } catch (IOException e) {
             return check.id() + ": cannot read file size: " + e.getMessage();
+        }
+    }
+
+    private String checkDirectoryExists(CompletionCheck check) {
+        if (check.path() == null || check.path().isBlank()) {
+            return check.id() + ": path is required";
+        }
+        Path path = Paths.get(check.path());
+        if (!Files.isDirectory(path)) {
+            return check.id() + ": directory missing: " + check.path();
+        }
+        return null;
+    }
+
+    private String checkDirectoryNonEmpty(CompletionCheck check) {
+        String existsFailure = checkDirectoryExists(check);
+        if (existsFailure != null) {
+            return existsFailure;
+        }
+        try (var stream = Files.list(Paths.get(check.path()))) {
+            if (stream.findAny().isEmpty()) {
+                return check.id() + ": directory is empty: " + check.path();
+            }
+            return null;
+        } catch (IOException e) {
+            return check.id() + ": cannot read directory: " + e.getMessage();
         }
     }
 

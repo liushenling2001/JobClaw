@@ -17,10 +17,10 @@ public class CompletionTool {
         this.completionRegistry = completionRegistry;
     }
 
-    @Tool(name = "completion", description = "Register or inspect explicit completion checks for the current run. Actions: register, status, clear. Use only when a skill explicitly requires final-output checks.")
+    @Tool(name = "completion", description = "Register, update, or inspect explicit completion checks for the current run. Actions: register, update, status, clear. Use artifact_expected when the required output type is known but the final path is not known yet; final response must include the full artifact path so it can be verified.")
     public String completion(
-            @ToolParam(description = "Action: register/status/clear") String action,
-            @ToolParam(description = "JSON array of checks for register. Supported types: file_exists, file_non_empty, manifest_done.", required = false) String checks,
+            @ToolParam(description = "Action: register/update/status/clear") String action,
+            @ToolParam(description = "JSON array of checks for register/update. Supported types: artifact_expected, file_exists, file_non_empty, directory_exists, directory_non_empty, manifest_done.", required = false) String checks,
             @ToolParam(description = "Recovery instruction returned to the model when final checks fail.", required = false) String onFail,
             @ToolParam(description = "Maximum final-check recovery attempts. Default 2.", required = false) String maxAttempts
     ) {
@@ -29,7 +29,7 @@ public class CompletionTool {
         String runId = currentRunId();
         try {
             return switch (normalizedAction) {
-                case "register" -> register(sessionKey, runId, checks, onFail, parseInt(maxAttempts, 2));
+                case "register", "update" -> register(sessionKey, runId, checks, onFail, parseInt(maxAttempts, 2), normalizedAction);
                 case "status" -> formatStatus(completionRegistry.status(sessionKey, runId));
                 case "clear" -> {
                     completionRegistry.clear(sessionKey, runId);
@@ -42,9 +42,10 @@ public class CompletionTool {
         }
     }
 
-    private String register(String sessionKey, String runId, String checks, String onFail, int maxAttempts) throws Exception {
+    private String register(String sessionKey, String runId, String checks, String onFail, int maxAttempts, String action) throws Exception {
         CompletionContract contract = completionRegistry.register(sessionKey, runId, checks, onFail, maxAttempts);
-        return "Completion contract registered.\n\n"
+        String verb = "update".equals(action) ? "updated" : "registered";
+        return "Completion contract " + verb + ".\n\n"
                 + "checks: " + contract.checks().size() + "\n"
                 + "maxAttempts: " + contract.maxAttempts() + "\n"
                 + "runId: " + runId;

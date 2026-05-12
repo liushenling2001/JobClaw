@@ -376,6 +376,7 @@ public class AgentLoop {
             sessionManager.addMessage(sessionKey, "user", userContent);
             userMessagePersisted = true;
 
+            String finalResponse = "";
             while (true) {
                 String attemptResponse = runModelAttempt(
                         executionClientBundle,
@@ -387,8 +388,9 @@ public class AgentLoop {
                         fullResponse
                 );
 
-                CompletionGateResult gateResult = completionRegistry.evaluateForFinal(sessionKey, scope.runId());
+                CompletionGateResult gateResult = completionRegistry.evaluateForFinal(sessionKey, scope.runId(), attemptResponse);
                 if (gateResult.passed()) {
+                    finalResponse = attemptResponse;
                     break;
                 }
 
@@ -404,7 +406,7 @@ public class AgentLoop {
                     return errorResponse;
                 }
 
-                String gateMessage = gateResult.toModelMessage();
+                String gateMessage = buildCompletionRecoveryPrompt(gateResult, attemptResponse);
                 promptMessages.add(new AssistantMessage(attemptResponse));
                 promptMessages.add(new UserMessage(gateMessage));
             }
@@ -412,7 +414,7 @@ public class AgentLoop {
             long elapsed = System.currentTimeMillis() - startTime;
             logger.info("Agent response received in {}ms", elapsed);
 
-            String response = fullResponse.toString();
+            String response = finalResponse;
 
             // 发布思考结束事件
             if (eventCallback != null) {
@@ -473,6 +475,28 @@ public class AgentLoop {
                 AgentExecutionContext.clear();
             }
         }
+    }
+
+    private String buildCompletionRecoveryPrompt(CompletionGateResult gateResult, String attemptResponse) {
+        StringBuilder sb = new StringBuilder(gateResult.toModelMessage());
+        if (attemptResponse != null && !attemptResponse.isBlank()) {
+            sb.append("\n\nYour previous final response candidate is below. Use it as context; do not repeat it as final answer until completion checks pass.\n");
+            sb.append("```text\n");
+            sb.append(truncateForCompletionRecovery(attemptResponse));
+            sb.append("\n```");
+        }
+        return sb.toString();
+    }
+
+    private String truncateForCompletionRecovery(String text) {
+        int maxChars = 6000;
+        if (text.length() <= maxChars) {
+            return text;
+        }
+        return text.substring(0, maxChars)
+                + "\n...[truncated "
+                + (text.length() - maxChars)
+                + " chars; provide the concrete artifact path or continue the task]";
     }
 
     private String partialOrErrorResponse(StringBuilder partialResponse, String errorResponse) {

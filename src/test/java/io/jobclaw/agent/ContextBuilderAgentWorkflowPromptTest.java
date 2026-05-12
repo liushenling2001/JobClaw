@@ -36,4 +36,28 @@ class ContextBuilderAgentWorkflowPromptTest {
         assertTrue(prompt.contains("spawn(agent='saved-agent-name'"));
         assertTrue(prompt.contains("spawn(role='coder'"));
     }
+
+    @Test
+    void shouldInstructModelToRegisterCompletionForExplicitArtifacts() throws Exception {
+        Path workspace = Files.createTempDirectory("context-builder-completion-artifact");
+        Config config = Config.defaultConfig();
+        config.getAgent().setWorkspace(workspace.toString());
+
+        String sessionsPath = workspace.resolve("sessions").toString();
+        SummaryService summaryService = new FileSummaryService(workspace.resolve("sessions").resolve("conversation").toString());
+        SessionManager sessionManager = new SessionManager(
+                sessionsPath,
+                new FileConversationStore(workspace.resolve("sessions").resolve("conversation").toString()),
+                summaryService
+        );
+        ContextBuilder builder = new ContextBuilder(config, sessionManager, null, summaryService, new MCPService());
+
+        String prompt = builder.buildSystemPrompt("web:test", "生成一个excel放到当前目录");
+
+        assertTrue(prompt.contains("completion(action='register'"));
+        assertTrue(prompt.contains("artifact_expected"));
+        assertTrue(prompt.contains("final response must include the full generated artifact path"));
+        assertTrue(prompt.contains("explicit artifact requirement"));
+        assertTrue(prompt.contains("Registered completion checks are final-response guards only"));
+    }
 }
