@@ -4,6 +4,8 @@ import io.jobclaw.agent.evolution.MemoryEvolver;
 import io.jobclaw.agent.evolution.MemoryStore;
 import io.jobclaw.agent.runtime.AgentRunIds;
 import io.jobclaw.agent.completion.ActiveExecutionRegistry;
+import io.jobclaw.agent.completion.CompletionGateResult;
+import io.jobclaw.agent.completion.CompletionRegistry;
 import io.jobclaw.context.ContextAssembler;
 import io.jobclaw.context.ContextAssemblyOptions;
 import io.jobclaw.context.ContextAssemblyPolicy;
@@ -36,14 +38,10 @@ import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 import reactor.core.publisher.Flux;
 
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.Consumer;
@@ -77,7 +75,7 @@ public class AgentLoop {
     private final ToolExecutionStateTracker toolExecutionStateTracker;
     private final ResolvedProviderConfig defaultProviderConfig;
     private final ActiveExecutionRegistry activeExecutionRegistry;
-    private final ToolSelectionPolicy toolSelectionPolicy;
+    private final CompletionRegistry completionRegistry;
     private final ResultStore resultStore;
 
     // 无工具调用的专用 ChatClient（用于摘要生成）
@@ -103,7 +101,19 @@ public class AgentLoop {
                      SummaryService summaryService,
                      ResultStore resultStore) {
         this(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler, contextAssemblyPolicy,
-                summaryService, null, null, new ProviderRuntime(), new ActiveExecutionRegistry(), resultStore);
+                summaryService, resultStore, new CompletionRegistry(config));
+    }
+
+    public AgentLoop(Config config, SessionManager sessionManager,
+                     ToolCallback[] allToolCallbacks,
+                     ContextBuilder contextBuilder,
+                     ContextAssembler contextAssembler,
+                     ContextAssemblyPolicy contextAssemblyPolicy,
+                     SummaryService summaryService,
+                     ResultStore resultStore,
+                     CompletionRegistry completionRegistry) {
+        this(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler, contextAssemblyPolicy,
+                summaryService, null, null, new ProviderRuntime(), new ActiveExecutionRegistry(), resultStore, completionRegistry);
     }
 
     /**
@@ -117,7 +127,7 @@ public class AgentLoop {
                      SummaryService summaryService,
                      ChatClient chatClient, String model) {
         this(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler, contextAssemblyPolicy,
-                summaryService, chatClient, model, new ProviderRuntime(), new ActiveExecutionRegistry(), new NoopResultStore());
+                summaryService, chatClient, model, new ProviderRuntime(), new ActiveExecutionRegistry(), new NoopResultStore(), new CompletionRegistry(config));
     }
 
     AgentLoop(Config config, SessionManager sessionManager,
@@ -129,7 +139,7 @@ public class AgentLoop {
                      ChatClient chatClient, String model,
                      ProviderRuntime providerRuntime) {
         this(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler, contextAssemblyPolicy,
-                summaryService, chatClient, model, providerRuntime, new ActiveExecutionRegistry(), new NoopResultStore());
+                summaryService, chatClient, model, providerRuntime, new ActiveExecutionRegistry(), new NoopResultStore(), new CompletionRegistry(config));
     }
 
     AgentLoop(Config config, SessionManager sessionManager,
@@ -142,7 +152,7 @@ public class AgentLoop {
                      ProviderRuntime providerRuntime,
                      ActiveExecutionRegistry activeExecutionRegistry) {
         this(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler, contextAssemblyPolicy,
-                summaryService, chatClient, model, providerRuntime, activeExecutionRegistry, new NoopResultStore());
+                summaryService, chatClient, model, providerRuntime, activeExecutionRegistry, new NoopResultStore(), new CompletionRegistry(config));
     }
 
     AgentLoop(Config config, SessionManager sessionManager,
@@ -155,12 +165,27 @@ public class AgentLoop {
                      ProviderRuntime providerRuntime,
                      ActiveExecutionRegistry activeExecutionRegistry,
                      ResultStore resultStore) {
+        this(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler, contextAssemblyPolicy,
+                summaryService, chatClient, model, providerRuntime, activeExecutionRegistry, resultStore, new CompletionRegistry(config));
+    }
+
+    AgentLoop(Config config, SessionManager sessionManager,
+                     ToolCallback[] allToolCallbacks,
+                     ContextBuilder contextBuilder,
+                     ContextAssembler contextAssembler,
+                     ContextAssemblyPolicy contextAssemblyPolicy,
+                     SummaryService summaryService,
+                     ChatClient chatClient, String model,
+                     ProviderRuntime providerRuntime,
+                     ActiveExecutionRegistry activeExecutionRegistry,
+                     ResultStore resultStore,
+                     CompletionRegistry completionRegistry) {
         this.config = config;
         this.sessionManager = sessionManager;
         this.allToolCallbacks = allToolCallbacks;
         this.providerRuntime = providerRuntime;
         this.activeExecutionRegistry = activeExecutionRegistry;
-        this.toolSelectionPolicy = new ToolSelectionPolicy();
+        this.completionRegistry = completionRegistry != null ? completionRegistry : new CompletionRegistry(config);
         this.resultStore = resultStore != null ? resultStore : new NoopResultStore();
 
         ResolvedProviderConfig resolvedProvider = providerRuntime.resolve(config, model);
@@ -351,37 +376,38 @@ public class AgentLoop {
             sessionManager.addMessage(sessionKey, "user", userContent);
             userMessagePersisted = true;
 
-            // 使用流式响应获取 LLM 回复
-            StreamDeltaNormalizer streamDeltaNormalizer = new StreamDeltaNormalizer();
+            while (true) {
+                String attemptResponse = runModelAttempt(
+                        executionClientBundle,
+                        promptMessages,
+                        tools,
+                        options,
+                        sessionKey,
+                        eventCallback,
+                        fullResponse
+                );
 
-            Flux<String> contentStream = executionClientBundle.chatClient().prompt()
-                    .messages(promptMessages)
-                    .toolCallbacks(tools)
-                    .options(options)
-                    .stream()
-                    .content();
-
-            // 阻塞等待流完成，同时收集所有响应内容
-            contentStream.toStream().forEach(content -> {
-                if (content != null && !content.isEmpty()) {
-                    String delta = streamDeltaNormalizer.normalize(fullResponse, content);
-                    if (delta.isEmpty()) {
-                        return;
-                    }
-                    fullResponse.append(delta);
-                    if (eventCallback != null) {
-                        if (toolExecutionStateTracker.isExecuting(sessionKey)) {
-                            toolExecutionStateTracker.bufferThink(sessionKey, delta);
-                        } else {
-                            eventCallback.accept(new ExecutionEvent(
-                                    sessionKey,
-                                    ExecutionEvent.EventType.THINK_STREAM,
-                                    delta
-                            ));
-                        }
-                    }
+                CompletionGateResult gateResult = completionRegistry.evaluateForFinal(sessionKey, scope.runId());
+                if (gateResult.passed()) {
+                    break;
                 }
-            });
+
+                if (!gateResult.canRetry()) {
+                    String errorResponse = "Error: completion checks failed after "
+                            + gateResult.failedAttempts() + " attempt(s).\n\n"
+                            + gateResult.toModelMessage();
+                    if (eventCallback != null) {
+                        eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.ERROR, errorResponse));
+                    }
+                    sessionManager.addMessage(sessionKey, "assistant", fullResponse + "\n\n" + errorResponse);
+                    assistantMessagePersisted = true;
+                    return errorResponse;
+                }
+
+                String gateMessage = gateResult.toModelMessage();
+                promptMessages.add(new AssistantMessage(attemptResponse));
+                promptMessages.add(new UserMessage(gateMessage));
+            }
 
             long elapsed = System.currentTimeMillis() - startTime;
             logger.info("Agent response received in {}ms", elapsed);
@@ -454,6 +480,46 @@ public class AgentLoop {
             return partialResponse.toString();
         }
         return errorResponse;
+    }
+
+    private String runModelAttempt(ExecutionClientBundle executionClientBundle,
+                                   List<Message> promptMessages,
+                                   ToolCallback[] tools,
+                                   OpenAiChatOptions options,
+                                   String sessionKey,
+                                   Consumer<ExecutionEvent> eventCallback,
+                                   StringBuilder fullResponse) {
+        StringBuilder attemptResponse = new StringBuilder();
+        StreamDeltaNormalizer streamDeltaNormalizer = new StreamDeltaNormalizer();
+        Flux<String> contentStream = executionClientBundle.chatClient().prompt()
+                .messages(promptMessages)
+                .toolCallbacks(tools)
+                .options(options)
+                .stream()
+                .content();
+
+        contentStream.toStream().forEach(content -> {
+            if (content != null && !content.isEmpty()) {
+                String delta = streamDeltaNormalizer.normalize(attemptResponse, content);
+                if (delta.isEmpty()) {
+                    return;
+                }
+                attemptResponse.append(delta);
+                fullResponse.append(delta);
+                if (eventCallback != null) {
+                    if (toolExecutionStateTracker.isExecuting(sessionKey)) {
+                        toolExecutionStateTracker.bufferThink(sessionKey, delta);
+                    } else {
+                        eventCallback.accept(new ExecutionEvent(
+                                sessionKey,
+                                ExecutionEvent.EventType.THINK_STREAM,
+                                delta
+                        ));
+                    }
+                }
+            }
+        });
+        return attemptResponse.toString();
     }
 
     /**
@@ -709,20 +775,8 @@ public class AgentLoop {
             return explicitTools;
         }
 
-        Set<String> availableNames = Arrays.stream(allToolCallbacks)
-                .map(tool -> tool.getToolDefinition().name())
-                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
-        Set<String> selectedNames = toolSelectionPolicy.selectToolNames(
-                userContent,
-                availableNames,
-                AgentExecutionContext.getRuntimeRequiredToolNames()
-        );
-        ToolCallback[] selectedTools = Arrays.stream(allToolCallbacks)
-                .filter(tool -> selectedNames.contains(tool.getToolDefinition().name()))
-                .toArray(ToolCallback[]::new);
-        logger.debug("Selected task toolset: {} (runtime required: {})",
-                toolNames(selectedTools), AgentExecutionContext.getRuntimeRequiredToolNames());
-        return selectedTools;
+        logger.debug("No explicit agent tool allowlist; using full toolset: {}", toolNames(allToolCallbacks));
+        return allToolCallbacks;
     }
 
     private boolean containsInterruptedException(Throwable throwable) {

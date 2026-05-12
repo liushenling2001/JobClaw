@@ -1,6 +1,7 @@
 package io.jobclaw.config;
 
 import io.jobclaw.agent.AgentLoop;
+import io.jobclaw.agent.completion.CompletionRegistry;
 import io.jobclaw.agent.catalog.AgentCatalogService;
 import io.jobclaw.agent.catalog.AgentCatalogStore;
 import io.jobclaw.agent.catalog.FileAgentCatalogStore;
@@ -267,6 +268,7 @@ public class AgentBeansConfig {
             MemoryTool memoryTool,
             ContextRefTool contextRefTool,
             ManifestTool manifestTool,
+            CompletionTool completionTool,
             SpawnTool spawnTool,
             CollaborateTool collaborateTool) {
 
@@ -276,7 +278,7 @@ public class AgentBeansConfig {
                 .toolObjects(fileTools, runCommandTool, skillsTools, messageTool, cronTool,
                             mcpTool, tokenUsageTool, webSearchTool, webFetchTool, execTool,
                             sharedBoardTool,
-                            agentCatalogTool, memoryTool, contextRefTool, manifestTool, spawnTool, collaborateTool)
+                            agentCatalogTool, memoryTool, contextRefTool, manifestTool, completionTool, spawnTool, collaborateTool)
                 .build()
                 .getToolCallbacks();
     }
@@ -289,8 +291,9 @@ public class AgentBeansConfig {
                                ContextAssembler contextAssembler,
                                ContextAssemblyPolicy contextAssemblyPolicy,
                                SummaryService summaryService,
-                               ResultStore resultStore) {
-        return new AgentLoop(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler, contextAssemblyPolicy, summaryService, resultStore);
+                               ResultStore resultStore,
+                               CompletionRegistry completionRegistry) {
+        return new AgentLoop(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler, contextAssemblyPolicy, summaryService, resultStore, completionRegistry);
     }
 
     // Tool beans with dependencies
