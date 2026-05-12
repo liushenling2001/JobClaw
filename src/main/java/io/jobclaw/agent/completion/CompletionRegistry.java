@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.jobclaw.config.Config;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -28,6 +29,7 @@ public class CompletionRegistry {
     private final Path manifestRootDir;
     private final ConcurrentHashMap<String, CompletionContract> contracts = new ConcurrentHashMap<>();
 
+    @Autowired
     public CompletionRegistry(Config config) {
         this(Paths.get(config.getWorkspacePath(), ".jobclaw", "manifests"));
     }
