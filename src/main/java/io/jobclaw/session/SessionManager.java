@@ -13,7 +13,6 @@ import io.jobclaw.providers.ToolCall;
 import io.jobclaw.summary.SummaryService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -26,7 +25,6 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * 会话管理器 - 处理对话持久化
  */
-@Component
 public class SessionManager {
 
     private static final Logger logger = LoggerFactory.getLogger(SessionManager.class);

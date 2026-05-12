@@ -12,12 +12,15 @@ import io.jobclaw.skills.SkillSelectionPolicy;
 import io.jobclaw.skills.SkillsService;
 import io.jobclaw.summary.SessionSummaryRecord;
 import io.jobclaw.summary.SummaryService;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -43,6 +46,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class ContextBuilder {
 
     private static final Logger logger = LoggerFactory.getLogger(ContextBuilder.class);
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private static final String SECTION_SEPARATOR = "\n\n---\n\n";
 
@@ -127,6 +131,7 @@ public class ContextBuilder {
             parts.add("# Conversation Summary\n\n" + summary);
         }
 
+        addSectionIfNotBlank(parts, buildManifestSection(sessionKey));
         parts.add(buildCurrentSessionInfo(sessionKey));
         return String.join(SECTION_SEPARATOR, parts);
     }
@@ -268,7 +273,7 @@ public class ContextBuilder {
         sb.append("6. To create a reusable specialized agent, use `agent_catalog` to persist the definition.\n");
         sb.append("7. To run an existing persistent agent, use `spawn(agent='agent-name', task='...')`.\n");
         sb.append("8. Do not invent a parallel agent execution flow when `spawn` already fits the task.\n");
-        sb.append("9. For batch work with independent items (for example multiple files, links, or records), keep compact progress notes and write durable intermediate artifacts when the result set is large. Do not paste all completed item details back into the conversation.\n");
+        sb.append("9. For batch work with independent items (for example multiple files, links, or records), explicitly call `manifest(action='create', taskKey='...', items='[...]')` before processing. Then update item state with `start`, `done`, or `fail`. Do not keep the full item table in conversation.\n");
         sb.append("10. For file tools, copy paths exactly from `list_dir` output or user input. Never add, remove, split, translate, or reformat spaces and Chinese characters in file names.\n");
         sb.append("11. Large tool or sub-agent results may be returned as a `refId` instead of full text. Use `context_ref(action='read'|'search'|'summary', refId='...')` to inspect only the details needed for the task.\n");
         sb.append("12. If a recent tool result is already present or referenced by `refId`, reuse it instead of repeating the same read/search call. Repeat only when arguments change or a fresh read is explicitly needed.\n");
@@ -321,6 +326,76 @@ public class ContextBuilder {
         sb.append("Session: ").append(sessionKey).append("\n");
         sb.append("Time: ").append(Instant.now()).append("\n");
         return sb.toString();
+    }
+
+    private String buildManifestSection(String sessionKey) {
+        if (sessionKey == null || sessionKey.isBlank()) {
+            return "";
+        }
+        Path manifestDir = Paths.get(workspace, ".jobclaw", "manifests", safePathSegment(sessionKey));
+        if (!Files.isDirectory(manifestDir)) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder("# Active Manifests\n\n");
+        try (var stream = Files.list(manifestDir)) {
+            List<Path> manifestFiles = stream
+                    .filter(path -> path.getFileName().toString().endsWith(".json"))
+                    .sorted((left, right) -> {
+                        try {
+                            return Files.getLastModifiedTime(right).compareTo(Files.getLastModifiedTime(left));
+                        } catch (IOException ignored) {
+                            return 0;
+                        }
+                    })
+                    .limit(3)
+                    .toList();
+            if (manifestFiles.isEmpty()) {
+                return "";
+            }
+            for (Path file : manifestFiles) {
+                JsonNode node = OBJECT_MAPPER.readTree(file.toFile());
+                JsonNode items = node.path("items");
+                int total = 0;
+                int pending = 0;
+                int running = 0;
+                int done = 0;
+                int failed = 0;
+                if (items.isObject()) {
+                    var fields = items.fields();
+                    while (fields.hasNext()) {
+                        total++;
+                        JsonNode item = fields.next().getValue();
+                        switch (item.path("status").asText("pending")) {
+                            case "running" -> running++;
+                            case "done" -> done++;
+                            case "failed" -> failed++;
+                            default -> pending++;
+                        }
+                    }
+                }
+                sb.append("- id=").append(node.path("manifestId").asText(""))
+                        .append(" taskKey=").append(node.path("taskKey").asText(""))
+                        .append(" total=").append(total)
+                        .append(" pending=").append(pending)
+                        .append(" running=").append(running)
+                        .append(" done=").append(done)
+                        .append(" failed=").append(failed);
+                String artifactPath = node.path("artifactPath").asText("");
+                if (!artifactPath.isBlank()) {
+                    sb.append(" artifactPath=").append(artifactPath);
+                }
+                sb.append("\n");
+            }
+            sb.append("\nUse `manifest(action='status', manifestId='...', includeItems='pending', limit='10')` to continue an existing batch task.\n");
+            return sb.toString();
+        } catch (IOException e) {
+            logger.debug("Failed to load manifest summaries for session {}: {}", sessionKey, e.getMessage());
+            return "";
+        }
+    }
+
+    private String safePathSegment(String value) {
+        return value.replaceAll("[:/\\\\*?\"<>|]", "_");
     }
 
     public void clearCache() {

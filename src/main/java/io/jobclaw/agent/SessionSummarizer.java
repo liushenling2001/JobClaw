@@ -94,9 +94,6 @@ public class SessionSummarizer {
             %s
             """;
 
-    private static final String OPTION_MAX_TOKENS = "max_tokens";
-    private static final String OPTION_TEMPERATURE = "temperature";
-
     private final SessionManager sessions;
     private final AgentLoop agentLoop;
     private final AgentConfig agentConfig;
@@ -386,10 +383,7 @@ public class SessionSummarizer {
      * @return 选项 Map
      */
     private Map<String, Object> createSummaryOptions() {
-        Map<String, Object> options = new HashMap<>();
-        options.put(OPTION_MAX_TOKENS, agentConfig.getMaxTokens());
-        options.put(OPTION_TEMPERATURE, AgentConstants.SUMMARY_TEMPERATURE);
-        return options;
+        return Map.of();
     }
 
     /**

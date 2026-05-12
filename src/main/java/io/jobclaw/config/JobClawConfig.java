@@ -49,6 +49,12 @@ public class JobClawConfig {
 
     @Bean
     @ConditionalOnMissingBean
+    public ToolsConfig toolsConfig(Config config) {
+        return config.getTools() != null ? config.getTools() : new ToolsConfig();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
     public SecurityGuard securityGuard(Config config) {
         return new SecurityGuard(
                 config.getAgent().getWorkspace(),

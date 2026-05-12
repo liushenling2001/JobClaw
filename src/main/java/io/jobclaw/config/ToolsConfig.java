@@ -1,15 +1,10 @@
 package io.jobclaw.config;
 
-import org.springframework.boot.context.properties.ConfigurationProperties;
-import org.springframework.stereotype.Component;
-
 import java.util.*;
 
 /**
  * 工具配置
  */
-@Component
-@ConfigurationProperties(prefix = "tools")
 public class ToolsConfig {
 
     private WebToolsConfig web;

@@ -491,12 +491,8 @@ public class MemoryEvolver {
      * @return LLM 响应
      */
     private String callLLM(String prompt) {
-        Map<String, Object> options = new HashMap<>();
-        options.put("max_tokens", 512);
-        options.put("temperature", 0.3);
-
         try {
-            return agentLoop.callLLM(prompt, options);
+            return agentLoop.callLLM(prompt, Map.of());
         } catch (Exception e) {
             logger.error("LLM call failed: {}", e.getMessage());
             return null;

@@ -10,7 +10,7 @@ import java.util.Set;
  */
 public class ToolSelectionPolicy {
 
-    private static final Set<String> BASE_TOOLS = Set.of("memory", "skills", "context_ref", "run_command", "exec", "write_file");
+    private static final Set<String> BASE_TOOLS = Set.of("memory", "skills", "context_ref", "manifest", "run_command", "exec", "write_file");
     private static final Set<String> FILE_READ_TOOLS = Set.of(
             "list_dir", "read_file", "read_pdf", "read_word", "read_excel"
     );

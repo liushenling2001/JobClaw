@@ -195,7 +195,8 @@ public class ToolRuntime {
         } catch (Throwable e) {
             throwable = e;
             long durationMs = System.currentTimeMillis() - toolStartAt;
-            sessionManager.addFullMessage(executionRequest.sessionKey(), Message.tool(toolId, "ERROR: " + e.getMessage()));
+            String errorResponse = "Error: " + safeErrorMessage(e);
+            sessionManager.addFullMessage(executionRequest.sessionKey(), Message.tool(toolId, errorResponse));
             eventPublisher.publishError(
                     executionRequest.eventCallback(),
                     executionRequest.sessionKey(),
@@ -203,9 +204,9 @@ public class ToolRuntime {
                     toolId,
                     truncatedRequest,
                     durationMs,
-                    e.getMessage()
+                    errorResponse
             );
-            throw asRuntimeException(e);
+            return new ToolExecutionResult(toolId, errorResponse, durationMs, false, errorResponse);
         } finally {
             progressFuture.cancel(false);
             stateTracker.markIdle(executionRequest.sessionKey());
@@ -216,6 +217,14 @@ public class ToolRuntime {
                 stateTracker.clearBufferedThink(executionRequest.sessionKey());
             }
         }
+    }
+
+    private String safeErrorMessage(Throwable throwable) {
+        String message = throwable.getMessage();
+        if (message != null && !message.isBlank()) {
+            return message;
+        }
+        return throwable.getClass().getSimpleName();
     }
 
     private ScheduledFuture<?> scheduleProgressEvents(ToolExecutionRequest executionRequest,

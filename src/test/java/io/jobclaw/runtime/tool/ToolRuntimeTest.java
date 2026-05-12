@@ -21,7 +21,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ToolRuntimeTest {
@@ -214,7 +213,7 @@ class ToolRuntimeTest {
     }
 
     @Test
-    void shouldPublishErrorEventAndClearTrackerStateOnFailure() {
+    void shouldReturnToolExceptionAsModelVisibleErrorResultAndClearTrackerState() {
         Config config = Config.defaultConfig();
         SessionManager sessionManager = new SessionManager();
         ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -222,15 +221,16 @@ class ToolRuntimeTest {
         ToolRuntime toolRuntime = new ToolRuntime(config, sessionManager, executor, tracker);
         List<ExecutionEvent> events = new ArrayList<>();
 
-        RuntimeException exception = assertThrows(RuntimeException.class, () -> toolRuntime.execute(new ToolExecutionRequest(
+        ToolExecutionResult result = toolRuntime.execute(new ToolExecutionRequest(
                 "session-2",
                 "failing_tool",
                 "{}",
                 new StaticToolCallback("failing_tool", new RuntimeException("boom")),
                 events::add
-        )));
+        ));
 
-        assertEquals("boom", exception.getMessage());
+        assertFalse(result.success());
+        assertEquals("Error: boom", result.response());
         assertFalse(tracker.isExecuting("session-2"));
         assertEquals(List.of(
                 ExecutionEvent.EventType.TOOL_START,

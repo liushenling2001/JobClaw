@@ -70,6 +70,12 @@ public class AgentBeansConfig {
 
     @Bean
     @ConditionalOnMissingBean
+    public ToolsConfig toolsConfig(Config config) {
+        return config.getTools() != null ? config.getTools() : new ToolsConfig();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
     public SkillsLoader skillsLoader(Config config) {
         return new SkillsLoader(config.getWorkspacePath(), null, null);
     }
@@ -260,6 +266,7 @@ public class AgentBeansConfig {
             AgentCatalogTool agentCatalogTool,
             MemoryTool memoryTool,
             ContextRefTool contextRefTool,
+            ManifestTool manifestTool,
             SpawnTool spawnTool,
             CollaborateTool collaborateTool) {
 
@@ -269,7 +276,7 @@ public class AgentBeansConfig {
                 .toolObjects(fileTools, runCommandTool, skillsTools, messageTool, cronTool,
                             mcpTool, tokenUsageTool, webSearchTool, webFetchTool, execTool,
                             sharedBoardTool,
-                            agentCatalogTool, memoryTool, contextRefTool, spawnTool, collaborateTool)
+                            agentCatalogTool, memoryTool, contextRefTool, manifestTool, spawnTool, collaborateTool)
                 .build()
                 .getToolCallbacks();
     }

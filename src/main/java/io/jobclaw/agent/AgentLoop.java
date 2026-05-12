@@ -313,6 +313,9 @@ public class AgentLoop {
                 previousScope
         );
         AgentExecutionContext.setCurrentContext(scope);
+        boolean userMessagePersisted = false;
+        boolean assistantMessagePersisted = false;
+        StringBuilder fullResponse = new StringBuilder();
 
         try {
             Session session = sessionManager.getOrCreate(sessionKey);
@@ -343,8 +346,12 @@ public class AgentLoop {
                     contextAssembler.assemble(sessionKey, userContent, assemblyOptions);
             List<Message> promptMessages = buildPromptMessages(systemPrompt, historyMessages, userContent);
 
+            // Persist the user turn before model execution so interrupted or failed
+            // runs still appear in conversation history.
+            sessionManager.addMessage(sessionKey, "user", userContent);
+            userMessagePersisted = true;
+
             // 使用流式响应获取 LLM 回复
-            StringBuilder fullResponse = new StringBuilder();
             StreamDeltaNormalizer streamDeltaNormalizer = new StreamDeltaNormalizer();
 
             Flux<String> contentStream = executionClientBundle.chatClient().prompt()
@@ -390,8 +397,8 @@ public class AgentLoop {
             }
 
             // 保存会话历史
-            sessionManager.addMessage(sessionKey, "user", userContent);
             sessionManager.addMessage(sessionKey, "assistant", response);
+            assistantMessagePersisted = true;
 
             // 触发会话摘要检查
             sessionSummarizer.maybeSummarize(sessionKey);
@@ -403,19 +410,34 @@ public class AgentLoop {
 
         } catch (Exception e) {
             logger.error("Error processing message for session {}", sessionKey, e);
+            if (!userMessagePersisted) {
+                sessionManager.addMessage(sessionKey, "user", userContent);
+                userMessagePersisted = true;
+            }
             if (containsInterruptedException(e)) {
                 Thread.currentThread().interrupt();
+                if (!assistantMessagePersisted) {
+                    sessionManager.addMessage(sessionKey, "assistant",
+                            partialOrErrorResponse(fullResponse, "Error: execution interrupted"));
+                    assistantMessagePersisted = true;
+                }
                 if (eventCallback != null) {
                     eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.ERROR,
                             "Error: execution interrupted"));
                 }
                 return "Error: execution interrupted";
             }
+            String errorResponse = "Error: " + e.getMessage() + " (check network/API key)";
+            if (!assistantMessagePersisted) {
+                sessionManager.addMessage(sessionKey, "assistant",
+                        partialOrErrorResponse(fullResponse, errorResponse));
+                assistantMessagePersisted = true;
+            }
             if (eventCallback != null) {
                 eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.ERROR,
                         "Error: " + e.getMessage()));
             }
-            return "Error: " + e.getMessage() + " (check network/API key)";
+            return errorResponse;
         } finally {
             toolRuntime.clearRunState(scope.sessionKey(), scope.runId());
             // 清理执行上下文
@@ -425,6 +447,13 @@ public class AgentLoop {
                 AgentExecutionContext.clear();
             }
         }
+    }
+
+    private String partialOrErrorResponse(StringBuilder partialResponse, String errorResponse) {
+        if (partialResponse != null && !partialResponse.isEmpty()) {
+            return partialResponse.toString();
+        }
+        return errorResponse;
     }
 
     /**
@@ -846,7 +875,7 @@ public class AgentLoop {
      * 调用 LLM 生成响应（用于摘要生成，不带工具调用）。
      *
      * @param prompt  提示词
-     * @param options 选项（max_tokens, temperature 等）
+     * @param options 已保留兼容旧调用；辅助 LLM 调用不透传模型参数
      * @return LLM 响应
      */
     private AgentExecutionContext.ExecutionScope createExecutionScope(String sessionKey,
@@ -886,12 +915,9 @@ public class AgentLoop {
 
     public String callLLM(String prompt, Map<String, Object> options) {
         try {
-            OpenAiChatOptions chatOptions = buildSimpleCallOptions(options);
-
             String response = simpleChatClient.prompt()
                     .system("You are a helpful assistant.")
                     .user(prompt)
-                    .options(chatOptions)
                     .call()
                     .content();
 
@@ -901,26 +927,5 @@ public class AgentLoop {
             logger.error("LLM call failed: {}", e.getMessage());
             return "";
         }
-    }
-
-    private OpenAiChatOptions buildSimpleCallOptions(Map<String, Object> options) {
-        OpenAiChatOptions.Builder optionsBuilder = OpenAiChatOptions.builder()
-                .model(model);
-
-        if (options != null) {
-            if (options.containsKey("model")) {
-                Object modelOverride = options.get("model");
-                if (modelOverride != null && !modelOverride.toString().isBlank()) {
-                    optionsBuilder.model(modelOverride.toString());
-                }
-            }
-            if (options.containsKey("max_tokens")) {
-                optionsBuilder.maxTokens((Integer) options.get("max_tokens"));
-            }
-            if (options.containsKey("temperature")) {
-                optionsBuilder.temperature((Double) options.get("temperature"));
-            }
-        }
-        return optionsBuilder.build();
     }
 }
