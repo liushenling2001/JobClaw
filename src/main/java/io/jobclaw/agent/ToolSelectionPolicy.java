@@ -1,19 +1,12 @@
 package io.jobclaw.agent;
 
-import io.jobclaw.agent.completion.DeliveryType;
-import io.jobclaw.agent.planning.TaskPlan;
-import io.jobclaw.agent.planning.TaskPlanningMode;
-import io.jobclaw.agent.planning.TaskPlanningPolicy;
-
 import java.util.Collection;
 import java.util.LinkedHashSet;
 import java.util.Locale;
 import java.util.Set;
 
 /**
- * Selects a smaller task-specific toolset so the model does not see every tool
- * on every turn. Explicit agent tool allowlists are handled by AgentLoop and
- * intentionally bypass this policy.
+ * Selects a smaller task-specific toolset for direct execution.
  */
 public class ToolSelectionPolicy {
 
@@ -26,19 +19,8 @@ public class ToolSelectionPolicy {
     );
     private static final Set<String> EXECUTION_TOOLS = Set.of("run_command", "exec");
     private static final Set<String> WEB_TOOLS = Set.of("web_search", "web_fetch");
-    private static final Set<String> WORKLIST_TOOLS = Set.of("subtasks", "spawn");
     private static final Set<String> AGENT_TOOLS = Set.of("agent_catalog", "spawn", "collaborate");
     private static final Set<String> BOARD_TOOLS = Set.of("board_write", "board_read");
-
-    private final TaskPlanningPolicy planningPolicy;
-
-    public ToolSelectionPolicy() {
-        this(new TaskPlanningPolicy());
-    }
-
-    ToolSelectionPolicy(TaskPlanningPolicy planningPolicy) {
-        this.planningPolicy = planningPolicy;
-    }
 
     public Set<String> selectToolNames(String taskInput, Collection<String> availableToolNames) {
         return selectToolNames(taskInput, availableToolNames, Set.of());
@@ -53,36 +35,14 @@ public class ToolSelectionPolicy {
 
         addIfAvailable(selected, available, BASE_TOOLS);
 
-        TaskPlan plan = planningPolicy.decide(taskInput);
-        if (plan.planningMode() == TaskPlanningMode.WORKLIST
-                || plan.doneDefinition().deliveryType() == DeliveryType.BATCH_RESULTS) {
+        if (looksLikeFileTask(normalized)) {
             addIfAvailable(selected, available, FILE_READ_TOOLS);
-            addIfAvailable(selected, available, WORKLIST_TOOLS);
         }
-
-        switch (plan.doneDefinition().deliveryType()) {
-            case DOCUMENT_SUMMARY -> addIfAvailable(selected, available, FILE_READ_TOOLS);
-            case FILE_ARTIFACT -> {
-                addIfAvailable(selected, available, FILE_READ_TOOLS);
-                addIfAvailable(selected, available, FILE_WRITE_TOOLS);
-                addIfAvailable(selected, available, EXECUTION_TOOLS);
-            }
-            case PATCH -> {
-                addIfAvailable(selected, available, FILE_READ_TOOLS);
-                addIfAvailable(selected, available, FILE_WRITE_TOOLS);
-                addIfAvailable(selected, available, EXECUTION_TOOLS);
-            }
-            case BATCH_RESULTS -> {
-                addIfAvailable(selected, available, FILE_READ_TOOLS);
-                addIfAvailable(selected, available, WORKLIST_TOOLS);
-            }
-            case ANSWER -> {
-                if (looksLikeFileTask(normalized)) {
-                    addIfAvailable(selected, available, FILE_READ_TOOLS);
-                }
-            }
+        if (looksLikeFileWriteTask(normalized)) {
+            addIfAvailable(selected, available, FILE_READ_TOOLS);
+            addIfAvailable(selected, available, FILE_WRITE_TOOLS);
+            addIfAvailable(selected, available, EXECUTION_TOOLS);
         }
-
         if (looksLikeWebTask(normalized)) {
             addIfAvailable(selected, available, WEB_TOOLS);
         }
@@ -127,6 +87,12 @@ public class ToolSelectionPolicy {
                 "文件", "目录", "文件夹", "路径", "读取", "查看", "保存", "写入",
                 ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".txt", ".md", ".java", ".js", ".ts",
                 "file", "folder", "directory", "path", "read", "write", "save");
+    }
+
+    private boolean looksLikeFileWriteTask(String text) {
+        return containsAny(text,
+                "保存", "写入", "修改", "编辑", "生成", "创建", "导出", "excel", "word",
+                "save", "write", "edit", "modify", "generate", "create", "export");
     }
 
     private boolean looksLikeWebTask(String text) {
@@ -174,8 +140,8 @@ public class ToolSelectionPolicy {
                 "协作", "多智能体", "团队", "辩论", "collaborate", "debate", "team");
     }
 
-    private void addIfAvailable(Set<String> selected, Set<String> available, Set<String> toolNames) {
-        for (String toolName : toolNames) {
+    private void addIfAvailable(Set<String> selected, Set<String> available, Set<String> toolNameSet) {
+        for (String toolName : toolNameSet) {
             addIfAvailable(selected, available, toolName);
         }
     }

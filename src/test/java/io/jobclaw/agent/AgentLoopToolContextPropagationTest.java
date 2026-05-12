@@ -40,7 +40,7 @@ class AgentLoopToolContextPropagationTest {
         AgentExecutionContext.setCurrentContext(new AgentExecutionContext.ExecutionScope(
                 "session-a",
                 null,
-                "run-harness-2",
+                "run-direct-2",
                 null,
                 "assistant",
                 "Assistant",
@@ -74,6 +74,6 @@ class AgentLoopToolContextPropagationTest {
 
         String observed = CompletableFuture.supplyAsync(() -> wrapped.call("{}")).join();
 
-        assertEquals("run-harness-2", observed);
+        assertEquals("run-direct-2", observed);
     }
 }

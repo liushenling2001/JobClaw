@@ -1,8 +1,5 @@
 package io.jobclaw.agent.learning;
 
-import io.jobclaw.agent.completion.DeliveryType;
-import io.jobclaw.agent.planning.TaskPlanningMode;
-
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -19,8 +16,6 @@ public class LearningCandidate {
     private String sessionId;
     private String sourceRunId;
     private String taskInput;
-    private TaskPlanningMode planningMode;
-    private DeliveryType deliveryType;
     private String proposal;
     private List<String> tags = new ArrayList<>();
     private double confidence;
@@ -51,12 +46,6 @@ public class LearningCandidate {
 
     public String getTaskInput() { return taskInput; }
     public void setTaskInput(String taskInput) { this.taskInput = taskInput; }
-
-    public TaskPlanningMode getPlanningMode() { return planningMode; }
-    public void setPlanningMode(TaskPlanningMode planningMode) { this.planningMode = planningMode; }
-
-    public DeliveryType getDeliveryType() { return deliveryType; }
-    public void setDeliveryType(DeliveryType deliveryType) { this.deliveryType = deliveryType; }
 
     public String getProposal() { return proposal; }
     public void setProposal(String proposal) { this.proposal = proposal; }

@@ -21,7 +21,7 @@ class AgentLoopToolSelectionTest {
 
     @Test
     void shouldDynamicallyNarrowDefaultTools() throws Exception {
-        AgentLoop loop = loopWithTools("memory", "skills", "read_pdf", "subtasks", "spawn", "run_command");
+        AgentLoop loop = loopWithTools("memory", "skills", "read_pdf", "spawn", "run_command");
 
         ToolCallback[] selected = invokeFilter(loop, null, "解释一下上下文压缩");
         List<String> names = names(selected);
@@ -29,13 +29,12 @@ class AgentLoopToolSelectionTest {
         assertTrue(names.contains("memory"));
         assertTrue(names.contains("skills"));
         assertFalse(names.contains("read_pdf"));
-        assertFalse(names.contains("subtasks"));
         assertTrue(names.contains("run_command"));
     }
 
     @Test
     void shouldRespectExplicitAgentAllowlistWithoutDynamicNarrowing() throws Exception {
-        AgentLoop loop = loopWithTools("memory", "skills", "read_pdf", "subtasks", "spawn", "run_command");
+        AgentLoop loop = loopWithTools("memory", "skills", "read_pdf", "spawn", "run_command");
         AgentDefinition definition = AgentDefinition.builder()
                 .code("pdf-agent")
                 .displayName("PDF Agent")

@@ -3,8 +3,6 @@ package io.jobclaw.agent.experience;
 import io.jobclaw.agent.learning.LearningCandidate;
 import io.jobclaw.agent.learning.LearningCandidateStatus;
 import io.jobclaw.agent.learning.LearningCandidateStore;
-import io.jobclaw.agent.workflow.WorkflowMemoryStore;
-import io.jobclaw.agent.workflow.WorkflowRecipe;
 import io.jobclaw.config.Config;
 import io.jobclaw.config.ExperienceConfig;
 import io.jobclaw.providers.LLMProvider;
@@ -29,34 +27,29 @@ public class ExperienceReviewService {
 
     private final Config config;
     private final LearningCandidateStore learningCandidateStore;
-    private final WorkflowMemoryStore workflowMemoryStore;
     private final ExperienceMemoryStore experienceMemoryStore;
     private final LLMProvider llmProvider;
 
     @Autowired
     public ExperienceReviewService(Config config,
                                    LearningCandidateStore learningCandidateStore,
-                                   WorkflowMemoryStore workflowMemoryStore,
                                    ExperienceMemoryStore experienceMemoryStore,
                                    LLMProvider llmProvider) {
         this.config = config;
         this.learningCandidateStore = learningCandidateStore;
-        this.workflowMemoryStore = workflowMemoryStore;
         this.experienceMemoryStore = experienceMemoryStore;
         this.llmProvider = llmProvider;
     }
 
     public ExperienceReviewService(Config config,
-                                   LearningCandidateStore learningCandidateStore,
-                                   WorkflowMemoryStore workflowMemoryStore) {
-        this(config, learningCandidateStore, workflowMemoryStore, null, null);
+                                   LearningCandidateStore learningCandidateStore) {
+        this(config, learningCandidateStore, null, null);
     }
 
     public ExperienceReviewService(Config config,
                                    LearningCandidateStore learningCandidateStore,
-                                   WorkflowMemoryStore workflowMemoryStore,
                                    LLMProvider llmProvider) {
-        this(config, learningCandidateStore, workflowMemoryStore, null, llmProvider);
+        this(config, learningCandidateStore, null, llmProvider);
     }
 
     public ExperienceReviewResult reviewNow() {
@@ -66,22 +59,21 @@ public class ExperienceReviewService {
             Files.createDirectories(experienceDir);
 
             List<LearningCandidate> candidates = learningCandidateStore.list();
-            List<WorkflowRecipe> workflows = workflowMemoryStore.list();
             List<ExperienceMemory> acceptedMemories = experienceMemoryStore != null
                     ? experienceMemoryStore.list()
                     : List.of();
 
             Path reportPath = experienceDir.resolve("experience-review-" + DAILY_REPORT_NAME.format(reviewedAt) + ".md");
             Path latestPath = experienceDir.resolve("latest.md");
-            String report = buildReport(reviewedAt, workflows, candidates, acceptedMemories);
-            report = appendLlmRefinementIfEnabled(report, workflows, candidates);
+            String report = buildReport(reviewedAt, candidates, acceptedMemories);
+            report = appendLlmRefinementIfEnabled(report, candidates);
             Files.writeString(reportPath, report);
             Files.writeString(latestPath, report);
 
             return new ExperienceReviewResult(
                     reportPath,
                     latestPath,
-                    workflows.size(),
+                    acceptedMemories.size(),
                     countCandidates(candidates, LearningCandidateStatus.PENDING),
                     countCandidates(candidates, LearningCandidateStatus.ACCEPTED),
                     countCandidates(candidates, LearningCandidateStatus.REJECTED),
@@ -93,7 +85,6 @@ public class ExperienceReviewService {
     }
 
     private String appendLlmRefinementIfEnabled(String report,
-                                                List<WorkflowRecipe> workflows,
                                                 List<LearningCandidate> candidates) {
         ExperienceConfig experienceConfig = config.getExperience();
         if (llmProvider == null || experienceConfig == null || !experienceConfig.isLlmReviewEnabled()) {
@@ -104,7 +95,7 @@ public class ExperienceReviewService {
             return report;
         }
         try {
-            String refined = refineWithLlm(report, workflows.size(), pendingCandidates, experienceConfig);
+            String refined = refineWithLlm(report, pendingCandidates, experienceConfig);
             if (refined == null || refined.isBlank() || refined.startsWith("Error:")) {
                 return report + "\n\n## LLM Refined Insights\n\n- LLM review was skipped because the provider returned no usable content.\n";
             }
@@ -116,7 +107,6 @@ public class ExperienceReviewService {
     }
 
     private String refineWithLlm(String report,
-                                 int workflowCount,
                                  int pendingCandidateCount,
                                  ExperienceConfig experienceConfig) {
         String boundedReport = truncate(report, Math.max(2000, experienceConfig.getLlmReviewMaxInputChars()));
@@ -127,7 +117,7 @@ public class ExperienceReviewService {
                 - Do not invent facts not present in the evidence.
                 - Do not propose automatic code, memory, skill, or agent-profile changes.
                 - Produce concise operational guidance only.
-                - Separate negative lessons from reusable workflows.
+                - Separate negative lessons from reusable operating guidance.
                 - Output Chinese unless the evidence is mostly English.
 
                 Required sections:
@@ -136,12 +126,11 @@ public class ExperienceReviewService {
                 3. 建议人工确认的候选
 
                 Evidence summary:
-                workflowCount=%d
                 pendingCandidateCount=%d
 
                 Evidence:
                 %s
-                """.formatted(workflowCount, pendingCandidateCount, boundedReport);
+                """.formatted(pendingCandidateCount, boundedReport);
         LLMProvider.LLMOptions options = LLMProvider.LLMOptions.create()
                 .withTemperature(0.2)
                 .withMaxTokens(Math.max(256, experienceConfig.getLlmReviewMaxTokens()));
@@ -158,18 +147,15 @@ public class ExperienceReviewService {
     }
 
     private String buildReport(Instant reviewedAt,
-                               List<WorkflowRecipe> workflows,
                                List<LearningCandidate> candidates,
                                List<ExperienceMemory> acceptedMemories) {
         StringBuilder sb = new StringBuilder();
         sb.append("# JobClaw Experience Review\n\n");
         sb.append("- Reviewed at: ").append(reviewedAt).append("\n");
-        sb.append("- Workflow recipes: ").append(workflows.size()).append("\n");
         sb.append("- Pending candidates: ").append(countCandidates(candidates, LearningCandidateStatus.PENDING)).append("\n");
         sb.append("- Accepted candidates: ").append(countCandidates(candidates, LearningCandidateStatus.ACCEPTED)).append("\n");
         sb.append("- Rejected candidates: ").append(countCandidates(candidates, LearningCandidateStatus.REJECTED)).append("\n\n");
 
-        appendTopWorkflows(sb, workflows);
         appendAcceptedExperience(sb, acceptedMemories);
         appendNegativeLessons(sb, candidates);
         appendPendingCandidates(sb, candidates);
@@ -201,33 +187,6 @@ public class ExperienceReviewService {
             }
             if (!memory.getAvoidRules().isEmpty()) {
                 sb.append("  Avoid: ").append(singleLine(String.join("; ", memory.getAvoidRules()))).append("\n");
-            }
-        }
-        sb.append("\n");
-    }
-
-    private void appendTopWorkflows(StringBuilder sb, List<WorkflowRecipe> workflows) {
-        sb.append("## Reusable Workflows\n\n");
-        List<WorkflowRecipe> topWorkflows = workflows.stream()
-                .sorted(Comparator.comparing(WorkflowRecipe::getConfidence).reversed()
-                        .thenComparing(WorkflowRecipe::getSuccessCount, Comparator.reverseOrder()))
-                .limit(10)
-                .toList();
-        if (topWorkflows.isEmpty()) {
-            sb.append("- No workflow memory has been recorded yet.\n\n");
-            return;
-        }
-        for (WorkflowRecipe recipe : topWorkflows) {
-            sb.append("- ").append(blankToDefault(recipe.getName(), "Unnamed workflow"))
-                    .append(" | confidence=").append(recipe.getConfidence())
-                    .append(" | successCount=").append(recipe.getSuccessCount())
-                    .append(" | deliveryType=").append(recipe.getDeliveryType())
-                    .append("\n");
-            if (recipe.getApplicability() != null && !recipe.getApplicability().isBlank()) {
-                sb.append("  Applies when: ").append(singleLine(recipe.getApplicability())).append("\n");
-            }
-            if (!recipe.getToolSequence().isEmpty()) {
-                sb.append("  Tools: ").append(String.join(" -> ", recipe.getToolSequence())).append("\n");
             }
         }
         sb.append("\n");
@@ -287,7 +246,7 @@ public class ExperienceReviewService {
         sb.append("## Runtime Rules\n\n");
         sb.append("- This review is evidence only; it does not rewrite memory, skills, agents, or core logic.\n");
         sb.append("- Promote candidates only after user approval or repeated successful runs.\n");
-        sb.append("- Use workflow memory as guidance, not as a hard override when the current task conflicts.\n");
+        sb.append("- Use accepted experience as guidance, not as a hard override when the current task conflicts.\n");
     }
 
     private int countCandidates(List<LearningCandidate> candidates, LearningCandidateStatus status) {

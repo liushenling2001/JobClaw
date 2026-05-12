@@ -2,7 +2,6 @@ package io.jobclaw.agent.experience;
 
 import io.jobclaw.agent.learning.LearningCandidate;
 import io.jobclaw.agent.learning.LearningCandidateType;
-import io.jobclaw.agent.workflow.WorkflowRecipe;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -51,34 +50,6 @@ public class ExperienceMemoryService {
                 .toList();
     }
 
-    public Optional<ExperienceMemory> applyAutoPromotedWorkflow(WorkflowRecipe recipe) {
-        if (recipe == null || recipe.getId() == null || recipe.getId().isBlank()) {
-            return Optional.empty();
-        }
-        List<ExperienceMemory> memories = new ArrayList<>(store.list());
-        Optional<ExperienceMemory> existing = memories.stream()
-                .filter(memory -> recipe.getId().equals(memory.getMetadata().get("sourceWorkflowRecipeId")))
-                .findFirst();
-        ExperienceMemory memory = existing.orElseGet(() -> newAutoPromotedWorkflowMemory(recipe));
-        memory.setStatus(ExperienceMemoryStatus.ACTIVE);
-        memory.setUpdatedAt(Instant.now());
-        memory.setConfidence(Math.max(memory.getConfidence(), recipe.getConfidence()));
-        memory.setToolSequence(recipe.getToolSequence());
-        memory.setApplicability(recipe.getApplicability());
-        memory.setProposal(buildAutoWorkflowProposal(recipe));
-        Map<String, Object> metadata = new LinkedHashMap<>(memory.getMetadata());
-        metadata.put("source", "workflow_auto_promoted");
-        metadata.put("sourceWorkflowRecipeId", recipe.getId());
-        metadata.put("successCount", recipe.getSuccessCount());
-        metadata.put("sourceRunIds", recipe.getSourceRunIds());
-        memory.setMetadata(metadata);
-        if (existing.isEmpty()) {
-            memories.add(memory);
-        }
-        store.saveAll(memories);
-        return Optional.of(memory);
-    }
-
     private ExperienceMemory newMemory(LearningCandidate candidate, ExperienceMemoryType type) {
         Instant now = Instant.now();
         ExperienceMemory memory = new ExperienceMemory();
@@ -88,8 +59,6 @@ public class ExperienceMemoryService {
         memory.setStatus(ExperienceMemoryStatus.ACTIVE);
         memory.setTitle(candidate.getTitle());
         memory.setApplicability(candidate.getTaskInput());
-        memory.setPlanningMode(candidate.getPlanningMode());
-        memory.setDeliveryType(candidate.getDeliveryType());
         memory.setToolSequence(extractToolSequence(candidate));
         memory.setAvoidRules(type == ExperienceMemoryType.AVOID_RULE
                 ? List.of(firstNonBlank(metadataValue(candidate, "failureReason"), candidate.getReason(), candidate.getProposal()))
@@ -100,44 +69,6 @@ public class ExperienceMemoryService {
         memory.setUpdatedAt(now);
         memory.setMetadata(candidate.getMetadata());
         return memory;
-    }
-
-    private ExperienceMemory newAutoPromotedWorkflowMemory(WorkflowRecipe recipe) {
-        Instant now = Instant.now();
-        ExperienceMemory memory = new ExperienceMemory();
-        memory.setId(UUID.randomUUID().toString());
-        memory.setType(ExperienceMemoryType.WORKFLOW_EXPERIENCE);
-        memory.setStatus(ExperienceMemoryStatus.ACTIVE);
-        memory.setTitle("自动沉淀的成功流程：" + firstNonBlank(recipe.getName(), "成功流程"));
-        memory.setApplicability(recipe.getApplicability());
-        memory.setPlanningMode(recipe.getPlanningMode());
-        memory.setDeliveryType(recipe.getDeliveryType());
-        memory.setToolSequence(recipe.getToolSequence());
-        memory.setProposal(buildAutoWorkflowProposal(recipe));
-        memory.setConfidence(recipe.getConfidence());
-        memory.setCreatedAt(now);
-        memory.setUpdatedAt(now);
-        memory.setMetadata(Map.of(
-                "source", "workflow_auto_promoted",
-                "sourceWorkflowRecipeId", recipe.getId(),
-                "successCount", recipe.getSuccessCount(),
-                "sourceRunIds", recipe.getSourceRunIds()
-        ));
-        return memory;
-    }
-
-    private String buildAutoWorkflowProposal(WorkflowRecipe recipe) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("This workflow was auto-promoted after repeated successful similar runs.\n");
-        sb.append("Success count: ").append(recipe.getSuccessCount()).append("\n");
-        if (!recipe.getToolSequence().isEmpty()) {
-            sb.append("Tool sequence: ").append(String.join(" -> ", recipe.getToolSequence())).append("\n");
-        }
-        if (recipe.getSubtaskPattern() != null && !recipe.getSubtaskPattern().isBlank()) {
-            sb.append("Subtask pattern: ").append(recipe.getSubtaskPattern()).append("\n");
-        }
-        sb.append("Use as default reference unless current user instructions conflict.");
-        return sb.toString();
     }
 
     private ExperienceMemoryType mapType(LearningCandidateType type) {

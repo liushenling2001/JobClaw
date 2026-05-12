@@ -3,7 +3,6 @@ package io.jobclaw.web;
 import io.jobclaw.agent.AgentLoop;
 import io.jobclaw.agent.AgentOrchestrator;
 import io.jobclaw.agent.ExecutionTraceService;
-import io.jobclaw.agent.TaskHarnessService;
 import io.jobclaw.agent.catalog.FileAgentCatalogStore;
 import io.jobclaw.agent.catalog.AgentCatalogService;
 import io.jobclaw.agent.experience.ExperienceMemoryService;
@@ -50,7 +49,6 @@ class WebConsoleControllerAgentApiTest {
                 mock(AgentOrchestrator.class),
                 new MessageBus(),
                 new ExecutionTraceService(),
-                new TaskHarnessService(),
                 mock(CronService.class),
                 mock(SkillsService.class),
                 mock(io.jobclaw.mcp.MCPService.class),
@@ -117,7 +115,6 @@ class WebConsoleControllerAgentApiTest {
                 mock(AgentOrchestrator.class),
                 new MessageBus(),
                 new ExecutionTraceService(),
-                new TaskHarnessService(),
                 mock(CronService.class),
                 mock(SkillsService.class),
                 mock(io.jobclaw.mcp.MCPService.class),

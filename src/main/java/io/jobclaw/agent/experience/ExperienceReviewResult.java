@@ -6,7 +6,7 @@ import java.time.Instant;
 public record ExperienceReviewResult(
         Path reportPath,
         Path latestPath,
-        int workflowCount,
+        int activeMemoryCount,
         int pendingCandidateCount,
         int acceptedCandidateCount,
         int rejectedCandidateCount,

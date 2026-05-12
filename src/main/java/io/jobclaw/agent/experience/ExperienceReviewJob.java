@@ -17,9 +17,9 @@ public class ExperienceReviewJob {
 
     public String run() {
         ExperienceReviewResult result = experienceReviewService.reviewNow();
-        logger.info("Experience review completed: report={}, workflows={}, pendingCandidates={}",
+        logger.info("Experience review completed: report={}, activeMemories={}, pendingCandidates={}",
                 result.reportPath(),
-                result.workflowCount(),
+                result.activeMemoryCount(),
                 result.pendingCandidateCount());
         return "Experience review completed: " + result.reportPath();
     }

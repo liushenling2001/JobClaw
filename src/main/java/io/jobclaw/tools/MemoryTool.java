@@ -7,7 +7,6 @@ import io.jobclaw.agent.learning.LearningCandidate;
 import io.jobclaw.agent.learning.LearningCandidateStatus;
 import io.jobclaw.agent.learning.LearningCandidateStore;
 import io.jobclaw.agent.learning.LearningCandidateType;
-import io.jobclaw.agent.planning.TaskPlanningMode;
 import io.jobclaw.config.Config;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.ai.tool.annotation.Tool;
@@ -198,8 +197,6 @@ public class MemoryTool {
         candidate.setSessionId(AgentExecutionContext.getCurrentSessionKey());
         candidate.setSourceRunId(AgentExecutionContext.getCurrentRunId());
         candidate.setTaskInput(content);
-        candidate.setPlanningMode(TaskPlanningMode.DIRECT);
-        candidate.setDeliveryType(null);
         candidate.setProposal(buildExplicitMemoryProposal(content, type));
         candidate.setTags(buildCandidateTags(tags, type));
         candidate.setConfidence(Math.max(0.5d, Math.min(0.9d, importance)));

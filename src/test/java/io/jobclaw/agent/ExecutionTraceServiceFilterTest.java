@@ -24,22 +24,22 @@ class ExecutionTraceServiceFilterTest {
     }
 
     @Test
-    void shouldKeepTaskHarnessCustomEventsQueryableByRunId() {
+    void shouldKeepCustomEventsQueryableByRunId() {
         ExecutionTraceService service = new ExecutionTraceService();
         service.publish(new ExecutionEvent(
                 "session-a",
                 ExecutionEvent.EventType.CUSTOM,
-                "Task harness started",
-                Map.of("source", "task_harness", "label", "started"),
+                "Agent run started",
+                Map.of("source", "agent_loop", "label", "started"),
                 "run-9",
                 null,
-                "task_harness",
-                "Task Harness"
+                "agent_loop",
+                "Agent Loop"
         ));
 
         var runEvents = service.getHistoryByRun("session-a", "run-9", 10);
         assertEquals(1, runEvents.size());
-        assertEquals("task_harness", runEvents.get(0).getMetadata().get("source"));
+        assertEquals("agent_loop", runEvents.get(0).getMetadata().get("source"));
     }
 
     @Test

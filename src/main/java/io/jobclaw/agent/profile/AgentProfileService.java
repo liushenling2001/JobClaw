@@ -83,7 +83,7 @@ public class AgentProfileService {
                 "主智能体",
                 AgentProfileKind.MAIN_AGENT,
                 "assistant",
-                "Main assistant loaded from ~/.jobclaw/config.json and used as the parent runtime for default subtasks.",
+                "Main assistant loaded from ~/.jobclaw/config.json and used as the parent runtime for child agents.",
                 "主智能体的系统提示由运行时上下文构建器生成。",
                 null,
                 null,
@@ -140,7 +140,7 @@ public class AgentProfileService {
         modelConfig.put("temperature", config.getAgent().getTemperature());
         modelConfig.put("maxTokens", config.getAgent().getMaxTokens());
         modelConfig.put("toolCallTimeoutSeconds", config.getAgent().getToolCallTimeoutSeconds());
-        modelConfig.put("subtaskTimeoutMs", config.getAgent().getSubtaskTimeoutMs());
+        modelConfig.put("childAgentTimeoutMs", config.getAgent().getChildAgentTimeoutMs());
         ProvidersConfig.ProviderConfig providerConfig = config.getProviderConfigByName(config.getAgent().getProvider());
         if (providerConfig != null && providerConfig.getApiBase() != null && !providerConfig.getApiBase().isBlank()) {
             modelConfig.put("apiBase", providerConfig.getApiBase());

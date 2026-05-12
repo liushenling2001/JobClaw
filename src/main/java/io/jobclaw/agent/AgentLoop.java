@@ -417,6 +417,7 @@ public class AgentLoop {
             }
             return "Error: " + e.getMessage() + " (check network/API key)";
         } finally {
+            toolRuntime.clearRunState(scope.sessionKey(), scope.runId());
             // 清理执行上下文
             if (previousScope != null) {
                 AgentExecutionContext.setCurrentContext(previousScope);
@@ -492,7 +493,7 @@ public class AgentLoop {
         String content = message.getContent() != null ? message.getContent() : "";
         return switch (role) {
             case "system" -> new SystemMessage(content);
-            case "assistant" -> new AssistantMessage(content);
+            case "assistant" -> toSpringAssistantMessage(message, content);
             case "tool" -> ToolResponseMessage.builder()
                     .responses(List.of(new ToolResponseMessage.ToolResponse(
                             message.getToolCallId() != null ? message.getToolCallId() : "tool",
@@ -502,6 +503,25 @@ public class AgentLoop {
                     .build();
             default -> new UserMessage(content);
         };
+    }
+
+    private Message toSpringAssistantMessage(io.jobclaw.providers.Message message, String content) {
+        if (message.getToolCalls() == null || message.getToolCalls().isEmpty()) {
+            return new AssistantMessage(content);
+        }
+        List<AssistantMessage.ToolCall> toolCalls = message.getToolCalls().stream()
+                .filter(toolCall -> toolCall != null && toolCall.getFunction() != null)
+                .map(toolCall -> new AssistantMessage.ToolCall(
+                        toolCall.getId(),
+                        toolCall.getType() != null ? toolCall.getType() : "function",
+                        toolCall.getFunction().getName(),
+                        toolCall.getFunction().getArguments()
+                ))
+                .toList();
+        return AssistantMessage.builder()
+                .content(content)
+                .toolCalls(toolCalls)
+                .build();
     }
 
     /**

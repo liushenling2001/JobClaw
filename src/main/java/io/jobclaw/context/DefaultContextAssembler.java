@@ -38,7 +38,8 @@ public class DefaultContextAssembler implements ContextAssembler {
                 : defaultRecentLimit;
 
         if (recentLimit > 0 && history.size() > recentLimit) {
-            history = new ArrayList<>(history.subList(history.size() - recentLimit, history.size()));
+            int start = adjustStartIndexForToolIntegrity(history, history.size() - recentLimit);
+            history = new ArrayList<>(history.subList(start, history.size()));
         }
 
         if (!history.isEmpty()) {
@@ -158,7 +159,7 @@ public class DefaultContextAssembler implements ContextAssembler {
 
         List<Message> filtered = new ArrayList<>();
         for (Message message : messages) {
-            if (message == null || isToolMessage(message.getRole())) {
+            if (message == null) {
                 continue;
             }
             filtered.add(message);
@@ -168,6 +169,17 @@ public class DefaultContextAssembler implements ContextAssembler {
 
     private boolean isToolMessage(String role) {
         return "tool".equals(role);
+    }
+
+    private int adjustStartIndexForToolIntegrity(List<Message> history, int startIndex) {
+        if (history == null || history.isEmpty()) {
+            return 0;
+        }
+        int start = Math.max(0, Math.min(startIndex, history.size()));
+        while (start > 0 && isToolMessage(history.get(start).getRole())) {
+            start--;
+        }
+        return start;
     }
 
     private String buildMemoryFactContext(List<MemoryFact> memoryFacts, int tokenBudget) {
@@ -190,18 +202,54 @@ public class DefaultContextAssembler implements ContextAssembler {
             return List.of();
         }
 
+        List<List<Message>> groups = groupMessages(history);
         List<Message> trimmed = new ArrayList<>();
         int consumed = 0;
-        for (int i = history.size() - 1; i >= 0; i--) {
-            Message message = history.get(i);
-            int messageTokens = estimateMessageTokens(message);
-            if (!trimmed.isEmpty() && consumed + messageTokens > historyBudget) {
+        for (int i = groups.size() - 1; i >= 0; i--) {
+            List<Message> group = groups.get(i);
+            int groupTokens = estimateMessagesTokens(group);
+            if (!trimmed.isEmpty() && consumed + groupTokens > historyBudget) {
                 break;
             }
-            trimmed.add(0, truncateMessageToBudget(message, Math.min(messageTokens, historyBudget - consumed)));
-            consumed += estimateMessageTokens(trimmed.get(0));
+            List<Message> copied = truncateGroupToBudget(group, Math.min(groupTokens, historyBudget - consumed));
+            trimmed.addAll(0, copied);
+            consumed += estimateMessagesTokens(copied);
         }
         return trimmed;
+    }
+
+    private List<List<Message>> groupMessages(List<Message> history) {
+        List<List<Message>> groups = new ArrayList<>();
+        for (int i = 0; i < history.size(); i++) {
+            Message message = history.get(i);
+            List<Message> group = new ArrayList<>();
+            group.add(message);
+            if (hasToolCalls(message)) {
+                i++;
+                while (i < history.size() && isToolMessage(history.get(i).getRole())) {
+                    group.add(history.get(i));
+                    i++;
+                }
+                i--;
+            }
+            groups.add(group);
+        }
+        return groups;
+    }
+
+    private List<Message> truncateGroupToBudget(List<Message> group, int budget) {
+        if (group == null || group.isEmpty()) {
+            return List.of();
+        }
+        if (group.size() == 1) {
+            return List.of(truncateMessageToBudget(group.get(0), budget));
+        }
+        int perMessageBudget = Math.max(64, budget / group.size());
+        List<Message> copied = new ArrayList<>();
+        for (Message message : group) {
+            copied.add(truncateMessageToBudget(message, perMessageBudget));
+        }
+        return copied;
     }
 
     private Message truncateMessageToBudget(Message message, int budget) {
@@ -209,12 +257,19 @@ public class DefaultContextAssembler implements ContextAssembler {
             return message;
         }
         String truncated = truncateToBudget(message.getContent(), budget);
-        return switch (message.getRole()) {
+        Message copied = switch (message.getRole()) {
             case "system" -> Message.system(truncated);
             case "assistant" -> Message.assistant(truncated);
             case "tool" -> Message.tool(message.getToolCallId(), truncated);
             default -> Message.user(truncated);
         };
+        copied.setToolCalls(message.getToolCalls());
+        copied.setImages(message.getImages());
+        return copied;
+    }
+
+    private boolean hasToolCalls(Message message) {
+        return message != null && message.getToolCalls() != null && !message.getToolCalls().isEmpty();
     }
 
     private String truncateToBudget(String text, int tokenBudget) {

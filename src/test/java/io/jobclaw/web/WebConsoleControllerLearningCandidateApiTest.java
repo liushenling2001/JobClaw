@@ -3,7 +3,6 @@ package io.jobclaw.web;
 import io.jobclaw.agent.AgentLoop;
 import io.jobclaw.agent.AgentOrchestrator;
 import io.jobclaw.agent.ExecutionTraceService;
-import io.jobclaw.agent.TaskHarnessService;
 import io.jobclaw.agent.catalog.AgentCatalogService;
 import io.jobclaw.agent.catalog.FileAgentCatalogStore;
 import io.jobclaw.agent.experience.ExperienceMemoryService;
@@ -46,7 +45,6 @@ class WebConsoleControllerLearningCandidateApiTest {
                 new ExperienceMemoryService(new FileExperienceMemoryStore(tempDir.resolve(".jobclaw").resolve("experience").toString()))
         );
         LearningCandidate candidate = candidate("candidate-a");
-        learningService.recordSuccessfulRun(null);
         new FileLearningCandidateStore(tempDir.resolve(".jobclaw").resolve("learning").toString())
                 .saveAll(List.of(candidate));
 
@@ -141,7 +139,6 @@ class WebConsoleControllerLearningCandidateApiTest {
                 mock(AgentOrchestrator.class),
                 new MessageBus(),
                 new ExecutionTraceService(),
-                new TaskHarnessService(),
                 mock(CronService.class),
                 mock(SkillsService.class),
                 mock(io.jobclaw.mcp.MCPService.class),
@@ -161,7 +158,7 @@ class WebConsoleControllerLearningCandidateApiTest {
         candidate.setType(LearningCandidateType.WORKFLOW);
         candidate.setStatus(LearningCandidateStatus.PENDING);
         candidate.setTitle("Workflow candidate");
-        candidate.setProposal("Use list_dir -> subtasks -> spawn");
+        candidate.setProposal("Use list_dir -> read_pdf -> write_file");
         candidate.setCreatedAt(Instant.now());
         candidate.setUpdatedAt(Instant.now());
         return candidate;

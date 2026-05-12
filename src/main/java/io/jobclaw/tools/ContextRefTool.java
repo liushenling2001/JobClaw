@@ -27,7 +27,7 @@ public class ContextRefTool {
         this.config = config;
     }
 
-    @Tool(name = "context_ref", description = "Read, search, summarize, or list large tool/subtask results saved as context references. Use this when a tool returns a refId instead of full content.")
+    @Tool(name = "context_ref", description = "Read, search, summarize, or list large tool and child-agent results saved as context references. Use this when a tool returns a refId instead of full content.")
     public String contextRef(
             @ToolParam(description = "Action: read, search, summary, or list") String action,
             @ToolParam(description = "Reference id returned by a previous tool, required for read/search/summary") String refId,

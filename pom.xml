@@ -35,6 +35,8 @@
         <dotenv.version>3.0.0</dotenv.version>
         <jline.version>3.25.0</jline.version>
         <spring-ai.version>1.1.0</spring-ai.version>
+        <mockito.version>5.14.2</mockito.version>
+        <byte-buddy.version>1.17.8</byte-buddy.version>
         <poi.version>5.2.5</poi.version>
         <commons-io.version>2.15.1</commons-io.version>
         <tika.version>2.9.2</tika.version>
@@ -251,6 +253,9 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>2.22.2</version>
+                <configuration>
+                    <argLine>-javaagent:${settings.localRepository}/org/mockito/mockito-core/${mockito.version}/mockito-core-${mockito.version}.jar</argLine>
+                </configuration>
             </plugin>
             <plugin>
                 <groupId>com.github.eirslett</groupId>

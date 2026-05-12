@@ -13,13 +13,12 @@ class ToolSelectionPolicyTest {
     private final ToolSelectionPolicy policy = new ToolSelectionPolicy();
 
     @Test
-    void shouldNotSelectWorklistToolsFromPromptTextAlone() {
+    void shouldNotSelectSpawnFromBatchPromptTextAlone() {
         Set<String> selected = policy.selectToolNames(
                 "批量审查目录 D:\\DOC 下的所有 PDF 文件，每个文件独立作为子任务处理",
                 allTools()
         );
 
-        assertFalse(selected.contains("subtasks"));
         assertFalse(selected.contains("spawn"));
         assertTrue(selected.contains("list_dir"));
         assertTrue(selected.contains("read_pdf"));
@@ -37,7 +36,6 @@ class ToolSelectionPolicyTest {
         assertTrue(selected.contains("read_excel"));
         assertTrue(selected.contains("read_pdf"));
         assertTrue(selected.contains("read_word"));
-        assertFalse(selected.contains("subtasks"));
     }
 
     @Test
@@ -62,7 +60,6 @@ class ToolSelectionPolicyTest {
         assertTrue(selected.contains("memory"));
         assertTrue(selected.contains("skills"));
         assertFalse(selected.contains("read_pdf"));
-        assertFalse(selected.contains("subtasks"));
         assertTrue(selected.contains("run_command"));
         assertTrue(selected.contains("exec"));
         assertTrue(selected.contains("write_file"));
@@ -88,7 +85,6 @@ class ToolSelectionPolicyTest {
                 Set.of("write_file", "edit_file", "append_file")
         );
 
-        assertFalse(selected.contains("subtasks"));
         assertFalse(selected.contains("spawn"));
         assertTrue(selected.contains("write_file"));
         assertTrue(selected.contains("edit_file"));
@@ -109,7 +105,6 @@ class ToolSelectionPolicyTest {
                 "append_file",
                 "run_command",
                 "exec",
-                "subtasks",
                 "spawn",
                 "agent_catalog",
                 "collaborate",

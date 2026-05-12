@@ -83,7 +83,7 @@ public class CollaborateTool {
             CollaborationMode collabMode = parseMode(mode);
             List<AgentDefinition> agentDefs = parseRoles(roles);
             int rounds = maxRounds != null ? maxRounds : (collabMode == CollaborationMode.DEBATE ? 3 : 1);
-            long timeout = timeoutMs != null ? timeoutMs : config.getAgent().getSubtaskTimeoutMs();
+            long timeout = timeoutMs != null ? timeoutMs : config.getAgent().getChildAgentTimeoutMs();
             String collabSessionKey = "collab-" + System.currentTimeMillis();
             CollaborationRuntime runtime = createRuntime(collabSessionKey, collabMode);
 

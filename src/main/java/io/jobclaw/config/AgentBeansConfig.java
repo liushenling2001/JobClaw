@@ -1,10 +1,6 @@
 package io.jobclaw.config;
 
 import io.jobclaw.agent.AgentLoop;
-import io.jobclaw.agent.artifact.FileRunArtifactStore;
-import io.jobclaw.agent.artifact.RunArtifactStore;
-import io.jobclaw.agent.checkpoint.FileTaskCheckpointStore;
-import io.jobclaw.agent.checkpoint.TaskCheckpointStore;
 import io.jobclaw.agent.catalog.AgentCatalogService;
 import io.jobclaw.agent.catalog.AgentCatalogStore;
 import io.jobclaw.agent.catalog.FileAgentCatalogStore;
@@ -12,8 +8,6 @@ import io.jobclaw.agent.experience.ExperienceMemoryStore;
 import io.jobclaw.agent.experience.FileExperienceMemoryStore;
 import io.jobclaw.agent.learning.FileLearningCandidateStore;
 import io.jobclaw.agent.learning.LearningCandidateStore;
-import io.jobclaw.agent.workflow.FileWorkflowMemoryStore;
-import io.jobclaw.agent.workflow.WorkflowMemoryStore;
 import io.jobclaw.board.SharedBoardService;
 import io.jobclaw.board.file.FileSharedBoardService;
 import io.jobclaw.bus.MessageBus;
@@ -144,30 +138,6 @@ public class AgentBeansConfig {
 
     @Bean
     @ConditionalOnMissingBean
-    public TaskCheckpointStore taskCheckpointStore(Config config) {
-        return new FileTaskCheckpointStore(
-                Paths.get(config.getWorkspacePath(), ".jobclaw", "checkpoints").toString()
-        );
-    }
-
-    @Bean
-    @ConditionalOnMissingBean
-    public RunArtifactStore runArtifactStore(Config config) {
-        return new FileRunArtifactStore(
-                Paths.get(config.getWorkspacePath(), ".jobclaw", "runs").toString()
-        );
-    }
-
-    @Bean
-    @ConditionalOnMissingBean
-    public WorkflowMemoryStore workflowMemoryStore(Config config) {
-        return new FileWorkflowMemoryStore(
-                Paths.get(config.getWorkspacePath(), ".jobclaw", "workflows").toString()
-        );
-    }
-
-    @Bean
-    @ConditionalOnMissingBean
     public LearningCandidateStore learningCandidateStore(Config config) {
         return new FileLearningCandidateStore(
                 Paths.get(config.getWorkspacePath(), ".jobclaw", "learning").toString()
@@ -290,7 +260,6 @@ public class AgentBeansConfig {
             AgentCatalogTool agentCatalogTool,
             MemoryTool memoryTool,
             ContextRefTool contextRefTool,
-            SubtasksTool subtasksTool,
             SpawnTool spawnTool,
             CollaborateTool collaborateTool) {
 
@@ -300,7 +269,7 @@ public class AgentBeansConfig {
                 .toolObjects(fileTools, runCommandTool, skillsTools, messageTool, cronTool,
                             mcpTool, tokenUsageTool, webSearchTool, webFetchTool, execTool,
                             sharedBoardTool,
-                            agentCatalogTool, memoryTool, contextRefTool, subtasksTool, spawnTool, collaborateTool)
+                            agentCatalogTool, memoryTool, contextRefTool, spawnTool, collaborateTool)
                 .build()
                 .getToolCallbacks();
     }

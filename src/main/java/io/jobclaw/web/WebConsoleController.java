@@ -4,10 +4,6 @@ import io.jobclaw.agent.AgentLoop;
 import io.jobclaw.agent.AgentOrchestrator;
 import io.jobclaw.agent.ExecutionEvent;
 import io.jobclaw.agent.ExecutionTraceService;
-import io.jobclaw.agent.TaskHarnessFailure;
-import io.jobclaw.agent.TaskHarnessRun;
-import io.jobclaw.agent.TaskHarnessService;
-import io.jobclaw.agent.TaskHarnessStep;
 import io.jobclaw.agent.experience.ExperienceMemoryService;
 import io.jobclaw.agent.learning.LearningCandidate;
 import io.jobclaw.agent.learning.LearningCandidateService;
@@ -62,7 +58,6 @@ public class WebConsoleController {
     private final AgentOrchestrator orchestrator;
     private final MessageBus messageBus;
     private final ExecutionTraceService executionTraceService;
-    private final TaskHarnessService taskHarnessService;
     private final CronService cronService;
     private final SkillsService skillsService;
     private final io.jobclaw.mcp.MCPService mcpService;
@@ -80,7 +75,6 @@ public class WebConsoleController {
     public WebConsoleController(Config config, SessionManager sessionManager,
                                  AgentLoop agentLoop, AgentOrchestrator orchestrator,
                                  MessageBus messageBus, ExecutionTraceService executionTraceService,
-                                 TaskHarnessService taskHarnessService,
                                  CronService cronService, SkillsService skillsService,
                                  io.jobclaw.mcp.MCPService mcpService,
                                  TokenUsageService tokenUsageService,
@@ -96,7 +90,6 @@ public class WebConsoleController {
         this.orchestrator = orchestrator;
         this.messageBus = messageBus;
         this.executionTraceService = executionTraceService;
-        this.taskHarnessService = taskHarnessService;
         this.cronService = cronService;
         this.skillsService = skillsService;
         this.mcpService = mcpService;
@@ -287,15 +280,6 @@ public class WebConsoleController {
                         try {
                             // 闁俺绻?ExecutionTraceService 閸欐垵绔锋禍瀣╂閿涘牅绱伴懛顏勫З閹恒劑鈧胶绮伴幍鈧張澶庮吂闂冨懓鈧拑绱?
                             executionTraceService.publish(event);
-                            Object source = event.getMetadata().get("source");
-                            Object label = event.getMetadata().get("label");
-                            Object runId = event.getMetadata().get("runId");
-                            if ("task_harness".equals(source) && "run_created".equals(label) && runId != null) {
-                                safeSend(emitter, sessionKey, subscriberId, SseEmitter.event()
-                                        .name("task-harness-run")
-                                        .data(Map.of("sessionId", sessionKey, "runId", runId.toString())),
-                                        "task harness run event");
-                            }
                             logger.debug("Published execution event: {}", event.getType());
                         } catch (Exception e) {
                             logger.debug("Failed to publish event: {}", e.getMessage());
@@ -440,41 +424,6 @@ public class WebConsoleController {
         return sessionId.substring(0, separator).toLowerCase(Locale.ROOT);
     }
 
-    @GetMapping("/task-harness/runs/{runId}")
-    public ResponseEntity<Map<String, Object>> getTaskHarnessRun(@PathVariable String runId) {
-        TaskHarnessRun run = taskHarnessService.getRun(runId);
-        if (run == null) {
-            return ResponseEntity.notFound().build();
-        }
-        return ResponseEntity.ok(toTaskHarnessRunResult(run));
-    }
-
-    @GetMapping("/task-harness/runs/{runId}/events")
-    public ResponseEntity<Map<String, Object>> getTaskHarnessRunEvents(
-            @PathVariable String runId,
-            @RequestParam(value = "limit", required = false) Integer limit) {
-        TaskHarnessRun run = taskHarnessService.getRun(runId);
-        if (run == null) {
-            return ResponseEntity.notFound().build();
-        }
-
-        int normalizedLimit = limit != null && limit > 0 ? Math.min(limit, 200) : 100;
-        List<Map<String, Object>> events = executionTraceService.getHistoryByRun(
-                        run.getSessionId(),
-                        runId,
-                        normalizedLimit
-                ).stream()
-                .map(this::toExecutionEventResult)
-                .toList();
-
-        Map<String, Object> response = new LinkedHashMap<>();
-        response.put("run", toTaskHarnessRunResult(run));
-        response.put("events", events);
-        response.put("eventCount", events.size());
-        response.put("stepCount", run.getSteps().size());
-        return ResponseEntity.ok(response);
-    }
-
     @GetMapping("/sessions/{key}")
     public ResponseEntity<Session> getSession(@PathVariable String key) {
         Session session = sessionManager.getSession(key);
@@ -524,44 +473,6 @@ public class WebConsoleController {
         result.put("role", message.role());
         result.put("content", message.content());
         result.put("createdAt", message.createdAt());
-        return result;
-    }
-
-    private Map<String, Object> toTaskHarnessRunResult(TaskHarnessRun run) {
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("sessionId", run.getSessionId());
-        result.put("runId", run.getRunId());
-        result.put("taskInput", run.getTaskInput());
-        result.put("currentPhase", run.getCurrentPhase().name());
-        result.put("startedAt", run.getStartedAt());
-        result.put("completedAt", run.getCompletedAt());
-        result.put("success", run.isSuccess());
-        result.put("repairAttempts", run.getRepairAttempts());
-        result.put("lastFailure", toTaskHarnessFailureResult(run.getLastFailure()));
-        result.put("steps", run.getSteps().stream().map(this::toTaskHarnessStepResult).toList());
-        return result;
-    }
-
-    private Map<String, Object> toTaskHarnessFailureResult(TaskHarnessFailure failure) {
-        if (failure == null) {
-            return null;
-        }
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("kind", failure.kind().name());
-        result.put("reason", failure.reason());
-        result.put("evidence", failure.evidence());
-        return result;
-    }
-
-    private Map<String, Object> toTaskHarnessStepResult(TaskHarnessStep step) {
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("index", step.index());
-        result.put("phase", step.phase().name());
-        result.put("status", step.status());
-        result.put("label", step.label());
-        result.put("detail", step.detail());
-        result.put("timestamp", step.timestamp());
-        result.put("metadata", step.metadata());
         return result;
     }
 

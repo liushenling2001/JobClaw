@@ -1,6 +1,6 @@
 ---
 name: experience-review
-description: Review JobClaw run history and produce compact workflow, lesson, memory, and skill candidates.
+description: Review JobClaw run history and produce compact lesson, memory, operating-guidance, and skill candidates.
 ---
 
 # Experience Review
@@ -11,7 +11,7 @@ Use this built-in skill for scheduled JobClaw experience consolidation.
 
 Analyze compact run snapshots and identify:
 
-- reusable successful workflows
+- reusable successful operating guidance
 - failed patterns that should be avoided
 - memory candidates from repeated user corrections
 - promotion candidates for skills or agent profiles
@@ -37,7 +37,7 @@ The runtime should provide JSON with:
 {
   "reviewWindow": {"from": "...", "to": "..."},
   "runs": [],
-  "existingRecipes": [],
+  "existingExperience": [],
   "existingLessons": []
 }
 ```
@@ -54,27 +54,27 @@ Return strict JSON:
     {
       "taskPattern": "batch_pdf_review",
       "avoid": "Do not load all PDFs into the parent context.",
-      "prefer": "Plan a worklist and process one file per subtask.",
+      "prefer": "Keep per-item outputs in artifacts and keep only aggregate progress in model context.",
       "evidenceRunIds": ["run-123"],
       "confidence": 0.72,
       "reason": "Parent context overflow caused incomplete execution."
     }
   ],
-  "positiveWorkflows": [
+  "positiveGuidance": [
     {
       "taskPattern": "excel_report_generation",
       "prefer": "Read workbook structure, generate a script, then write the report.",
       "toolSequence": ["read_excel", "run_command", "write_file"],
       "evidenceRunIds": ["run-456"],
       "confidence": 0.66,
-      "reason": "Stable successful workflow with reusable tool sequence."
+      "reason": "Stable successful operating pattern with reusable tool sequence."
     }
   ],
   "promotionCandidates": [
     {
       "type": "SKILL_UPDATE",
-      "title": "Excel report generation workflow",
-      "reason": "Repeated successful workflow with stable structure.",
+      "title": "Excel report generation guidance",
+      "reason": "Repeated successful operating pattern with stable structure.",
       "confidence": 0.58,
       "evidenceRunIds": ["run-456"]
     }
@@ -82,7 +82,7 @@ Return strict JSON:
   "memoryCandidates": [
     {
       "scope": "project",
-      "content": "For batch document review, prefer one file per subtask.",
+      "content": "For batch document review, persist per-file results as artifacts and keep only aggregate progress in context.",
       "confidence": 0.64,
       "evidenceRunIds": ["run-123", "run-124"]
     }

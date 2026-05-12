@@ -268,16 +268,17 @@ public class ContextBuilder {
         sb.append("6. To create a reusable specialized agent, use `agent_catalog` to persist the definition.\n");
         sb.append("7. To run an existing persistent agent, use `spawn(agent='agent-name', task='...')`.\n");
         sb.append("8. Do not invent a parallel agent execution flow when `spawn` already fits the task.\n");
-        sb.append("9. For batch work with independent items (for example multiple files, links, or records), first use `subtasks(action='plan', items='id|title\\n...')` to register the worklist, then execute each item in isolation and mark it complete. Do not finish the parent task while pending subtasks remain.\n");
+        sb.append("9. For batch work with independent items (for example multiple files, links, or records), keep compact progress notes and write durable intermediate artifacts when the result set is large. Do not paste all completed item details back into the conversation.\n");
         sb.append("10. For file tools, copy paths exactly from `list_dir` output or user input. Never add, remove, split, translate, or reformat spaces and Chinese characters in file names.\n");
         sb.append("11. Large tool or sub-agent results may be returned as a `refId` instead of full text. Use `context_ref(action='read'|'search'|'summary', refId='...')` to inspect only the details needed for the task.\n");
+        sb.append("12. If a recent tool result is already present or referenced by `refId`, reuse it instead of repeating the same read/search call. Repeat only when arguments change or a fresh read is explicitly needed.\n");
         sb.append("\n");
         sb.append("## Persistent Agents\n\n");
         sb.append("- Use `agent_catalog(action='create', ...)` to create a reusable agent.\n");
         sb.append("- Use `agent_catalog(action='list')` or `agent_catalog(action='get', name='...')` to inspect saved agents.\n");
         sb.append("- Use `spawn(agent='saved-agent-name', task='...')` to execute a saved agent.\n");
         sb.append("- Use `spawn(role='coder', task='...')` only for built-in role agents.\n");
-        sb.append("- When a spawned child corresponds to a tracked work item, pass `subtaskId='...'` so the runtime can keep the parent task open until all planned subtasks finish.\n");
+        sb.append("- Spawned children are independent direct executions. Verify their final result before using it in the parent task.\n");
         return sb.toString();
     }
 

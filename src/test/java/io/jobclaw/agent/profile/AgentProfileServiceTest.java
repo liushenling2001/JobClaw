@@ -116,7 +116,7 @@ class AgentProfileServiceTest {
         config.getAgent().setWorkspace(tempDir.toString());
         config.getAgent().setProvider("openai");
         config.getAgent().setModel("gemma-4-e2b");
-        config.getAgent().setSubtaskTimeoutMs(300000L);
+        config.getAgent().setChildAgentTimeoutMs(300000L);
         AgentCatalogService catalogService = new AgentCatalogService(
                 new FileAgentCatalogStore(tempDir.resolve(".jobclaw").resolve("agents").toString())
         );
@@ -126,7 +126,7 @@ class AgentProfileServiceTest {
 
         assertEquals("openai", roleProfile.modelConfig().get("provider"));
         assertEquals("gemma-4-e2b", roleProfile.modelConfig().get("model"));
-        assertEquals(300000L, ((Number) roleProfile.modelConfig().get("subtaskTimeoutMs")).longValue());
+        assertEquals(300000L, ((Number) roleProfile.modelConfig().get("childAgentTimeoutMs")).longValue());
     }
 
     @Test
@@ -154,7 +154,7 @@ class AgentProfileServiceTest {
 
         assertEquals("custom-provider", roleProfile.modelConfig().get("provider"));
         assertEquals("custom-model", roleProfile.modelConfig().get("model"));
-        assertEquals(config.getAgent().getSubtaskTimeoutMs(), ((Number) roleProfile.modelConfig().get("subtaskTimeoutMs")).longValue());
+        assertEquals(config.getAgent().getChildAgentTimeoutMs(), ((Number) roleProfile.modelConfig().get("childAgentTimeoutMs")).longValue());
     }
 
     @Test

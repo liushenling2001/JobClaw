@@ -17,6 +17,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -145,6 +146,74 @@ class ToolRuntimeTest {
     }
 
     @Test
+    void shouldStoreOverflowToolOutputAsContextReferenceForTurnBudget() {
+        Config config = Config.defaultConfig();
+        config.getAgent().setContextRefEnabled(true);
+        config.getAgent().setContextRefThresholdChars(1_000);
+        config.getAgent().setContextRefTurnBudgetChars(20);
+        config.getAgent().setContextRefPreviewChars(8);
+        SessionManager sessionManager = new SessionManager(tempDir.resolve("turn-budget-sessions").toString());
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        DefaultToolExecutionStateTracker tracker = new DefaultToolExecutionStateTracker();
+        ResultStore resultStore = new FileResultStore(tempDir.resolve("turn-budget-results"), config.getAgent().getContextRefPreviewChars());
+        ToolRuntime toolRuntime = new ToolRuntime(config, sessionManager, executor, tracker,
+                new io.jobclaw.agent.completion.ActiveExecutionRegistry(), resultStore);
+
+        ToolExecutionResult first = toolRuntime.execute(new ToolExecutionRequest(
+                "session-turn-budget",
+                "read_file",
+                "{\"path\":\"a.txt\"}",
+                new StaticToolCallback("read_file", "abcdefghijklmnop"),
+                event -> {}
+        ));
+        ToolExecutionResult second = toolRuntime.execute(new ToolExecutionRequest(
+                "session-turn-budget",
+                "search_files",
+                "{\"query\":\"demo\"}",
+                new StaticToolCallback("search_files", "qrstuvwxyz123456"),
+                event -> {}
+        ));
+
+        assertEquals("abcdefghijklmnop", first.response());
+        assertTrue(second.response().contains("Large tool result stored as a context reference."));
+        assertTrue(second.response().contains("refId: ref-"));
+
+        executor.shutdownNow();
+    }
+
+    @Test
+    void shouldGuardConsecutiveDuplicateSafeReadCalls() {
+        Config config = Config.defaultConfig();
+        SessionManager sessionManager = new SessionManager(tempDir.resolve("duplicate-guard-sessions").toString());
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        DefaultToolExecutionStateTracker tracker = new DefaultToolExecutionStateTracker();
+        ToolRuntime toolRuntime = new ToolRuntime(config, sessionManager, executor, tracker);
+        AtomicInteger calls = new AtomicInteger();
+        ToolCallback callback = new CountingToolCallback("read_file", calls);
+
+        ToolExecutionRequest request = new ToolExecutionRequest(
+                "session-duplicate-read",
+                "read_file",
+                "{\"path\":\"same.txt\"}",
+                callback,
+                event -> {}
+        );
+
+        ToolExecutionResult first = toolRuntime.execute(request);
+        ToolExecutionResult second = toolRuntime.execute(request);
+        ToolExecutionResult third = toolRuntime.execute(request);
+        ToolExecutionResult fourth = toolRuntime.execute(request);
+
+        assertEquals("read-1", first.response());
+        assertEquals("read-2", second.response());
+        assertTrue(third.response().contains("Duplicate read/search call warning."));
+        assertTrue(fourth.response().contains("Duplicate read/search call blocked."));
+        assertEquals(2, calls.get());
+
+        executor.shutdownNow();
+    }
+
+    @Test
     void shouldPublishErrorEventAndClearTrackerStateOnFailure() {
         Config config = Config.defaultConfig();
         SessionManager sessionManager = new SessionManager();
@@ -199,9 +268,9 @@ class ToolRuntimeTest {
     }
 
     @Test
-    void shouldLetSpawnToolOwnSubtaskTimeoutWithGrace() {
+    void shouldLetSpawnToolOwnChildAgentTimeoutWithGrace() {
         Config config = Config.defaultConfig();
-        config.getAgent().setSubtaskTimeoutMs(50);
+        config.getAgent().setChildAgentTimeoutMs(50);
         config.getAgent().setToolCallTimeoutSeconds(1);
         SessionManager sessionManager = new SessionManager();
         ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -223,9 +292,9 @@ class ToolRuntimeTest {
     }
 
     @Test
-    void shouldNotLetSpawnRequestTimeoutReduceConfiguredSubtaskTimeout() {
+    void shouldNotLetSpawnRequestTimeoutReduceConfiguredChildAgentTimeout() {
         Config config = Config.defaultConfig();
-        config.getAgent().setSubtaskTimeoutMs(100);
+        config.getAgent().setChildAgentTimeoutMs(100);
         config.getAgent().setToolCallTimeoutSeconds(1);
         SessionManager sessionManager = new SessionManager();
         ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -305,6 +374,30 @@ class ToolRuntimeTest {
                 throw runtimeException;
             }
             return response;
+        }
+    }
+
+    private static class CountingToolCallback implements ToolCallback {
+        private final ToolDefinition toolDefinition;
+        private final AtomicInteger calls;
+
+        private CountingToolCallback(String toolName, AtomicInteger calls) {
+            this.toolDefinition = ToolDefinition.builder()
+                    .name(toolName)
+                    .description("test")
+                    .inputSchema("{\"type\":\"object\",\"properties\":{}}")
+                    .build();
+            this.calls = calls;
+        }
+
+        @Override
+        public ToolDefinition getToolDefinition() {
+            return toolDefinition;
+        }
+
+        @Override
+        public String call(String toolInput) {
+            return "read-" + calls.incrementAndGet();
         }
     }
 

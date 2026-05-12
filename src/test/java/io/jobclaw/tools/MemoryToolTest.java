@@ -13,7 +13,6 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MemoryToolTest {
@@ -60,7 +59,7 @@ class MemoryToolTest {
 
         String result = tool.execute(
                 "remember",
-                "固化为经验：批量审查 PDF 多次验证有效时，先枚举完整文件清单，再登记 subtasks worklist，最后逐个 spawn 子任务处理。",
+                "固化为经验：批量审查 PDF 多次验证有效时，先枚举完整文件清单，再逐个读取并把中间结果落盘。",
                 null,
                 null,
                 "workflow,pdf",
@@ -74,7 +73,6 @@ class MemoryToolTest {
         LearningCandidate candidate = candidates.get(0);
         assertEquals(LearningCandidateType.WORKFLOW, candidate.getType());
         assertEquals(LearningCandidateStatus.PENDING, candidate.getStatus());
-        assertNull(candidate.getDeliveryType());
         assertEquals("memory_tool_explicit", candidate.getMetadata().get("source"));
         assertTrue(candidate.getTags().contains("explicit_memory"));
         assertTrue(candidate.getTags().contains("workflow"));
@@ -91,10 +89,10 @@ class MemoryToolTest {
 
         String result = tool.execute(
                 "remember",
-                "记录为教训：不要在 subtasks 还有 pending 项时输出最终总结，否则长任务会被误判完成。",
+                "记录为教训：不要在中间结果未落盘或未校验时输出最终总结，否则长任务会被误判完成。",
                 null,
                 null,
-                "lesson,subtasks",
+                "lesson,batch",
                 "project",
                 0.9
         );
@@ -103,7 +101,6 @@ class MemoryToolTest {
         LearningCandidate candidate = candidateStore.list().get(0);
         assertEquals(LearningCandidateType.NEGATIVE_LESSON, candidate.getType());
         assertEquals(LearningCandidateStatus.PENDING, candidate.getStatus());
-        assertNull(candidate.getDeliveryType());
         assertTrue(candidate.getTags().contains("negative_lesson"));
     }
 

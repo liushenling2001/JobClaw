@@ -1,7 +1,7 @@
 # JobClaw Local Voice Deployment
 
 JobClaw voice interaction is implemented as an auxiliary local sidecar. The
-agent runtime, tools, subtasks, memory, artifacts, harness, and completion logic
+agent runtime, tools, memory, artifacts, and completion logic
 remain inside JobClaw. The sidecar only handles speech input and speech output.
 
 The local runtime and model files live under `voice-sidecar-local/`, which is
@@ -68,7 +68,7 @@ Assistant text stream
 ```
 
 This is intentionally not a separate speech-to-speech agent. Voice is an input
-and output channel around the existing agent chain. Tool logs, harness events,
+and output channel around the existing agent chain. Tool logs,
 and subagent internals are not spoken by default.
 
 ## Backend Endpoints

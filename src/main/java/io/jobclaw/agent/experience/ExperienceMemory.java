@@ -1,8 +1,5 @@
 package io.jobclaw.agent.experience;
 
-import io.jobclaw.agent.completion.DeliveryType;
-import io.jobclaw.agent.planning.TaskPlanningMode;
-
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -17,8 +14,6 @@ public class ExperienceMemory {
     private ExperienceMemoryStatus status = ExperienceMemoryStatus.ACTIVE;
     private String title;
     private String applicability;
-    private TaskPlanningMode planningMode;
-    private DeliveryType deliveryType;
     private List<String> toolSequence = new ArrayList<>();
     private List<String> avoidRules = new ArrayList<>();
     private String outputFormat;
@@ -45,12 +40,6 @@ public class ExperienceMemory {
 
     public String getApplicability() { return applicability; }
     public void setApplicability(String applicability) { this.applicability = applicability; }
-
-    public TaskPlanningMode getPlanningMode() { return planningMode; }
-    public void setPlanningMode(TaskPlanningMode planningMode) { this.planningMode = planningMode; }
-
-    public DeliveryType getDeliveryType() { return deliveryType; }
-    public void setDeliveryType(DeliveryType deliveryType) { this.deliveryType = deliveryType; }
 
     public List<String> getToolSequence() { return toolSequence; }
     public void setToolSequence(List<String> toolSequence) { this.toolSequence = toolSequence != null ? new ArrayList<>(toolSequence) : new ArrayList<>(); }

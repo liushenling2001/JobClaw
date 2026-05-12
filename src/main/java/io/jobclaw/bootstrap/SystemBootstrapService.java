@@ -42,10 +42,8 @@ public class SystemBootstrapService {
     private void ensureExperienceDirectories(Path workspace) throws Exception {
         Files.createDirectories(workspace.resolve(".jobclaw"));
         Files.createDirectories(workspace.resolve(".jobclaw").resolve("agents"));
-        Files.createDirectories(workspace.resolve(".jobclaw").resolve("checkpoints"));
         Files.createDirectories(workspace.resolve(".jobclaw").resolve("experience"));
         Files.createDirectories(workspace.resolve(".jobclaw").resolve("learning"));
-        Files.createDirectories(workspace.resolve(".jobclaw").resolve("workflows"));
         Files.createDirectories(workspace.resolve("sessions").resolve("conversation"));
         Files.createDirectories(workspace.resolve("cron"));
     }
@@ -119,7 +117,6 @@ public class SystemBootstrapService {
                   "initializedAt": "%s",
                   "features": {
                     "agentCatalog": true,
-                    "taskCheckpoints": true,
                     "builtinExperienceReviewSkill": true,
                     "builtinExperienceReviewCronJob": true,
                     "experienceMemory": true

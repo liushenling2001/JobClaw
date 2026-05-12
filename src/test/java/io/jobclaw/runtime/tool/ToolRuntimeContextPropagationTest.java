@@ -32,7 +32,7 @@ class ToolRuntimeContextPropagationTest {
             AgentExecutionContext.setCurrentContext(new AgentExecutionContext.ExecutionScope(
                     "session-a",
                     null,
-                    "run-harness-1",
+                    "run-direct-1",
                     null,
                     "assistant",
                     "Assistant",
@@ -63,7 +63,7 @@ class ToolRuntimeContextPropagationTest {
                     null
             ));
 
-            assertEquals("run-harness-1", result.response());
+            assertEquals("run-direct-1", result.response());
         } finally {
             executorService.shutdownNow();
         }

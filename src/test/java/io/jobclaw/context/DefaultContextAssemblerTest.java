@@ -2,6 +2,7 @@ package io.jobclaw.context;
 
 import io.jobclaw.conversation.StoredMessage;
 import io.jobclaw.providers.Message;
+import io.jobclaw.providers.ToolCall;
 import io.jobclaw.retrieval.RetrievalBundle;
 import io.jobclaw.retrieval.RetrievalService;
 import io.jobclaw.retrieval.SearchQuery;
@@ -16,6 +17,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -24,14 +26,16 @@ class DefaultContextAssemblerTest {
     @Test
     void trimsContextWhenPromptBudgetIsSmall() {
         SessionManager sessionManager = new SessionManager();
-        sessionManager.addMessage("ctx-test", "user", repeat("recent user message ", 60));
-        sessionManager.addMessage("ctx-test", "assistant", repeat("recent assistant message ", 60));
+        String sessionId = "ctx-small-budget";
+        sessionManager.deleteSession(sessionId);
+        sessionManager.addMessage(sessionId, "user", repeat("recent user message ", 60));
+        sessionManager.addMessage(sessionId, "assistant", repeat("recent assistant message ", 60));
 
         RetrievalService retrievalService = new StubRetrievalService();
         DefaultContextAssembler assembler = new DefaultContextAssembler(sessionManager, 10, retrievalService);
 
         List<Message> messages = assembler.assemble(
-                "ctx-test",
+                sessionId,
                 "current input",
                 new ContextAssemblyOptions(10, 4, 3, 4, 320)
         );
@@ -53,22 +57,29 @@ class DefaultContextAssemblerTest {
     }
 
     @Test
-    void shouldExcludeToolMessagesFromRecentHistory() {
+    void shouldPreserveRecentToolCallPairs() {
         SessionManager sessionManager = new SessionManager();
-        sessionManager.addMessage("ctx-test", "user", "请分析 excel");
-        sessionManager.addMessage("ctx-test", "assistant", "我先读取文件");
-        sessionManager.addFullMessage("ctx-test", Message.tool("tool-1", "A1:B999 的原始表格输出"));
-        sessionManager.addMessage("ctx-test", "assistant", "分析结果：销量最高的是三月");
+        String sessionId = "ctx-tool-pair";
+        sessionManager.deleteSession(sessionId);
+        sessionManager.addMessage(sessionId, "user", "请分析 excel");
+        Message assistantToolCall = Message.assistant("");
+        assistantToolCall.setToolCalls(List.of(new ToolCall("tool-1", "read_file", "{\"path\":\"sales.xlsx\"}")));
+        sessionManager.addFullMessage(sessionId, assistantToolCall);
+        sessionManager.addFullMessage(sessionId, Message.tool("tool-1", "A1:B999 的原始表格输出"));
+        sessionManager.addMessage(sessionId, "assistant", "分析结果：销量最高的是三月");
 
         DefaultContextAssembler assembler = new DefaultContextAssembler(sessionManager, 10, new StubRetrievalService());
 
         List<Message> messages = assembler.assemble(
-                "ctx-test",
+                sessionId,
                 "继续总结",
                 new ContextAssemblyOptions(10, 4, 3, 4, 4096)
         );
 
-        assertFalse(messages.stream().anyMatch(message -> "tool".equals(message.getRole())));
+        assertEquals(1, messages.stream().filter(message -> "tool".equals(message.getRole())).count());
+        assertTrue(messages.stream().anyMatch(message -> "assistant".equals(message.getRole())
+                && message.getToolCalls() != null
+                && !message.getToolCalls().isEmpty()));
         assertTrue(messages.stream().anyMatch(message -> "assistant".equals(message.getRole())
                 && message.getContent().contains("分析结果")));
     }
@@ -76,14 +87,16 @@ class DefaultContextAssemblerTest {
     @Test
     void shouldExcludeToolMessagesFromRetrievedHistory() {
         SessionManager sessionManager = new SessionManager();
-        sessionManager.addMessage("ctx-test", "user", "继续分析");
+        String sessionId = "ctx-retrieved-tool";
+        sessionManager.deleteSession(sessionId);
+        sessionManager.addMessage(sessionId, "user", "继续分析");
 
         RetrievalService retrievalService = new StubRetrievalService() {
             @Override
             public List<StoredMessage> searchHistory(SearchQuery query) {
                 return List.of(
-                        new StoredMessage("h-tool", "ctx-test", 1, "tool", "旧工具输出", null, "tool-1", null, null, Map.of(), Instant.now()),
-                        new StoredMessage("h-assistant", "ctx-test", 2, "assistant", "旧分析结论", null, null, null, null, Map.of(), Instant.now())
+                        new StoredMessage("h-tool", sessionId, 1, "tool", "旧工具输出", null, "tool-1", null, null, Map.of(), Instant.now()),
+                        new StoredMessage("h-assistant", sessionId, 2, "assistant", "旧分析结论", null, null, null, null, Map.of(), Instant.now())
                 );
             }
         };
@@ -91,7 +104,7 @@ class DefaultContextAssemblerTest {
         DefaultContextAssembler assembler = new DefaultContextAssembler(sessionManager, 10, retrievalService);
 
         List<Message> messages = assembler.assemble(
-                "ctx-test",
+                sessionId,
                 "继续分析",
                 new ContextAssemblyOptions(10, 4, 3, 4, 4096)
         );

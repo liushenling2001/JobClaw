@@ -15,7 +15,6 @@ public class AgentConfig {
     private double temperature;
     private int maxToolIterations;
     private int maxRepairAttempts;
-    private int maxSubtaskRepairAttempts;
     private boolean restrictToWorkspace;
     private boolean heartbeatEnabled;
     private boolean feedbackEnabled;
@@ -24,11 +23,11 @@ public class AgentConfig {
     private int maxToolOutputLength;
     private int toolCallTimeoutSeconds;
     private int llmCallTimeoutSeconds;
-    private int taskSimilarityTimeoutSeconds;
-    private long subtaskTimeoutMs;
-    private int subtaskResultMaxChars;
+    private long childAgentTimeoutMs;
+    private int childAgentResultMaxChars;
     private boolean contextRefEnabled;
     private int contextRefThresholdChars;
+    private int contextRefTurnBudgetChars;
     private int contextRefPreviewChars;
     private int contextRefReadMaxChars;
     private List<String> commandBlacklist;
@@ -69,7 +68,6 @@ public class AgentConfig {
         this.temperature = 0.7;
         this.maxToolIterations = 20;
         this.maxRepairAttempts = 1;
-        this.maxSubtaskRepairAttempts = 1;
         this.restrictToWorkspace = true;
         this.heartbeatEnabled = false;
         this.feedbackEnabled = false;
@@ -78,11 +76,11 @@ public class AgentConfig {
         this.maxToolOutputLength = 10000; // 工具结果在前端事件中的展示截断长度，不截断模型流程内容
         this.toolCallTimeoutSeconds = 300;
         this.llmCallTimeoutSeconds = 300;
-        this.taskSimilarityTimeoutSeconds = 15;
-        this.subtaskTimeoutMs = 900_000L;
-        this.subtaskResultMaxChars = 4000;
+        this.childAgentTimeoutMs = 900_000L;
+        this.childAgentResultMaxChars = 4000;
         this.contextRefEnabled = true;
         this.contextRefThresholdChars = 20_000;
+        this.contextRefTurnBudgetChars = 45_000;
         this.contextRefPreviewChars = 2_000;
         this.contextRefReadMaxChars = 12_000;
         this.commandBlacklist = new ArrayList<>();
@@ -158,14 +156,6 @@ public class AgentConfig {
         this.maxRepairAttempts = maxRepairAttempts;
     }
 
-    public int getMaxSubtaskRepairAttempts() {
-        return maxSubtaskRepairAttempts;
-    }
-
-    public void setMaxSubtaskRepairAttempts(int maxSubtaskRepairAttempts) {
-        this.maxSubtaskRepairAttempts = maxSubtaskRepairAttempts;
-    }
-
     public boolean isRestrictToWorkspace() {
         return restrictToWorkspace;
     }
@@ -230,28 +220,20 @@ public class AgentConfig {
         this.llmCallTimeoutSeconds = llmCallTimeoutSeconds;
     }
 
-    public int getTaskSimilarityTimeoutSeconds() {
-        return taskSimilarityTimeoutSeconds;
+    public long getChildAgentTimeoutMs() {
+        return childAgentTimeoutMs;
     }
 
-    public void setTaskSimilarityTimeoutSeconds(int taskSimilarityTimeoutSeconds) {
-        this.taskSimilarityTimeoutSeconds = taskSimilarityTimeoutSeconds;
+    public void setChildAgentTimeoutMs(long childAgentTimeoutMs) {
+        this.childAgentTimeoutMs = childAgentTimeoutMs;
     }
 
-    public long getSubtaskTimeoutMs() {
-        return subtaskTimeoutMs;
+    public int getChildAgentResultMaxChars() {
+        return childAgentResultMaxChars;
     }
 
-    public void setSubtaskTimeoutMs(long subtaskTimeoutMs) {
-        this.subtaskTimeoutMs = subtaskTimeoutMs;
-    }
-
-    public int getSubtaskResultMaxChars() {
-        return subtaskResultMaxChars;
-    }
-
-    public void setSubtaskResultMaxChars(int subtaskResultMaxChars) {
-        this.subtaskResultMaxChars = subtaskResultMaxChars;
+    public void setChildAgentResultMaxChars(int childAgentResultMaxChars) {
+        this.childAgentResultMaxChars = childAgentResultMaxChars;
     }
 
     public boolean isContextRefEnabled() {
@@ -268,6 +250,14 @@ public class AgentConfig {
 
     public void setContextRefThresholdChars(int contextRefThresholdChars) {
         this.contextRefThresholdChars = contextRefThresholdChars;
+    }
+
+    public int getContextRefTurnBudgetChars() {
+        return contextRefTurnBudgetChars;
+    }
+
+    public void setContextRefTurnBudgetChars(int contextRefTurnBudgetChars) {
+        this.contextRefTurnBudgetChars = contextRefTurnBudgetChars;
     }
 
     public int getContextRefPreviewChars() {

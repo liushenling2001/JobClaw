@@ -60,9 +60,7 @@ class SystemBootstrapServiceTest {
 
         assertTrue(Files.exists(tempDir.resolve(".jobclaw").resolve("experience")));
         assertTrue(Files.exists(tempDir.resolve(".jobclaw").resolve("learning")));
-        assertTrue(Files.exists(tempDir.resolve(".jobclaw").resolve("workflows")));
         assertTrue(Files.exists(tempDir.resolve(".jobclaw").resolve("agents")));
-        assertTrue(Files.exists(tempDir.resolve(".jobclaw").resolve("checkpoints")));
         assertTrue(Files.exists(tempDir.resolve("sessions").resolve("conversation")));
         assertTrue(Files.exists(tempDir.resolve(".jobclaw").resolve("bootstrap-state.json")));
     }

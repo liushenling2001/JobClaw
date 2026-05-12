@@ -17,7 +17,6 @@ class AgentDefinitionRoleInheritanceTest {
         assertNull(reviewer.getAllowedTools());
         assertFalse(reviewer.hasToolRestrictions());
         assertTrue(reviewer.isToolAllowed("skills"));
-        assertTrue(reviewer.isToolAllowed("subtasks"));
         assertTrue(reviewer.isToolAllowed("spawn"));
     }
 
@@ -28,6 +27,6 @@ class AgentDefinitionRoleInheritanceTest {
         assertTrue(restricted.hasToolRestrictions());
         assertTrue(restricted.isToolAllowed("read_file"));
         assertFalse(restricted.isToolAllowed("skills"));
-        assertFalse(restricted.isToolAllowed("subtasks"));
+        assertFalse(restricted.isToolAllowed("spawn"));
     }
 }
