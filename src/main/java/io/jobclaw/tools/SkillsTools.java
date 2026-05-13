@@ -1,5 +1,7 @@
 package io.jobclaw.tools;
 
+import io.jobclaw.agent.AgentExecutionContext;
+import io.jobclaw.agent.skill.ActiveSkillRegistry;
 import io.jobclaw.config.Config;
 import io.jobclaw.skills.SkillsService;
 import io.jobclaw.skills.SkillInfo;
@@ -19,10 +21,12 @@ import java.util.List;
 public class SkillsTools {
 
     private final SkillsService skillsService;
+    private final ActiveSkillRegistry activeSkillRegistry;
     private final String workspace;
 
-    public SkillsTools(SkillsService skillsService, Config config) {
+    public SkillsTools(SkillsService skillsService, Config config, ActiveSkillRegistry activeSkillRegistry) {
         this.skillsService = skillsService;
+        this.activeSkillRegistry = activeSkillRegistry;
         this.workspace = config.getWorkspacePath();
     }
 
@@ -90,6 +94,13 @@ public class SkillsTools {
 
         // Find skill location and get base-path
         String basePath = findSkillBasePath(name);
+        ActiveSkillRegistry.ActiveSkillState activeSkill = activeSkillRegistry.activate(
+                AgentExecutionContext.getCurrentSessionKey(),
+                AgentExecutionContext.getCurrentRunId(),
+                name,
+                content,
+                basePath
+        );
 
         // Return formatted result with base-path for script execution
         StringBuilder sb = new StringBuilder();
@@ -97,6 +108,9 @@ public class SkillsTools {
         sb.append("<name>").append(name).append("</name>\n");
         sb.append("<base-path>").append(basePath).append("</base-path>\n");
         sb.append("</skill-invocation>\n\n");
+        if (activeSkill != null) {
+            sb.append(activeSkill.toToolFrame()).append("\n");
+        }
         sb.append("# Skill: ").append(name).append("\n\n");
         sb.append(content);
         sb.append("\n\n---\n\n");

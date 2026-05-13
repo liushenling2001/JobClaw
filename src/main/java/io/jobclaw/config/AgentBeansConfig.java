@@ -2,6 +2,8 @@ package io.jobclaw.config;
 
 import io.jobclaw.agent.AgentLoop;
 import io.jobclaw.agent.completion.CompletionRegistry;
+import io.jobclaw.agent.manifest.ActiveManifestRegistry;
+import io.jobclaw.agent.skill.ActiveSkillRegistry;
 import io.jobclaw.agent.catalog.AgentCatalogService;
 import io.jobclaw.agent.catalog.AgentCatalogStore;
 import io.jobclaw.agent.catalog.FileAgentCatalogStore;
@@ -292,8 +294,11 @@ public class AgentBeansConfig {
                                ContextAssemblyPolicy contextAssemblyPolicy,
                                SummaryService summaryService,
                                ResultStore resultStore,
-                               CompletionRegistry completionRegistry) {
-        return new AgentLoop(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler, contextAssemblyPolicy, summaryService, resultStore, completionRegistry);
+                               CompletionRegistry completionRegistry,
+                               ActiveSkillRegistry activeSkillRegistry,
+                               ActiveManifestRegistry activeManifestRegistry) {
+        return new AgentLoop(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler,
+                contextAssemblyPolicy, summaryService, resultStore, completionRegistry, activeSkillRegistry, activeManifestRegistry);
     }
 
     // Tool beans with dependencies

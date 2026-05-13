@@ -1,5 +1,7 @@
 package io.jobclaw.runtime.tool;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.jobclaw.agent.AgentExecutionContext;
 import io.jobclaw.agent.completion.ActiveExecutionRegistry;
 import io.jobclaw.config.Config;
@@ -13,9 +15,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.ToolCallback;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
-import java.util.Set;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -31,6 +34,7 @@ import java.util.regex.Pattern;
 public class ToolRuntime {
 
     private static final Logger logger = LoggerFactory.getLogger(ToolRuntime.class);
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final long MIN_TIMEOUT_MILLIS = 1_000L;
     private static final long SPAWN_TIMEOUT_GRACE_MILLIS = 30_000L;
     private static final long COMMAND_TIMEOUT_GRACE_MILLIS = 10_000L;
@@ -38,19 +42,6 @@ public class ToolRuntime {
     private static final long TOOL_PROGRESS_INTERVAL_MILLIS = 15_000L;
     private static final Pattern TIMEOUT_MS_PATTERN = Pattern.compile("\"?timeoutMs\"?\\s*[:=]\\s*(\\d+)");
     private static final Pattern TIMEOUT_SECONDS_PATTERN = Pattern.compile("\"?timeout(?:Seconds)?\"?\\s*[:=]\\s*(\\d+)");
-    private static final int DUPLICATE_WARNING_COUNT = 3;
-    private static final int DUPLICATE_BLOCK_COUNT = 4;
-    private static final Set<String> SAFE_REPEAT_GUARD_TOOLS = Set.of(
-            "read_file",
-            "list_dir",
-            "search_files",
-            "grep",
-            "rg",
-            "find",
-            "context_ref",
-            "memory",
-            "skills"
-    );
     private static final ScheduledExecutorService TOOL_PROGRESS_EXECUTOR = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread thread = new Thread(r, "jobclaw-tool-progress");
         thread.setDaemon(true);
@@ -65,7 +56,6 @@ public class ToolRuntime {
     private final ActiveExecutionRegistry activeExecutionRegistry;
     private final ResultStore resultStore;
     private final ConcurrentHashMap<String, TurnBudgetState> turnBudgetStates = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, DuplicateGuardState> duplicateGuardStates = new ConcurrentHashMap<>();
 
     public ToolRuntime(Config config,
                        SessionManager sessionManager,
@@ -101,7 +91,18 @@ public class ToolRuntime {
         String toolId = executionRequest.toolName() + "_" + System.currentTimeMillis();
         long toolStartAt = System.currentTimeMillis();
         String truncatedRequest = truncateToolRequest(executionRequest.request());
+        String requestSummary = summarizeToolRequest(executionRequest.toolName(), executionRequest.request());
+        AgentExecutionContext.ExecutionScope startScope = AgentExecutionContext.getCurrentScope();
         Throwable throwable = null;
+
+        logger.info("tool call start session={} run={} parentRun={} tool={} toolId={} requestChars={} request={}",
+                executionRequest.sessionKey(),
+                runId(startScope),
+                parentRunId(startScope),
+                executionRequest.toolName(),
+                toolId,
+                charLength(executionRequest.request()),
+                requestSummary);
 
         Message assistantToolMessage = Message.assistant("");
         assistantToolMessage.setToolCalls(List.of(
@@ -121,35 +122,6 @@ public class ToolRuntime {
         ScheduledFuture<?> progressFuture = scheduleProgressEvents(executionRequest, toolId, truncatedRequest, toolStartAt);
 
         try {
-            DuplicateDecision duplicateDecision = evaluateDuplicateGuard(
-                    executionRequest.sessionKey(),
-                    executionRequest.toolName(),
-                    executionRequest.request()
-            );
-            if (duplicateDecision.shortCircuit()) {
-                long durationMs = System.currentTimeMillis() - toolStartAt;
-                sessionManager.addFullMessage(executionRequest.sessionKey(), Message.tool(toolId, duplicateDecision.message()));
-                eventPublisher.publishEnd(
-                        executionRequest.eventCallback(),
-                        executionRequest.sessionKey(),
-                        executionRequest.toolName(),
-                        toolId,
-                        truncatedRequest,
-                        durationMs
-                );
-                eventPublisher.publishOutput(
-                        executionRequest.eventCallback(),
-                        executionRequest.sessionKey(),
-                        executionRequest.toolName(),
-                        toolId,
-                        truncatedRequest,
-                        durationMs,
-                        duplicateDecision.message().length(),
-                        duplicateDecision.message()
-                );
-                return new ToolExecutionResult(toolId, duplicateDecision.message(), durationMs, true, null);
-            }
-
             String response = callWithTimeout(
                     executionRequest.callback(),
                     executionRequest.request(),
@@ -158,8 +130,22 @@ public class ToolRuntime {
             String modelResponse = prepareModelResponse(executionRequest, response);
             long durationMs = System.currentTimeMillis() - toolStartAt;
             sessionManager.addFullMessage(executionRequest.sessionKey(), Message.tool(toolId, modelResponse));
+            boolean externalized = isContextReferenceResponse(modelResponse);
+            String refId = externalized ? extractRefId(modelResponse) : null;
 
             if (isToolErrorResponse(response)) {
+                logger.warn("tool call error-response session={} run={} tool={} toolId={} durationMs={} request={} responseChars={} modelChars={} externalized={} refId={} error={}",
+                        executionRequest.sessionKey(),
+                        currentRunId(),
+                        executionRequest.toolName(),
+                        toolId,
+                        durationMs,
+                        requestSummary,
+                        charLength(response),
+                        charLength(modelResponse),
+                        externalized,
+                        refId,
+                        sanitizeForLog(response, 500));
                 eventPublisher.publishError(
                         executionRequest.eventCallback(),
                         executionRequest.sessionKey(),
@@ -171,6 +157,19 @@ public class ToolRuntime {
                 );
                 return new ToolExecutionResult(toolId, modelResponse, durationMs, false, response);
             }
+
+            logger.info("tool call end session={} run={} tool={} toolId={} success=true durationMs={} requestChars={} responseChars={} modelChars={} externalized={} refId={} request={}",
+                    executionRequest.sessionKey(),
+                    currentRunId(),
+                    executionRequest.toolName(),
+                    toolId,
+                    durationMs,
+                    charLength(executionRequest.request()),
+                    charLength(response),
+                    charLength(modelResponse),
+                    externalized,
+                    refId,
+                    requestSummary);
 
             eventPublisher.publishEnd(
                     executionRequest.eventCallback(),
@@ -197,6 +196,14 @@ public class ToolRuntime {
             long durationMs = System.currentTimeMillis() - toolStartAt;
             String errorResponse = "Error: " + safeErrorMessage(e);
             sessionManager.addFullMessage(executionRequest.sessionKey(), Message.tool(toolId, errorResponse));
+            logger.warn("tool call exception session={} run={} tool={} toolId={} durationMs={} request={} error={}",
+                    executionRequest.sessionKey(),
+                    currentRunId(),
+                    executionRequest.toolName(),
+                    toolId,
+                    durationMs,
+                    requestSummary,
+                    e.toString());
             eventPublisher.publishError(
                     executionRequest.eventCallback(),
                     executionRequest.sessionKey(),
@@ -334,6 +341,12 @@ public class ToolRuntime {
                 executionRequest.toolName(),
                 response
         );
+        logger.info("context_ref stored session={} run={} sourceType=tool sourceName={} refId={} contentLength={}",
+                executionRequest.sessionKey(),
+                runId,
+                executionRequest.toolName(),
+                ref.getRefId(),
+                ref.getContentLength());
         return formatContextReferenceResponse(ref);
     }
 
@@ -402,73 +415,145 @@ public class ToolRuntime {
     public void clearRunState(String sessionKey, String runId) {
         if (sessionKey != null && runId != null) {
             turnBudgetStates.remove(sessionKey + ":" + runId);
+            logger.debug("tool runtime run state cleared session={} run={}", sessionKey, runId);
         }
     }
 
-    private DuplicateDecision evaluateDuplicateGuard(String sessionKey, String toolName, String request) {
-        if (!isRepeatGuardTool(toolName) || hasExplicitRefreshIntent(request)) {
-            duplicateGuardStates.remove(sessionKey);
-            return DuplicateDecision.pass();
-        }
-
-        String key = toolName + ":" + normalizeArguments(request);
-        DuplicateGuardState state = duplicateGuardStates.compute(sessionKey, (ignored, previous) -> {
-            if (previous == null || !previous.key().equals(key)) {
-                return new DuplicateGuardState(key, 1);
-            }
-            return new DuplicateGuardState(key, previous.count() + 1);
-        });
-
-        if (state.count() >= DUPLICATE_BLOCK_COUNT) {
-            return DuplicateDecision.block("""
-                    Duplicate read/search call blocked.
-
-                    This exact safe read/search tool call was requested %d times consecutively. Reuse the existing tool result in the conversation, use context_ref if a refId was returned, or change the arguments if new information is required.
-                    """.formatted(state.count()));
-        }
-        if (state.count() == DUPLICATE_WARNING_COUNT) {
-            return DuplicateDecision.block("""
-                    Duplicate read/search call warning.
-
-                    This exact safe read/search tool call was requested 3 times consecutively. Check the previous tool result before calling it again. If a fresh read is truly required, call again with an explicit refresh/reread reason in the arguments.
-                    """);
-        }
-        return DuplicateDecision.pass();
-    }
-
-    private boolean isRepeatGuardTool(String toolName) {
-        if (toolName == null) {
-            return false;
-        }
-        String normalized = toolName.toLowerCase(Locale.ROOT);
-        if (SAFE_REPEAT_GUARD_TOOLS.contains(normalized)) {
-            return true;
-        }
-        return normalized.contains("read")
-                || normalized.contains("search")
-                || normalized.contains("list")
-                || normalized.contains("grep");
-    }
-
-    private String normalizeArguments(String request) {
+    private String summarizeToolRequest(String toolName, String request) {
         if (request == null || request.isBlank()) {
             return "";
         }
-        return request.replaceAll("\\s+", " ").trim();
+        Map<String, Object> args = parseJsonObject(request);
+        if (args == null || args.isEmpty()) {
+            return sanitizeForLog(request, 1_000);
+        }
+
+        String normalizedTool = toolName != null ? toolName.toLowerCase(Locale.ROOT) : "";
+        Map<String, Object> summary = new LinkedHashMap<>();
+        putIfPresent(summary, args, "action");
+        putIfPresent(summary, args, "name");
+        putIfPresent(summary, args, "path");
+        putIfPresent(summary, args, "directory");
+        putIfPresent(summary, args, "inputDir");
+        putIfPresent(summary, args, "outputDir");
+        putIfPresent(summary, args, "manifestId");
+        putIfPresent(summary, args, "itemId");
+        putIfPresent(summary, args, "refId");
+        putIfPresent(summary, args, "query");
+        putIfPresent(summary, args, "start");
+        putIfPresent(summary, args, "maxChars");
+        putIfPresent(summary, args, "timeoutMs");
+        putIfPresent(summary, args, "timeoutSeconds");
+
+        if (args.containsKey("items")) {
+            summary.put("itemsCount", collectionSize(args.get("items")));
+        }
+        if (args.containsKey("columns")) {
+            summary.put("columnsCount", collectionSize(args.get("columns")));
+        }
+        if (args.containsKey("fields")) {
+            summary.put("fieldsCount", collectionSize(args.get("fields")));
+        }
+        if (args.containsKey("checks")) {
+            summary.put("checksCount", collectionSize(args.get("checks")));
+        }
+
+        if (normalizedTool.contains("write") || normalizedTool.contains("append") || normalizedTool.contains("edit")) {
+            putTextLength(summary, args, "content");
+            putTextLength(summary, args, "oldText");
+            putTextLength(summary, args, "newText");
+        } else {
+            putTextLength(summary, args, "text");
+            putTextLength(summary, args, "message");
+            putTextLength(summary, args, "prompt");
+        }
+
+        if (summary.isEmpty()) {
+            summary.put("argKeys", args.keySet());
+        }
+        return sanitizeForLog(summary.toString(), 1_000);
     }
 
-    private boolean hasExplicitRefreshIntent(String request) {
-        if (request == null || request.isBlank()) {
-            return false;
+    private Map<String, Object> parseJsonObject(String request) {
+        try {
+            return OBJECT_MAPPER.readValue(request, new TypeReference<>() {
+            });
+        } catch (Exception ignored) {
+            return null;
         }
-        String normalized = request.toLowerCase(Locale.ROOT);
-        return normalized.contains("refresh")
-                || normalized.contains("reread")
-                || normalized.contains("reload")
-                || normalized.contains("force")
-                || normalized.contains("重新读取")
-                || normalized.contains("重读")
-                || normalized.contains("刷新");
+    }
+
+    private void putIfPresent(Map<String, Object> summary, Map<String, Object> args, String key) {
+        if (args.containsKey(key)) {
+            Object value = args.get(key);
+            if (value instanceof String text) {
+                summary.put(key, sanitizeForLog(text, 300));
+            } else if (value != null && !(value instanceof Map<?, ?>) && !(value instanceof List<?>)) {
+                summary.put(key, value);
+            }
+        }
+    }
+
+    private void putTextLength(Map<String, Object> summary, Map<String, Object> args, String key) {
+        if (args.containsKey(key)) {
+            Object value = args.get(key);
+            summary.put(key + "Chars", value != null ? value.toString().length() : 0);
+        }
+    }
+
+    private int collectionSize(Object value) {
+        if (value instanceof List<?> list) {
+            return list.size();
+        }
+        if (value instanceof Map<?, ?> map) {
+            return map.size();
+        }
+        if (value instanceof String text) {
+            return text.isBlank() ? 0 : 1;
+        }
+        return value == null ? 0 : 1;
+    }
+
+    private int charLength(String value) {
+        return value != null ? value.length() : 0;
+    }
+
+    private String currentRunId() {
+        return runId(AgentExecutionContext.getCurrentScope());
+    }
+
+    private String runId(AgentExecutionContext.ExecutionScope scope) {
+        return scope != null ? scope.runId() : null;
+    }
+
+    private String parentRunId(AgentExecutionContext.ExecutionScope scope) {
+        return scope != null ? scope.parentRunId() : null;
+    }
+
+    private boolean isContextReferenceResponse(String response) {
+        return response != null && response.startsWith("Large tool result stored as a context reference.");
+    }
+
+    private String extractRefId(String response) {
+        if (response == null) {
+            return null;
+        }
+        Matcher matcher = Pattern.compile("(?m)^refId:\\s*(\\S+)").matcher(response);
+        return matcher.find() ? matcher.group(1) : null;
+    }
+
+    private String sanitizeForLog(String text, int maxChars) {
+        if (text == null) {
+            return "";
+        }
+        String sanitized = text
+                .replaceAll("(?i)(api[_-]?key|access[_-]?token|token|secret|password|authorization)\\s*[:=]\\s*([^,}\\s]+)", "$1=<redacted>")
+                .replace("\r", "\\r")
+                .replace("\n", "\\n");
+        if (sanitized.length() <= maxChars) {
+            return sanitized;
+        }
+        return sanitized.substring(0, maxChars) + "...[truncated " + (sanitized.length() - maxChars) + " chars]";
     }
 
     private record TurnBudgetState(java.util.concurrent.atomic.AtomicInteger totalChars) {
@@ -478,19 +563,6 @@ public class ToolRuntime {
 
         boolean addAndExceeds(int length, int budget) {
             return totalChars.addAndGet(Math.max(0, length)) > budget;
-        }
-    }
-
-    private record DuplicateGuardState(String key, int count) {
-    }
-
-    private record DuplicateDecision(boolean shortCircuit, String message) {
-        static DuplicateDecision pass() {
-            return new DuplicateDecision(false, "");
-        }
-
-        static DuplicateDecision block(String message) {
-            return new DuplicateDecision(true, message);
         }
     }
 

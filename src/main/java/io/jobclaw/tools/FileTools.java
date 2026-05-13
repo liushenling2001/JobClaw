@@ -7,6 +7,8 @@ import org.apache.tika.Tika;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.apache.poi.xwpf.usermodel.XWPFParagraph;
 import org.apache.poi.xwpf.usermodel.XWPFRun;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
@@ -30,6 +32,7 @@ import java.util.stream.Stream;
  */
 @Component
 public class FileTools {
+    private static final Logger logger = LoggerFactory.getLogger(FileTools.class);
     private static final int ESTIMATED_WORD_PAGE_CHAR_COUNT = 1800;
 
     private final Config config;
@@ -74,7 +77,9 @@ public class FileTools {
                 Files.createDirectories(resolvedPath.getParent());
             }
             Files.writeString(resolvedPath, content);
-            return "Successfully wrote to " + path;
+            String absolutePath = resolvedPath.toAbsolutePath().normalize().toString();
+            logger.info("write_file wrote path={} chars={}", absolutePath, content.length());
+            return "Successfully wrote to " + absolutePath;
         } catch (Exception e) {
             return "Error writing file: " + e.getMessage();
         }
@@ -194,7 +199,9 @@ public class FileTools {
 
             String newContent = content.replace(oldText, newText);
             Files.writeString(resolvedPath, newContent);
-            return "Successfully edited " + path;
+            String absolutePath = resolvedPath.toAbsolutePath().normalize().toString();
+            logger.info("edit_file edited path={} replacements={} chars={}", absolutePath, count, newContent.length());
+            return "Successfully edited " + absolutePath;
         } catch (Exception e) {
             return "Error editing file: " + e.getMessage();
         }
@@ -223,7 +230,9 @@ public class FileTools {
             Files.writeString(resolvedPath, content, 
                 java.nio.file.StandardOpenOption.CREATE, 
                 java.nio.file.StandardOpenOption.APPEND);
-            return "Successfully appended to " + path;
+            String absolutePath = resolvedPath.toAbsolutePath().normalize().toString();
+            logger.info("append_file appended path={} chars={}", absolutePath, content.length());
+            return "Successfully appended to " + absolutePath;
         } catch (Exception e) {
             return "Error appending to file: " + e.getMessage();
         }

@@ -12,6 +12,7 @@ import io.jobclaw.summary.SessionSummaryRecord;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.regex.Pattern;
 
 public class DefaultContextAssembler implements ContextAssembler {
 
@@ -19,6 +20,9 @@ public class DefaultContextAssembler implements ContextAssembler {
     private static final int SUMMARY_BUDGET_DIVISOR = 5;
     private static final int MEMORY_BUDGET_DIVISOR = 6;
     private static final int RETRIEVED_SUMMARY_BUDGET_DIVISOR = 6;
+    private static final Pattern EXECUTION_STATE_PATTERN = Pattern.compile(
+            "(?i)(manifestId|artifactPath|context_ref|refId|pending\\s*=|running\\s*=|done\\s*=|failed\\s*=|inputDir|outputDir|output_path|intermediate_path|\\.jsonl|\\.xlsx|\\.pdf|[A-Z]:\\\\)"
+    );
 
     private final SessionManager sessionManager;
     private final int defaultRecentLimit;
@@ -58,22 +62,30 @@ public class DefaultContextAssembler implements ContextAssembler {
         int retrievedSummaryBudget = Math.max(192, maxPromptTokens / RETRIEVED_SUMMARY_BUDGET_DIVISOR);
         int historyBudget = Math.max(512, maxPromptTokens - summaryBudget - memoryBudget - retrievedSummaryBudget);
         int summaryLimit = options != null && options.retrievedSummaryLimit() > 0 ? options.retrievedSummaryLimit() : 3;
-        int historyRetrievalLimit = options != null && options.retrievedHistoryLimit() > 0 ? options.retrievedHistoryLimit() : 6;
+        int historyRetrievalLimit = options != null ? Math.max(0, options.retrievedHistoryLimit()) : 6;
         int memoryLimit = options != null && options.retrievedMemoryLimit() > 0 ? options.retrievedMemoryLimit() : 6;
+        boolean isolateExecutionState = options == null || options.isolateExecutionState();
 
         SearchQuery summaryQuery = new SearchQuery(sessionId, currentUserInput, null, null, null, summaryLimit, null);
         SearchQuery historyQuery = new SearchQuery(sessionId, currentUserInput, null, null, null, historyRetrievalLimit, null);
         SearchQuery memoryQuery = new SearchQuery(sessionId, currentUserInput, null, null, null, memoryLimit, null);
 
         List<ChunkSummary> chunkSummaries = retrievalService.searchSummaries(summaryQuery);
-        List<StoredMessage> retrievedHistory = retrievalService.searchHistory(historyQuery);
+        if (isolateExecutionState) {
+            chunkSummaries = chunkSummaries.stream()
+                    .filter(summary -> !containsHistoricalExecutionState(summary.summaryText()))
+                    .toList();
+        }
+        List<StoredMessage> retrievedHistory = historyRetrievalLimit > 0 && !isolateExecutionState
+                ? retrievalService.searchHistory(historyQuery)
+                : List.of();
         List<MemoryFact> memoryFacts = retrievalService.searchMemory(memoryQuery);
         Optional<SessionSummaryRecord> sessionSummary = retrievalService.getSessionSummary(sessionId);
 
         sessionSummary
                 .filter(summary -> summary.summaryText() != null && !summary.summaryText().isBlank())
                 .ifPresent(summary -> assembled.add(Message.system(
-                        "Session summary:\n" + truncateToBudget(summary.summaryText(), summaryBudget)
+                        buildSessionSummaryContext(summary.summaryText(), summaryBudget, isolateExecutionState)
                 )));
 
         if (!chunkSummaries.isEmpty()) {
@@ -97,6 +109,19 @@ public class DefaultContextAssembler implements ContextAssembler {
 
         assembled.addAll(history);
         return assembled;
+    }
+
+    private String buildSessionSummaryContext(String summaryText, int summaryBudget, boolean isolateExecutionState) {
+        if (isolateExecutionState && containsHistoricalExecutionState(summaryText)) {
+            return "Historical session summary omitted from execution context because it contains prior task state "
+                    + "(paths, manifest ids, artifact paths, or pending/done counters). "
+                    + "Do not reuse old paths, manifests, schemas, or artifacts unless the user explicitly asks to continue that exact task.";
+        }
+        return "Session summary:\n" + truncateToBudget(summaryText, summaryBudget);
+    }
+
+    private boolean containsHistoricalExecutionState(String text) {
+        return text != null && EXECUTION_STATE_PATTERN.matcher(text).find();
     }
 
     private void appendRetrievedHistory(List<Message> assembled,

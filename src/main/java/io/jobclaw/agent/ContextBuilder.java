@@ -29,6 +29,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Pattern;
 
 /**
  * Builds stable system-prompt context.
@@ -53,6 +54,9 @@ public class ContextBuilder {
     private static final String[] BOOTSTRAP_FILES = {
             "AGENTS.md", "SOUL.md", "USER.md", "IDENTITY.md"
     };
+    private static final Pattern HISTORICAL_EXECUTION_STATE_PATTERN = Pattern.compile(
+            "(?i)(manifestId|artifactPath|context_ref|refId|pending\\s*=|running\\s*=|done\\s*=|failed\\s*=|inputDir|outputDir|output_path|intermediate_path|\\.jsonl|\\.xlsx|\\.pdf|[A-Z]:\\\\)"
+    );
 
     private final Config config;
     private final SessionManager sessionManager;
@@ -128,10 +132,10 @@ public class ContextBuilder {
 
         String summary = resolveSessionSummary(sessionKey);
         if (summary != null && !summary.isBlank()) {
-            parts.add("# Conversation Summary\n\n" + summary);
+            parts.add("# Conversation Summary\n\n" + buildSafeConversationSummary(summary));
         }
 
-        addSectionIfNotBlank(parts, buildManifestSection(sessionKey));
+        addSectionIfNotBlank(parts, buildManifestSection(sessionKey, currentMessage));
         parts.add(buildCurrentSessionInfo(sessionKey));
         return String.join(SECTION_SEPARATOR, parts);
     }
@@ -279,6 +283,7 @@ public class ContextBuilder {
         sb.append("12. If a recent tool result is already present or referenced by `refId`, reuse it instead of repeating the same read/search call. Repeat only when arguments change or a fresh read is explicitly needed.\n");
         sb.append("13. When the user or a skill explicitly asks you to create, save, export, or modify an artifact, register the completion requirement before final response. If the artifact type is known but the exact path is not yet stable, call `completion(action='register', checks='[{\"type\":\"artifact_expected\",\"artifactType\":\"file|directory|xlsx|pdf|jsonl|csv|docx|...\",\"outputDir\":\"...\"}]', onFail='if the artifact already exists, provide its full path in the final response; otherwise continue and create it')`. Use the most specific artifactType you know; unknown types are still valid but the final response must include one concrete absolute path. If the concrete path is already stable, you may register concrete `file_exists`/`file_non_empty` or `directory_exists`/`directory_non_empty` checks. Do not register completion for ordinary chat without an explicit artifact requirement.\n");
         sb.append("14. Registered completion checks are final-response guards only; they do not perform the task and do not interrupt normal execution. For `artifact_expected`, the final response must include the full generated artifact path so the framework can verify it; if verification fails, follow the returned recovery instruction and continue or report a blocked error, never claim success.\n");
+        sb.append("15. For skill-driven work, task parameters such as inputDir, fields, outputDir, outputPath, and manifestId must come from the current user message or a tool result produced in the current run. Do not reuse historical paths, schemas, manifest ids, artifact paths, or pending/done state from summaries or similar prior tasks unless the user explicitly asks to continue that exact task.\n");
         sb.append("\n");
         sb.append("## Persistent Agents\n\n");
         sb.append("- Use `agent_catalog(action='create', ...)` to create a reusable agent.\n");
@@ -330,9 +335,26 @@ public class ContextBuilder {
         return sb.toString();
     }
 
-    private String buildManifestSection(String sessionKey) {
+    private String buildSafeConversationSummary(String summary) {
+        if (summary == null || summary.isBlank()) {
+            return "";
+        }
+        if (HISTORICAL_EXECUTION_STATE_PATTERN.matcher(summary).find()) {
+            return "Historical summary was omitted from the execution context because it contains prior task state "
+                    + "(paths, manifest ids, artifact paths, or pending/done counters). "
+                    + "Treat the current user message and current-run tool results as the only executable task state.";
+        }
+        return summary;
+    }
+
+    private String buildManifestSection(String sessionKey, String currentMessage) {
         if (sessionKey == null || sessionKey.isBlank()) {
             return "";
+        }
+        if (!isExplicitContinuationRequest(currentMessage)) {
+            return "# Historical Manifests\n\n"
+                    + "Existing manifests from prior turns are not injected into the current execution context. "
+                    + "Create a new manifest for the current task unless the user explicitly asks to continue a specific prior task.\n";
         }
         Path manifestDir = Paths.get(workspace, ".jobclaw", "manifests", safePathSegment(sessionKey));
         if (!Files.isDirectory(manifestDir)) {
@@ -398,6 +420,22 @@ public class ContextBuilder {
 
     private String safePathSegment(String value) {
         return value.replaceAll("[:/\\\\*?\"<>|]", "_");
+    }
+
+    private boolean isExplicitContinuationRequest(String currentMessage) {
+        if (currentMessage == null || currentMessage.isBlank()) {
+            return false;
+        }
+        String text = currentMessage.toLowerCase();
+        return text.contains("继续")
+                || text.contains("恢复")
+                || text.contains("接着")
+                || text.contains("上次")
+                || text.contains("之前的任务")
+                || text.contains("未完成")
+                || text.contains("resume")
+                || text.contains("continue")
+                || text.contains("previous task");
     }
 
     public void clearCache() {

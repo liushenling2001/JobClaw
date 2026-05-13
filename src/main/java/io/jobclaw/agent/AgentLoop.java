@@ -6,6 +6,8 @@ import io.jobclaw.agent.runtime.AgentRunIds;
 import io.jobclaw.agent.completion.ActiveExecutionRegistry;
 import io.jobclaw.agent.completion.CompletionGateResult;
 import io.jobclaw.agent.completion.CompletionRegistry;
+import io.jobclaw.agent.manifest.ActiveManifestRegistry;
+import io.jobclaw.agent.skill.ActiveSkillRegistry;
 import io.jobclaw.context.ContextAssembler;
 import io.jobclaw.context.ContextAssemblyOptions;
 import io.jobclaw.context.ContextAssemblyPolicy;
@@ -76,12 +78,16 @@ public class AgentLoop {
     private final ResolvedProviderConfig defaultProviderConfig;
     private final ActiveExecutionRegistry activeExecutionRegistry;
     private final CompletionRegistry completionRegistry;
+    private final ActiveSkillRegistry activeSkillRegistry;
+    private final ActiveManifestRegistry activeManifestRegistry;
     private final ResultStore resultStore;
 
     // 无工具调用的专用 ChatClient（用于摘要生成）
     private final ChatClient simpleChatClient;
 
     private final ExecutorService toolExecutionExecutor;
+    private static final String ACTIVE_SKILL_FRAME_MARKER = "[[JOBCLAW_ACTIVE_SKILL_FRAME]]";
+    private static final String ACTIVE_MANIFEST_FRAME_MARKER = "[[JOBCLAW_CURRENT_RUN_MANIFESTS]]";
 
     public AgentLoop(Config config, SessionManager sessionManager,
                      ToolCallback[] allToolCallbacks,
@@ -113,7 +119,35 @@ public class AgentLoop {
                      ResultStore resultStore,
                      CompletionRegistry completionRegistry) {
         this(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler, contextAssemblyPolicy,
-                summaryService, null, null, new ProviderRuntime(), new ActiveExecutionRegistry(), resultStore, completionRegistry);
+                summaryService, resultStore, completionRegistry, new ActiveSkillRegistry());
+    }
+
+    public AgentLoop(Config config, SessionManager sessionManager,
+                     ToolCallback[] allToolCallbacks,
+                     ContextBuilder contextBuilder,
+                     ContextAssembler contextAssembler,
+                     ContextAssemblyPolicy contextAssemblyPolicy,
+                     SummaryService summaryService,
+                     ResultStore resultStore,
+                     CompletionRegistry completionRegistry,
+                     ActiveSkillRegistry activeSkillRegistry) {
+        this(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler, contextAssemblyPolicy,
+                summaryService, resultStore, completionRegistry, activeSkillRegistry, new ActiveManifestRegistry());
+    }
+
+    public AgentLoop(Config config, SessionManager sessionManager,
+                     ToolCallback[] allToolCallbacks,
+                     ContextBuilder contextBuilder,
+                     ContextAssembler contextAssembler,
+                     ContextAssemblyPolicy contextAssemblyPolicy,
+                     SummaryService summaryService,
+                     ResultStore resultStore,
+                     CompletionRegistry completionRegistry,
+                     ActiveSkillRegistry activeSkillRegistry,
+                     ActiveManifestRegistry activeManifestRegistry) {
+        this(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler, contextAssemblyPolicy,
+                summaryService, null, null, new ProviderRuntime(), new ActiveExecutionRegistry(), resultStore,
+                completionRegistry, activeSkillRegistry, activeManifestRegistry);
     }
 
     /**
@@ -127,7 +161,7 @@ public class AgentLoop {
                      SummaryService summaryService,
                      ChatClient chatClient, String model) {
         this(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler, contextAssemblyPolicy,
-                summaryService, chatClient, model, new ProviderRuntime(), new ActiveExecutionRegistry(), new NoopResultStore(), new CompletionRegistry(config));
+                summaryService, chatClient, model, new ProviderRuntime(), new ActiveExecutionRegistry(), new NoopResultStore(), new CompletionRegistry(config), new ActiveSkillRegistry(), new ActiveManifestRegistry());
     }
 
     AgentLoop(Config config, SessionManager sessionManager,
@@ -139,7 +173,7 @@ public class AgentLoop {
                      ChatClient chatClient, String model,
                      ProviderRuntime providerRuntime) {
         this(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler, contextAssemblyPolicy,
-                summaryService, chatClient, model, providerRuntime, new ActiveExecutionRegistry(), new NoopResultStore(), new CompletionRegistry(config));
+                summaryService, chatClient, model, providerRuntime, new ActiveExecutionRegistry(), new NoopResultStore(), new CompletionRegistry(config), new ActiveSkillRegistry(), new ActiveManifestRegistry());
     }
 
     AgentLoop(Config config, SessionManager sessionManager,
@@ -152,7 +186,7 @@ public class AgentLoop {
                      ProviderRuntime providerRuntime,
                      ActiveExecutionRegistry activeExecutionRegistry) {
         this(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler, contextAssemblyPolicy,
-                summaryService, chatClient, model, providerRuntime, activeExecutionRegistry, new NoopResultStore(), new CompletionRegistry(config));
+                summaryService, chatClient, model, providerRuntime, activeExecutionRegistry, new NoopResultStore(), new CompletionRegistry(config), new ActiveSkillRegistry(), new ActiveManifestRegistry());
     }
 
     AgentLoop(Config config, SessionManager sessionManager,
@@ -166,7 +200,7 @@ public class AgentLoop {
                      ActiveExecutionRegistry activeExecutionRegistry,
                      ResultStore resultStore) {
         this(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler, contextAssemblyPolicy,
-                summaryService, chatClient, model, providerRuntime, activeExecutionRegistry, resultStore, new CompletionRegistry(config));
+                summaryService, chatClient, model, providerRuntime, activeExecutionRegistry, resultStore, new CompletionRegistry(config), new ActiveSkillRegistry(), new ActiveManifestRegistry());
     }
 
     AgentLoop(Config config, SessionManager sessionManager,
@@ -180,12 +214,32 @@ public class AgentLoop {
                      ActiveExecutionRegistry activeExecutionRegistry,
                      ResultStore resultStore,
                      CompletionRegistry completionRegistry) {
+        this(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler, contextAssemblyPolicy,
+                summaryService, chatClient, model, providerRuntime, activeExecutionRegistry, resultStore,
+                completionRegistry, new ActiveSkillRegistry(), new ActiveManifestRegistry());
+    }
+
+    AgentLoop(Config config, SessionManager sessionManager,
+                     ToolCallback[] allToolCallbacks,
+                     ContextBuilder contextBuilder,
+                     ContextAssembler contextAssembler,
+                     ContextAssemblyPolicy contextAssemblyPolicy,
+                     SummaryService summaryService,
+                     ChatClient chatClient, String model,
+                     ProviderRuntime providerRuntime,
+                     ActiveExecutionRegistry activeExecutionRegistry,
+                     ResultStore resultStore,
+                     CompletionRegistry completionRegistry,
+                     ActiveSkillRegistry activeSkillRegistry,
+                     ActiveManifestRegistry activeManifestRegistry) {
         this.config = config;
         this.sessionManager = sessionManager;
         this.allToolCallbacks = allToolCallbacks;
         this.providerRuntime = providerRuntime;
         this.activeExecutionRegistry = activeExecutionRegistry;
         this.completionRegistry = completionRegistry != null ? completionRegistry : new CompletionRegistry(config);
+        this.activeSkillRegistry = activeSkillRegistry != null ? activeSkillRegistry : new ActiveSkillRegistry();
+        this.activeManifestRegistry = activeManifestRegistry != null ? activeManifestRegistry : new ActiveManifestRegistry();
         this.resultStore = resultStore != null ? resultStore : new NoopResultStore();
 
         ResolvedProviderConfig resolvedProvider = providerRuntime.resolve(config, model);
@@ -341,11 +395,19 @@ public class AgentLoop {
         boolean userMessagePersisted = false;
         boolean assistantMessagePersisted = false;
         StringBuilder fullResponse = new StringBuilder();
+        long runStartAt = System.currentTimeMillis();
 
         try {
             Session session = sessionManager.getOrCreate(sessionKey);
 
-            logger.info("Calling Spring AI with model: {}...", config.getAgent().getModel());
+            logger.info("agent run start session={} run={} parentRun={} agent={} definition={} model={} userChars={}",
+                    sessionKey,
+                    scope.runId(),
+                    scope.parentRunId(),
+                    scope.agentName() != null ? scope.agentName() : "default",
+                    definition != null ? definition.getCode() : "default",
+                    config.getAgent().getModel(),
+                    userContent != null ? userContent.length() : 0);
             long startTime = System.currentTimeMillis();
 
             // 发布思考开始事件
@@ -378,6 +440,8 @@ public class AgentLoop {
 
             String finalResponse = "";
             while (true) {
+                refreshActiveSkillFrame(promptMessages, scope.sessionKey(), scope.runId());
+                refreshActiveManifestFrame(promptMessages, scope.sessionKey(), scope.runId());
                 String attemptResponse = runModelAttempt(
                         executionClientBundle,
                         promptMessages,
@@ -398,6 +462,11 @@ public class AgentLoop {
                     String errorResponse = "Error: completion checks failed after "
                             + gateResult.failedAttempts() + " attempt(s).\n\n"
                             + gateResult.toModelMessage();
+                    logger.warn("agent run completion-check failed session={} run={} attempts={} responseChars={}",
+                            sessionKey,
+                            scope.runId(),
+                            gateResult.failedAttempts(),
+                            attemptResponse != null ? attemptResponse.length() : 0);
                     if (eventCallback != null) {
                         eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.ERROR, errorResponse));
                     }
@@ -407,12 +476,23 @@ public class AgentLoop {
                 }
 
                 String gateMessage = buildCompletionRecoveryPrompt(gateResult, attemptResponse);
+                logger.info("agent run completion-check retry session={} run={} attempts={} recoveryPromptChars={} candidateChars={}",
+                        sessionKey,
+                        scope.runId(),
+                        gateResult.failedAttempts(),
+                        gateMessage.length(),
+                        attemptResponse != null ? attemptResponse.length() : 0);
                 promptMessages.add(new AssistantMessage(attemptResponse));
                 promptMessages.add(new UserMessage(gateMessage));
             }
 
             long elapsed = System.currentTimeMillis() - startTime;
-            logger.info("Agent response received in {}ms", elapsed);
+            logger.info("agent run final session={} run={} elapsedMs={} responseChars={} accumulatedChars={}",
+                    sessionKey,
+                    scope.runId(),
+                    elapsed,
+                    finalResponse != null ? finalResponse.length() : 0,
+                    fullResponse.length());
 
             String response = finalResponse;
 
@@ -431,13 +511,18 @@ public class AgentLoop {
             // 触发会话摘要检查
             sessionSummarizer.maybeSummarize(sessionKey);
 
-            logger.debug("Processed message for session {} (agent: {})", sessionKey,
+            logger.debug("Processed message for session {} run {} (agent: {})", sessionKey, scope.runId(),
                     definition != null ? definition.getDisplayName() : "default");
 
             return response;
 
         } catch (Exception e) {
-            logger.error("Error processing message for session {}", sessionKey, e);
+            logger.error("agent run failed session={} run={} elapsedMs={} accumulatedChars={}",
+                    sessionKey,
+                    scope.runId(),
+                    System.currentTimeMillis() - runStartAt,
+                    fullResponse.length(),
+                    e);
             if (!userMessagePersisted) {
                 sessionManager.addMessage(sessionKey, "user", userContent);
                 userMessagePersisted = true;
@@ -468,6 +553,14 @@ public class AgentLoop {
             return errorResponse;
         } finally {
             toolRuntime.clearRunState(scope.sessionKey(), scope.runId());
+            activeSkillRegistry.clear(scope.sessionKey(), scope.runId());
+            activeManifestRegistry.clear(scope.sessionKey(), scope.runId());
+            logger.info("agent run cleanup session={} run={} elapsedMs={} userPersisted={} assistantPersisted={}",
+                    scope.sessionKey(),
+                    scope.runId(),
+                    System.currentTimeMillis() - runStartAt,
+                    userMessagePersisted,
+                    assistantMessagePersisted);
             // 清理执行上下文
             if (previousScope != null) {
                 AgentExecutionContext.setCurrentContext(previousScope);
@@ -475,6 +568,48 @@ public class AgentLoop {
                 AgentExecutionContext.clear();
             }
         }
+    }
+
+    private void refreshActiveSkillFrame(List<Message> promptMessages, String sessionKey, String runId) {
+        if (promptMessages == null) {
+            return;
+        }
+        promptMessages.removeIf(message ->
+                message instanceof SystemMessage
+                        && message.getText() != null
+                        && message.getText().contains(ACTIVE_SKILL_FRAME_MARKER));
+
+        String frame = activeSkillRegistry.formatForPrompt(sessionKey, runId);
+        if (frame == null || frame.isBlank()) {
+            return;
+        }
+
+        int insertAt = 0;
+        if (!promptMessages.isEmpty() && promptMessages.get(0) instanceof SystemMessage) {
+            insertAt = 1;
+        }
+        promptMessages.add(insertAt, new SystemMessage(frame));
+    }
+
+    private void refreshActiveManifestFrame(List<Message> promptMessages, String sessionKey, String runId) {
+        if (promptMessages == null) {
+            return;
+        }
+        promptMessages.removeIf(message ->
+                message instanceof SystemMessage
+                        && message.getText() != null
+                        && message.getText().contains(ACTIVE_MANIFEST_FRAME_MARKER));
+
+        String frame = activeManifestRegistry.formatForPrompt(sessionKey, runId);
+        if (frame == null || frame.isBlank()) {
+            return;
+        }
+
+        int insertAt = 0;
+        if (!promptMessages.isEmpty() && promptMessages.get(0) instanceof SystemMessage) {
+            insertAt = 1;
+        }
+        promptMessages.add(insertAt, new SystemMessage(frame));
     }
 
     private String buildCompletionRecoveryPrompt(CompletionGateResult gateResult, String attemptResponse) {

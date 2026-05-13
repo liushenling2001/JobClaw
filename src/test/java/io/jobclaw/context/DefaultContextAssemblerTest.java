@@ -106,12 +106,71 @@ class DefaultContextAssemblerTest {
         List<Message> messages = assembler.assemble(
                 sessionId,
                 "继续分析",
-                new ContextAssemblyOptions(10, 4, 3, 4, 4096)
+                new ContextAssemblyOptions(10, 4, 3, 4, 4096, false)
         );
 
         assertFalse(messages.stream().anyMatch(message -> "tool".equals(message.getRole())));
         assertTrue(messages.stream().anyMatch(message -> "assistant".equals(message.getRole())
                 && message.getContent().contains("旧分析结论")));
+    }
+
+    @Test
+    void shouldIsolateRetrievedHistoryAndStatefulSummariesByDefault() {
+        SessionManager sessionManager = new SessionManager();
+        String sessionId = "ctx-isolate-state";
+        sessionManager.deleteSession(sessionId);
+        sessionManager.addMessage(sessionId, "user", "当前任务：处理 D:\\new\\input");
+
+        RetrievalService retrievalService = new StubRetrievalService() {
+            @Override
+            public List<StoredMessage> searchHistory(SearchQuery query) {
+                return List.of(
+                        new StoredMessage("h-old", sessionId, 1, "assistant",
+                                "旧任务路径 D:\\old\\input，manifestId=old-mf", null, null, null, null, Map.of(), Instant.now())
+                );
+            }
+
+            @Override
+            public List<ChunkSummary> searchSummaries(SearchQuery query) {
+                return List.of(
+                        new ChunkSummary("c-old", sessionId,
+                                "旧任务 artifactPath=D:\\old\\result.xlsx pending=0 done=20",
+                                List.of(), List.of(), List.of(), List.of(), 1, Instant.now())
+                );
+            }
+
+            @Override
+            public Optional<SessionSummaryRecord> getSessionSummary(String sessionId) {
+                return Optional.of(new SessionSummaryRecord(
+                        sessionId,
+                        "旧任务 inputDir=D:\\old\\input manifestId=old-mf done=20",
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        1,
+                        1,
+                        Instant.now()
+                ));
+            }
+        };
+
+        DefaultContextAssembler assembler = new DefaultContextAssembler(sessionManager, 10, retrievalService);
+
+        List<Message> messages = assembler.assemble(
+                sessionId,
+                "当前任务：处理 D:\\new\\input",
+                new ContextAssemblyOptions(10, 4, 3, 4, 4096)
+        );
+
+        String assembled = messages.stream()
+                .map(Message::getContent)
+                .filter(content -> content != null)
+                .reduce("", (left, right) -> left + "\n" + right);
+
+        assertFalse(assembled.contains("D:\\old\\input"));
+        assertFalse(assembled.contains("old-mf"));
+        assertFalse(assembled.contains("D:\\old\\result.xlsx"));
+        assertTrue(assembled.contains("Historical session summary omitted"));
     }
 
     private static String repeat(String seed, int times) {

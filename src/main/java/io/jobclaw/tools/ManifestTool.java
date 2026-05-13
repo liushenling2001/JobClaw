@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.jobclaw.agent.AgentExecutionContext;
 import io.jobclaw.agent.ExecutionEvent;
+import io.jobclaw.agent.manifest.ActiveManifestRegistry;
 import io.jobclaw.config.Config;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.ai.tool.annotation.Tool;
@@ -40,14 +41,20 @@ public class ManifestTool {
             .registerModule(new JavaTimeModule());
 
     private final Path rootDir;
+    private final ActiveManifestRegistry activeManifestRegistry;
 
     @Autowired
-    public ManifestTool(Config config) {
-        this(Paths.get(config.getWorkspacePath(), ".jobclaw", "manifests"));
+    public ManifestTool(Config config, ActiveManifestRegistry activeManifestRegistry) {
+        this(Paths.get(config.getWorkspacePath(), ".jobclaw", "manifests"), activeManifestRegistry);
     }
 
     ManifestTool(Path rootDir) {
+        this(rootDir, new ActiveManifestRegistry());
+    }
+
+    ManifestTool(Path rootDir, ActiveManifestRegistry activeManifestRegistry) {
         this.rootDir = rootDir;
+        this.activeManifestRegistry = activeManifestRegistry != null ? activeManifestRegistry : new ActiveManifestRegistry();
     }
 
     @Tool(name = "manifest", description = "Explicit multi-item task ledger. Use only after you intentionally start a batch task. Actions: create, status, start, done, fail, add_items, reset.")
@@ -100,11 +107,25 @@ public class ManifestTool {
         String normalizedTaskKey = normalizeTaskKey(taskKey);
         String fingerprint = fingerprint(normalizedTaskKey, parsedItems, schema);
 
-        Optional<ManifestRecord> existing = findByFingerprint(sessionKey, fingerprint);
+        Optional<ManifestRecord> existing = hasExplicitTaskKey(taskKey)
+                ? findByTaskKey(sessionKey, normalizedTaskKey)
+                : findByFingerprint(sessionKey, fingerprint);
         if (existing.isPresent() && !reset) {
             ManifestRecord record = existing.get();
+            AddItemsResult added = addParsedItems(record, parsedItems);
+            if (artifactPath != null && !artifactPath.isBlank() && nullSafe(record.artifactPath()).isBlank()) {
+                record.artifactPath = artifactPath.trim();
+            }
+            record.updatedAt = Instant.now();
+            save(record);
+            activeManifestRegistry.update(record);
             return "Manifest already exists.\n\n" + formatSummary(record)
-                    + "\n\ncreate is idempotent. Use add_items for explicit append or reset=true to rebuild.";
+                    + "\n\ncreate is idempotent for the same taskKey in this session. Continue using this manifestId. "
+                    + "Items added: " + added.added() + ", duplicates skipped: " + added.duplicates() + ". "
+                    + "Do not call manifest.create again for the same task. "
+                    + "If the current task state shows missing eligible items, use add_items with only those missing items. "
+                    + "Use reset=true only when the user asks to rebuild the ledger."
+                    + "\n\n" + nextActionGuidance(record);
         }
 
         ManifestRecord record = existing.orElseGet(() -> new ManifestRecord(
@@ -128,9 +149,11 @@ public class ManifestTool {
         }
         AddItemsResult added = addParsedItems(record, parsedItems);
         save(record);
+        activeManifestRegistry.update(record);
         publishManifestEvent(record, "create", null, "Manifest ready");
         return "Manifest ready.\n\n" + formatSummary(record)
-                + "\n\nItems added: " + added.added() + ", duplicates skipped: " + added.duplicates();
+                + "\n\nItems added: " + added.added() + ", duplicates skipped: " + added.duplicates()
+                + "\n\n" + nextActionGuidance(record);
     }
 
     private String addItems(String manifestId, String itemsValue) throws IOException {
@@ -141,13 +164,16 @@ public class ManifestTool {
         }
         AddItemsResult added = addParsedItems(record, parsedItems);
         save(record);
+        activeManifestRegistry.update(record);
         publishManifestEvent(record, "add_items", null, "Manifest items updated");
         return "Manifest items updated.\n\n" + formatSummary(record)
-                + "\n\nItems added: " + added.added() + ", duplicates skipped: " + added.duplicates();
+                + "\n\nItems added: " + added.added() + ", duplicates skipped: " + added.duplicates()
+                + "\n\n" + nextActionGuidance(record);
     }
 
     private String status(String manifestId, String includeItems, int limit) throws IOException {
         ManifestRecord record = load(manifestId);
+        activeManifestRegistry.update(record);
         publishManifestEvent(record, "status", null, "Manifest status checked");
         StringBuilder sb = new StringBuilder(formatSummary(record));
         List<ManifestItem> items = selectItems(record, includeItems, Math.max(1, limit));
@@ -169,6 +195,7 @@ public class ManifestTool {
                 sb.append("\n");
             }
         }
+        sb.append("\n").append(nextActionGuidance(record));
         return sb.toString();
     }
 
@@ -201,9 +228,11 @@ public class ManifestTool {
         }
         record.updatedAt = Instant.now();
         save(record);
+        activeManifestRegistry.update(record);
         publishManifestEvent(record, status, itemId, "Manifest item " + itemId + " -> " + status);
         return "Manifest item updated.\n\n" + formatSummary(record)
-                + "\n\nItem: " + itemId + " -> " + status;
+                + "\n\nItem: " + itemId + " -> " + status
+                + "\n\n" + nextActionGuidance(record);
     }
 
     private String reset(String manifestId, boolean confirmed) throws IOException {
@@ -219,8 +248,29 @@ public class ManifestTool {
         }
         record.updatedAt = Instant.now();
         save(record);
+        activeManifestRegistry.update(record);
         publishManifestEvent(record, "reset", null, "Manifest reset");
-        return "Manifest reset.\n\n" + formatSummary(record);
+        return "Manifest reset.\n\n" + formatSummary(record)
+                + "\n\n" + nextActionGuidance(record);
+    }
+
+    private String nextActionGuidance(ManifestRecord record) {
+        Counts counts = counts(record);
+        StringBuilder sb = new StringBuilder("Next action guidance:\n");
+        sb.append("- Continue using manifestId `").append(record.manifestId()).append("`; do not call manifest.create again for this same task.\n");
+        sb.append("- If the current task state shows missing eligible items, call manifest.add_items with only those missing item ids; do not rebuild the ledger.\n");
+        if (counts.running() > 0) {
+            sb.append("- There are running item(s). Finish each running item with manifest.done or manifest.fail before starting unrelated work.\n");
+        } else if (counts.pending() > 0) {
+            sb.append("- There are pending item(s). Use manifest.status(includeItems='pending', limit='1' or '5') to get the next item(s), then process them and mark done/fail.\n");
+        } else {
+            sb.append("- No pending items remain. If this task requires an artifact, create or verify that artifact before final response.\n");
+        }
+        if (!nullSafe(record.artifactPath()).isBlank()) {
+            sb.append("- Current artifactPath: ").append(record.artifactPath()).append("\n");
+        }
+        sb.append("- Manifest is a ledger only; it does not execute items by itself.");
+        return sb.toString();
     }
 
     private void publishManifestEvent(ManifestRecord record, String action, String itemId, String content) {
@@ -354,6 +404,26 @@ public class ManifestTool {
         }
     }
 
+    private Optional<ManifestRecord> findByTaskKey(String sessionKey, String taskKey) throws IOException {
+        Path dir = sessionDir(sessionKey);
+        if (!Files.exists(dir)) {
+            return Optional.empty();
+        }
+        try (var stream = Files.list(dir)) {
+            return stream
+                    .filter(path -> path.getFileName().toString().endsWith(".json"))
+                    .map(path -> {
+                        try {
+                            return OBJECT_MAPPER.readValue(path.toFile(), ManifestRecord.class);
+                        } catch (IOException ignored) {
+                            return null;
+                        }
+                    })
+                    .filter(record -> record != null && taskKey.equals(record.taskKey()))
+                    .max(Comparator.comparing(ManifestRecord::updatedAt));
+        }
+    }
+
     private ManifestRecord load(String manifestId) throws IOException {
         Path path = manifestPath(currentSessionKey(), manifestId);
         if (!Files.exists(path)) {
@@ -433,6 +503,10 @@ public class ManifestTool {
             return taskKey.trim();
         }
         return "batch-task";
+    }
+
+    private boolean hasExplicitTaskKey(String taskKey) {
+        return taskKey != null && !taskKey.isBlank();
     }
 
     private String defaultItemId(int index) {

@@ -50,6 +50,34 @@ class ManifestToolTest {
     }
 
     @Test
+    void createShouldUpsertExistingManifestForSameExplicitTaskKey() throws Exception {
+        AgentExecutionContext.setCurrentContext("session-task-key", event -> {});
+        ManifestTool tool = new ManifestTool(tempDir);
+
+        String first = tool.manifest("create", null, "skill:batch-document-extract-excel|inputDir=D:/docs",
+                "[{\"id\":\"doc-001\",\"title\":\"A\"},{\"id\":\"doc-002\",\"title\":\"B\"}]",
+                "{\"columns\":[\"title\"]}", null, "D:/docs/results.jsonl",
+                null, null, null, null, null, null);
+        String manifestId = extractManifestId(first);
+
+        String second = tool.manifest("create", null, "skill:batch-document-extract-excel|inputDir=D:/docs",
+                "[{\"id\":\"doc-002\",\"title\":\"B again\"},{\"id\":\"doc-003\",\"title\":\"C\"}]",
+                "{\"columns\":[\"title\"]}", null, "D:/docs/results.jsonl",
+                null, null, null, null, null, null);
+        String status = tool.manifest("status", manifestId, null, null, null,
+                null, null, null, null, null, "all", "10", null);
+
+        assertTrue(second.contains("Manifest already exists."));
+        assertTrue(second.contains(manifestId));
+        assertTrue(second.contains("Items added: 1, duplicates skipped: 1"));
+        assertEquals(1, Files.list(tempDir.resolve("session-task-key")).count());
+        assertTrue(status.contains("total: 3"));
+        assertTrue(status.contains("- doc-001 | pending | A"));
+        assertTrue(status.contains("- doc-002 | pending | B"));
+        assertTrue(status.contains("- doc-003 | pending | C"));
+    }
+
+    @Test
     void addItemsShouldRequireExplicitActionAndDeduplicateByItemId() {
         AgentExecutionContext.setCurrentContext("session-b", event -> {});
         ManifestTool tool = new ManifestTool(tempDir);

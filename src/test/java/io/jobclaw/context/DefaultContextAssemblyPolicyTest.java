@@ -99,7 +99,7 @@ class DefaultContextAssemblyPolicyTest {
 
         assertEquals(4096, options.maxPromptTokens());
         assertEquals(8, options.recentMessageLimit());
-        assertEquals(2, options.retrievedHistoryLimit());
+        assertEquals(0, options.retrievedHistoryLimit());
         assertEquals(3, options.retrievedSummaryLimit());
         assertEquals(1, options.retrievedMemoryLimit());
     }

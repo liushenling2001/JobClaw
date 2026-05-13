@@ -58,10 +58,11 @@ public class DefaultContextAssemblyPolicy implements ContextAssemblyPolicy {
 
         return new ContextAssemblyOptions(
                 recentLimit,
-                historyLimit,
+                0,
                 summaryLimit,
                 Math.min(maxMemoryRetrieval, memoryLimit),
-                maxPromptTokens
+                maxPromptTokens,
+                true
         );
     }
 

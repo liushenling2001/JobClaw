@@ -181,9 +181,9 @@ class ToolRuntimeTest {
     }
 
     @Test
-    void shouldGuardConsecutiveDuplicateSafeReadCalls() {
+    void shouldAllowConsecutiveDuplicateToolCalls() {
         Config config = Config.defaultConfig();
-        SessionManager sessionManager = new SessionManager(tempDir.resolve("duplicate-guard-sessions").toString());
+        SessionManager sessionManager = new SessionManager(tempDir.resolve("duplicate-tool-sessions").toString());
         ExecutorService executor = Executors.newSingleThreadExecutor();
         DefaultToolExecutionStateTracker tracker = new DefaultToolExecutionStateTracker();
         ToolRuntime toolRuntime = new ToolRuntime(config, sessionManager, executor, tracker);
@@ -205,9 +205,9 @@ class ToolRuntimeTest {
 
         assertEquals("read-1", first.response());
         assertEquals("read-2", second.response());
-        assertTrue(third.response().contains("Duplicate read/search call warning."));
-        assertTrue(fourth.response().contains("Duplicate read/search call blocked."));
-        assertEquals(2, calls.get());
+        assertEquals("read-3", third.response());
+        assertEquals("read-4", fourth.response());
+        assertEquals(4, calls.get());
 
         executor.shutdownNow();
     }
