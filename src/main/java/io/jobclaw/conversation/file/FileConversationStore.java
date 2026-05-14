@@ -90,6 +90,58 @@ public class FileConversationStore implements ConversationStore {
     }
 
     @Override
+    public boolean replaceLastMessage(String sessionId, String role, String content) {
+        if (sessionId == null || sessionId.isBlank() || role == null || role.isBlank()) {
+            return false;
+        }
+
+        synchronized (lockFor(sessionId)) {
+            try {
+                List<StoredMessage> existing = readMessages(sessionId);
+                if (existing.isEmpty()) {
+                    return false;
+                }
+                int index = existing.size() - 1;
+                StoredMessage last = existing.get(index);
+                if (!role.equals(last.role())) {
+                    return false;
+                }
+                StoredMessage replacement = new StoredMessage(
+                        last.messageId(),
+                        last.sessionId(),
+                        last.sequence(),
+                        last.role(),
+                        content,
+                        last.toolName(),
+                        last.toolCallId(),
+                        last.toolArgsJson(),
+                        last.toolResultJson(),
+                        last.metadata(),
+                        last.createdAt()
+                );
+                existing.set(index, replacement);
+
+                Path sessionDir = sessionDir(sessionId);
+                Files.createDirectories(sessionDir);
+                Path logFile = sessionDir.resolve("messages.ndjson");
+                List<String> lines = new ArrayList<>();
+                for (StoredMessage message : existing) {
+                    lines.add(MAPPER.writeValueAsString(message));
+                }
+                Files.write(logFile, lines, StandardCharsets.UTF_8);
+                SessionRecord record = loadOrCreateSessionRecord(sessionId);
+                writeSessionRecord(record.withUpdatedAt(Instant.now())
+                        .withLastMessageAt(Instant.now())
+                        .withMessageCount(existing.size()));
+                return true;
+            } catch (Exception e) {
+                logger.warn("Failed to replace last message for session {}: {}", sessionId, e.getMessage());
+                return false;
+            }
+        }
+    }
+
+    @Override
     public List<StoredMessage> listRecentMessages(String sessionId, int limit) {
         List<StoredMessage> messages = readMessages(sessionId);
         if (messages.isEmpty() || limit <= 0) {

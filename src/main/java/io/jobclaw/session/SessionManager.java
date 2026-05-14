@@ -85,6 +85,32 @@ public class SessionManager {
         conversationStore.appendMessage(toStoredMessage(sessionKey, session.getMessages().size(), role, content, null));
     }
 
+    public void saveAssistantDraft(String sessionKey, String content) {
+        if (content == null || content.isBlank()) {
+            return;
+        }
+        Session session = getOrCreate(sessionKey);
+        if (session.replaceLastMessage("assistant", content)) {
+            conversationStore.replaceLastMessage(sessionKey, "assistant", content);
+            return;
+        }
+        session.addMessage("assistant", content);
+        conversationStore.appendMessage(toStoredMessage(sessionKey, session.getMessages().size(), "assistant", content, null));
+    }
+
+    public void finalizeAssistantMessage(String sessionKey, String content) {
+        if (content == null || content.isBlank()) {
+            return;
+        }
+        Session session = getOrCreate(sessionKey);
+        if (session.replaceLastMessage("assistant", content)) {
+            conversationStore.replaceLastMessage(sessionKey, "assistant", content);
+            return;
+        }
+        session.addMessage("assistant", content);
+        conversationStore.appendMessage(toStoredMessage(sessionKey, session.getMessages().size(), "assistant", content, null));
+    }
+
     public void addFullMessage(String sessionKey, Message message) {
         Session session = getOrCreate(sessionKey);
         session.addFullMessage(message);

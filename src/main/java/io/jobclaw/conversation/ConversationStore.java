@@ -7,6 +7,10 @@ public interface ConversationStore {
 
     void appendMessage(StoredMessage message);
 
+    default boolean replaceLastMessage(String sessionId, String role, String content) {
+        return false;
+    }
+
     List<StoredMessage> listRecentMessages(String sessionId, int limit);
 
     List<StoredMessage> listMessages(String sessionId, int offset, int limit);

@@ -45,6 +45,19 @@ public class Session {
         this.updated = Instant.now();
     }
 
+    public boolean replaceLastMessage(String role, String content) {
+        if (messages == null || messages.isEmpty()) {
+            return false;
+        }
+        Message last = messages.get(messages.size() - 1);
+        if (last == null || role == null || !role.equals(last.getRole())) {
+            return false;
+        }
+        last.setContent(content);
+        this.updated = Instant.now();
+        return true;
+    }
+
     public void addFullMessage(Message message) {
         this.messages.add(message);
         this.updated = Instant.now();

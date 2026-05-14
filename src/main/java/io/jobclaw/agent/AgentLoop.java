@@ -49,6 +49,7 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 /**
@@ -94,6 +95,7 @@ public class AgentLoop {
     private static final int MANAGED_MANIFEST_MAX_CONTINUATIONS = 200;
     private static final String MANAGED_MANIFEST_TAKEOVER_REASON = "managed manifest control returned to framework loop";
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final int ASSISTANT_DRAFT_CHECKPOINT_CHARS = 1000;
 
     public AgentLoop(Config config, SessionManager sessionManager,
                      ToolCallback[] allToolCallbacks,
@@ -457,7 +459,8 @@ public class AgentLoop {
                         options,
                         sessionKey,
                         eventCallback,
-                        fullResponse
+                        fullResponse,
+                        true
                 );
 
                 String managedContinuationPrompt = buildManagedManifestContinuationPrompt(scope.sessionKey(), scope.runId());
@@ -474,7 +477,7 @@ public class AgentLoop {
                         if (eventCallback != null) {
                             eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.ERROR, errorResponse));
                         }
-                        sessionManager.addMessage(sessionKey, "assistant", partialOrErrorResponse(fullResponse, errorResponse));
+                        sessionManager.finalizeAssistantMessage(sessionKey, partialOrErrorResponse(fullResponse, errorResponse));
                         assistantMessagePersisted = true;
                         return errorResponse;
                     }
@@ -499,7 +502,7 @@ public class AgentLoop {
                             if (eventCallback != null) {
                                 eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.ERROR, runnerResult.message()));
                             }
-                            sessionManager.addMessage(sessionKey, "assistant", partialOrErrorResponse(fullResponse, runnerResult.message()));
+                            sessionManager.finalizeAssistantMessage(sessionKey, partialOrErrorResponse(fullResponse, runnerResult.message()));
                             assistantMessagePersisted = true;
                             return runnerResult.message();
                         }
@@ -549,7 +552,7 @@ public class AgentLoop {
                     if (eventCallback != null) {
                         eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.ERROR, errorResponse));
                     }
-                    sessionManager.addMessage(sessionKey, "assistant", fullResponse + "\n\n" + errorResponse);
+                    sessionManager.finalizeAssistantMessage(sessionKey, fullResponse + "\n\n" + errorResponse);
                     assistantMessagePersisted = true;
                     return errorResponse;
                 }
@@ -584,7 +587,7 @@ public class AgentLoop {
             }
 
             // 保存会话历史
-            sessionManager.addMessage(sessionKey, "assistant", response);
+            sessionManager.finalizeAssistantMessage(sessionKey, response);
             assistantMessagePersisted = true;
 
             // 触发会话摘要检查
@@ -609,7 +612,7 @@ public class AgentLoop {
             if (containsInterruptedException(e)) {
                 Thread.currentThread().interrupt();
                 if (!assistantMessagePersisted) {
-                    sessionManager.addMessage(sessionKey, "assistant",
+                    sessionManager.finalizeAssistantMessage(sessionKey,
                             partialOrErrorResponse(fullResponse, "Error: execution interrupted"));
                     assistantMessagePersisted = true;
                 }
@@ -621,7 +624,7 @@ public class AgentLoop {
             }
             String errorResponse = "Error: " + e.getMessage() + " (check network/API key)";
             if (!assistantMessagePersisted) {
-                sessionManager.addMessage(sessionKey, "assistant",
+                sessionManager.finalizeAssistantMessage(sessionKey,
                         partialOrErrorResponse(fullResponse, errorResponse));
                 assistantMessagePersisted = true;
             }
@@ -960,7 +963,8 @@ public class AgentLoop {
                             options,
                             sessionKey,
                             eventCallback,
-                            workerResponse
+                            workerResponse,
+                            false
                     );
                     return workerResponse.toString();
                 }, toolExecutionExecutor));
@@ -1028,9 +1032,11 @@ public class AgentLoop {
                                    OpenAiChatOptions options,
                                    String sessionKey,
                                    Consumer<ExecutionEvent> eventCallback,
-                                   StringBuilder fullResponse) {
+                                   StringBuilder fullResponse,
+                                   boolean checkpointAssistantDraft) {
         StringBuilder attemptResponse = new StringBuilder();
         StreamDeltaNormalizer streamDeltaNormalizer = new StreamDeltaNormalizer();
+        AtomicInteger lastDraftCheckpoint = new AtomicInteger(fullResponse != null ? fullResponse.length() : 0);
         Flux<String> contentStream = executionClientBundle.chatClient().prompt()
                 .messages(promptMessages)
                 .toolCallbacks(tools)
@@ -1047,6 +1053,11 @@ public class AgentLoop {
                     }
                     attemptResponse.append(delta);
                     fullResponse.append(delta);
+                    if (checkpointAssistantDraft
+                            && fullResponse.length() - lastDraftCheckpoint.get() >= ASSISTANT_DRAFT_CHECKPOINT_CHARS) {
+                        sessionManager.saveAssistantDraft(sessionKey, fullResponse.toString());
+                        lastDraftCheckpoint.set(fullResponse.length());
+                    }
                     if (eventCallback != null) {
                         if (toolExecutionStateTracker.isExecuting(sessionKey)) {
                             toolExecutionStateTracker.bufferThink(sessionKey, delta);
@@ -1587,6 +1598,7 @@ public class AgentLoop {
             String response = simpleChatClient.prompt()
                     .system("You are a helpful assistant.")
                     .user(prompt)
+                    .options(OpenAiChatOptions.builder().model(model).build())
                     .call()
                     .content();
 

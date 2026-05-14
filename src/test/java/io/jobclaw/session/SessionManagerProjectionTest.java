@@ -86,4 +86,26 @@ class SessionManagerProjectionTest {
         assertEquals(2, record.getMessageCount());
         assertTrue(Files.readString(sessionFile).contains("\"messageCount\" : 2"));
     }
+
+    @Test
+    void assistantDraftIsUpdatedInsteadOfDuplicatedAndCanBeFinalized() {
+        FileConversationStore conversationStore = new FileConversationStore(tempDir.resolve("conversation").toString());
+        SessionManager sessionManager = new SessionManager(tempDir.toString(), conversationStore, null);
+
+        sessionManager.addMessage("draft-session", "user", "start");
+        sessionManager.saveAssistantDraft("draft-session", "partial one");
+        sessionManager.saveAssistantDraft("draft-session", "partial two");
+
+        Session draft = new SessionManager(tempDir.toString(), conversationStore, null).getSession("draft-session");
+        assertNotNull(draft);
+        assertEquals(2, draft.getMessages().size());
+        assertEquals("partial two", draft.getMessages().get(1).getContent());
+
+        sessionManager.finalizeAssistantMessage("draft-session", "final answer");
+        Session finalized = new SessionManager(tempDir.toString(), conversationStore, null).getSession("draft-session");
+
+        assertNotNull(finalized);
+        assertEquals(2, finalized.getMessages().size());
+        assertEquals("final answer", finalized.getMessages().get(1).getContent());
+    }
 }
