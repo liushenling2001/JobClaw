@@ -1,6 +1,7 @@
 package io.jobclaw.tools;
 
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.jobclaw.agent.AgentExecutionContext;
@@ -38,10 +39,12 @@ public class ManifestTool {
 
     private static final int DEFAULT_ITEM_LIMIT = 10;
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper()
-            .registerModule(new JavaTimeModule());
+            .registerModule(new JavaTimeModule())
+            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
     private final Path rootDir;
     private final ActiveManifestRegistry activeManifestRegistry;
+    private final Object manifestLock = new Object();
 
     @Autowired
     public ManifestTool(Config config, ActiveManifestRegistry activeManifestRegistry) {
@@ -71,33 +74,97 @@ public class ManifestTool {
             @ToolParam(description = "Failure message for fail", required = false) String error,
             @ToolParam(description = "Include item status in status response: pending/running/done/failed/all", required = false) String includeItems,
             @ToolParam(description = "Maximum items returned by status; default 10", required = false) String limit,
-            @ToolParam(description = "Explicitly reset an existing manifest on create/reset. Defaults false.", required = false) String reset
+            @ToolParam(description = "Explicitly reset an existing manifest on create/reset. Defaults false.", required = false) String reset,
+            @ToolParam(description = "Optional create mode. Use managed only when the framework should keep the run moving until manifest items finish.", required = false) String executionMode,
+            @ToolParam(description = "Optional expected final artifact path for managed manifests. Use when the user asked for a file/report/export.", required = false) String finalArtifactPath,
+            @ToolParam(description = "Optional expected final artifact type, for example xlsx/pdf/docx/csv/json/report.", required = false) String finalArtifactType
     ) {
         String normalizedAction = action == null || action.isBlank()
                 ? "status"
                 : action.trim().toLowerCase(Locale.ROOT);
-        try {
-            return switch (normalizedAction) {
-                case "create" -> create(taskKey, items, schema, artifactPath, parseBoolean(reset));
-                case "status" -> status(required(manifestId, "manifestId"), includeItems, parseInt(limit, DEFAULT_ITEM_LIMIT));
-                case "start" -> updateStatus(required(manifestId, "manifestId"), required(itemId, "itemId"),
-                        "running", artifactPath, resultRefId, note, null);
-                case "done" -> updateStatus(required(manifestId, "manifestId"), required(itemId, "itemId"),
-                        "done", artifactPath, resultRefId, note, null);
-                case "fail", "failed" -> updateStatus(required(manifestId, "manifestId"), required(itemId, "itemId"),
-                        "failed", artifactPath, resultRefId, note, error);
-                case "add_items" -> addItems(required(manifestId, "manifestId"), items);
-                case "reset" -> reset(required(manifestId, "manifestId"), parseBoolean(reset));
-                default -> "Error: unsupported manifest action: " + action;
-            };
-        } catch (IllegalArgumentException e) {
-            return "Error: " + e.getMessage();
-        } catch (Exception e) {
-            return "Error: manifest operation failed: " + e.getMessage();
+        synchronized (manifestLock) {
+            try {
+                return switch (normalizedAction) {
+                    case "create" -> create(taskKey, items, schema, artifactPath, parseBoolean(reset), executionMode,
+                            finalArtifactPath, finalArtifactType);
+                    case "status" -> status(required(manifestId, "manifestId"), includeItems,
+                            parseInt(limit, DEFAULT_ITEM_LIMIT), executionMode, finalArtifactPath, finalArtifactType);
+                    case "start" -> updateStatus(required(manifestId, "manifestId"), required(itemId, "itemId"),
+                            "running", artifactPath, resultRefId, note, null);
+                    case "done" -> updateStatus(required(manifestId, "manifestId"), required(itemId, "itemId"),
+                            "done", artifactPath, resultRefId, note, null);
+                    case "fail", "failed" -> updateStatus(required(manifestId, "manifestId"), required(itemId, "itemId"),
+                            "failed", artifactPath, resultRefId, note, error);
+                    case "add_items" -> addItems(required(manifestId, "manifestId"), items);
+                    case "reset" -> reset(required(manifestId, "manifestId"), parseBoolean(reset));
+                    default -> "Error: unsupported manifest action: " + action;
+                };
+            } catch (IllegalArgumentException e) {
+                return "Error: " + e.getMessage();
+            } catch (Exception e) {
+                return "Error: manifest operation failed: " + e.getMessage();
+            }
         }
     }
 
-    private String create(String taskKey, String itemsValue, String schema, String artifactPath, boolean reset) throws IOException {
+    public String manifest(String action,
+                           String manifestId,
+                           String taskKey,
+                           String items,
+                           String schema,
+                           String itemId,
+                           String artifactPath,
+                           String resultRefId,
+                           String note,
+                           String error,
+                           String includeItems,
+                           String limit,
+                           String reset) {
+        return manifest(action, manifestId, taskKey, items, schema, itemId, artifactPath, resultRefId,
+                note, error, includeItems, limit, reset, null, null, null);
+    }
+
+    public String manifest(String action,
+                           String manifestId,
+                           String taskKey,
+                           String items,
+                           String schema,
+                           String itemId,
+                           String artifactPath,
+                           String resultRefId,
+                           String note,
+                           String error,
+                           String includeItems,
+                           String limit,
+                           String reset,
+                           String executionMode) {
+        return manifest(action, manifestId, taskKey, items, schema, itemId, artifactPath, resultRefId,
+                note, error, includeItems, limit, reset, executionMode, null, null);
+    }
+
+    public String manifest(String action,
+                           String manifestId,
+                           String taskKey,
+                           String items,
+                           String schema,
+                           String itemId,
+                           String artifactPath,
+                           String resultRefId,
+                           String note,
+                           String error,
+                           String includeItems,
+                           String limit,
+                           String reset,
+                           String executionMode,
+                           String finalArtifactPath,
+                           String finalArtifactType,
+                           String ignoredManagedParallelism) {
+        return manifest(action, manifestId, taskKey, items, schema, itemId, artifactPath, resultRefId,
+                note, error, includeItems, limit, reset, executionMode, finalArtifactPath, finalArtifactType);
+    }
+
+    private String create(String taskKey, String itemsValue, String schema, String artifactPath, boolean reset,
+                          String executionMode, String finalArtifactPath, String finalArtifactType) throws IOException {
         List<ManifestItem> parsedItems = parseItems(itemsValue);
         if (parsedItems.isEmpty()) {
             return "Error: items are required for manifest.create";
@@ -116,9 +183,15 @@ public class ManifestTool {
             if (artifactPath != null && !artifactPath.isBlank() && nullSafe(record.artifactPath()).isBlank()) {
                 record.artifactPath = artifactPath.trim();
             }
+            String normalizedExecutionMode = normalizeExecutionMode(executionMode);
+            if (!normalizedExecutionMode.isBlank() && nullSafe(record.executionMode()).isBlank()) {
+                record.executionMode = normalizedExecutionMode;
+            }
+            applyFinalArtifactFields(record, finalArtifactPath, finalArtifactType);
             record.updatedAt = Instant.now();
             save(record);
             activeManifestRegistry.update(record);
+            publishManifestEvent(record, "create_existing", null, "Manifest already exists");
             return "Manifest already exists.\n\n" + formatSummary(record)
                     + "\n\ncreate is idempotent for the same taskKey in this session. Continue using this manifestId. "
                     + "Items added: " + added.added() + ", duplicates skipped: " + added.duplicates() + ". "
@@ -136,6 +209,9 @@ public class ManifestTool {
                 fingerprint,
                 schema,
                 nullSafe(artifactPath),
+                normalizeExecutionMode(executionMode),
+                nullSafe(finalArtifactPath),
+                normalizeArtifactType(finalArtifactType),
                 new LinkedHashMap<>(),
                 Instant.now(),
                 Instant.now()
@@ -145,6 +221,9 @@ public class ManifestTool {
             record.items().clear();
             record.artifactPath = nullSafe(artifactPath);
             record.schema = schema;
+            record.executionMode = normalizeExecutionMode(executionMode);
+            record.finalArtifactPath = nullSafe(finalArtifactPath);
+            record.finalArtifactType = normalizeArtifactType(finalArtifactType);
             record.updatedAt = Instant.now();
         }
         AddItemsResult added = addParsedItems(record, parsedItems);
@@ -171,8 +250,22 @@ public class ManifestTool {
                 + "\n\n" + nextActionGuidance(record);
     }
 
-    private String status(String manifestId, String includeItems, int limit) throws IOException {
+    private String status(String manifestId, String includeItems, int limit, String executionMode,
+                          String finalArtifactPath, String finalArtifactType) throws IOException {
         ManifestRecord record = load(manifestId);
+        boolean changed = false;
+        String normalizedExecutionMode = normalizeExecutionMode(executionMode);
+        if (!normalizedExecutionMode.isBlank() && nullSafe(record.executionMode()).isBlank()) {
+            record.executionMode = normalizedExecutionMode;
+            changed = true;
+        }
+        if (applyFinalArtifactFields(record, finalArtifactPath, finalArtifactType)) {
+            changed = true;
+        }
+        if (changed) {
+            record.updatedAt = Instant.now();
+            save(record);
+        }
         activeManifestRegistry.update(record);
         publishManifestEvent(record, "status", null, "Manifest status checked");
         StringBuilder sb = new StringBuilder(formatSummary(record));
@@ -264,12 +357,27 @@ public class ManifestTool {
         } else if (counts.pending() > 0) {
             sb.append("- There are pending item(s). Use manifest.status(includeItems='pending', limit='1' or '5') to get the next item(s), then process them and mark done/fail.\n");
         } else {
-            sb.append("- No pending items remain. If this task requires an artifact, create or verify that artifact before final response.\n");
+            sb.append("- No pending items remain. Follow the active skill or task instructions for any required post-manifest step.\n");
         }
         if (!nullSafe(record.artifactPath()).isBlank()) {
             sb.append("- Current artifactPath: ").append(record.artifactPath()).append("\n");
         }
-        sb.append("- Manifest is a ledger only; it does not execute items by itself.");
+        if (!nullSafe(record.finalArtifactPath()).isBlank()) {
+            sb.append("- Required final artifact: ").append(record.finalArtifactPath());
+            if (!nullSafe(record.finalArtifactType()).isBlank()) {
+                sb.append(" (type=").append(record.finalArtifactType()).append(")");
+            }
+            sb.append(finalArtifactReady(record) ? " [ready]\n" : " [not ready]\n");
+        }
+        if ("managed".equalsIgnoreCase(nullSafe(record.executionMode()))) {
+            sb.append("- executionMode=managed: the framework will keep returning to this manifest until running/pending items are closed");
+            if (!nullSafe(record.finalArtifactPath()).isBlank()) {
+                sb.append(" and the declared final artifact is ready");
+            }
+            sb.append(".\n");
+        } else {
+            sb.append("- Manifest is a ledger only; it does not execute items by itself.");
+        }
         return sb.toString();
     }
 
@@ -280,7 +388,11 @@ public class ManifestTool {
         metadata.put("action", nullSafe(action));
         metadata.put("manifestId", record.manifestId());
         metadata.put("taskKey", nullSafe(record.taskKey()));
+        metadata.put("executionMode", nullSafe(record.executionMode()));
         metadata.put("artifactPath", nullSafe(record.artifactPath()));
+        metadata.put("finalArtifactPath", nullSafe(record.finalArtifactPath()));
+        metadata.put("finalArtifactType", nullSafe(record.finalArtifactType()));
+        metadata.put("finalArtifactReady", finalArtifactReady(record));
         metadata.put("total", counts.total());
         metadata.put("pending", counts.pending());
         metadata.put("running", counts.running());
@@ -455,12 +567,16 @@ public class ManifestTool {
         Counts counts = counts(record);
         return "Manifest: " + record.manifestId() + "\n"
                 + "taskKey: " + nullSafe(record.taskKey()) + "\n"
+                + "executionMode: " + nullSafe(record.executionMode()) + "\n"
                 + "total: " + counts.total() + "\n"
                 + "pending: " + counts.pending() + "\n"
                 + "running: " + counts.running() + "\n"
                 + "done: " + counts.done() + "\n"
                 + "failed: " + counts.failed() + "\n"
                 + "artifactPath: " + nullSafe(record.artifactPath()) + "\n"
+                + "finalArtifactPath: " + nullSafe(record.finalArtifactPath()) + "\n"
+                + "finalArtifactType: " + nullSafe(record.finalArtifactType()) + "\n"
+                + "finalArtifactReady: " + finalArtifactReady(record) + "\n"
                 + "updatedAt: " + record.updatedAt();
     }
 
@@ -503,6 +619,52 @@ public class ManifestTool {
             return taskKey.trim();
         }
         return "batch-task";
+    }
+
+    private String normalizeExecutionMode(String executionMode) {
+        if (executionMode == null || executionMode.isBlank()) {
+            return "";
+        }
+        String normalized = executionMode.trim().toLowerCase(Locale.ROOT);
+        return "managed".equals(normalized) ? "managed" : "";
+    }
+
+    private String normalizeArtifactType(String finalArtifactType) {
+        if (finalArtifactType == null || finalArtifactType.isBlank()) {
+            return "";
+        }
+        return finalArtifactType.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private boolean applyFinalArtifactFields(ManifestRecord record, String finalArtifactPath, String finalArtifactType) {
+        if (record == null) {
+            return false;
+        }
+        boolean changed = false;
+        if (finalArtifactPath != null && !finalArtifactPath.isBlank()
+                && nullSafe(record.finalArtifactPath()).isBlank()) {
+            record.finalArtifactPath = finalArtifactPath.trim();
+            changed = true;
+        }
+        String normalizedType = normalizeArtifactType(finalArtifactType);
+        if (!normalizedType.isBlank() && nullSafe(record.finalArtifactType()).isBlank()) {
+            record.finalArtifactType = normalizedType;
+            changed = true;
+        }
+        return changed;
+    }
+
+    private boolean finalArtifactReady(ManifestRecord record) {
+        String path = nullSafe(record.finalArtifactPath()).trim();
+        if (path.isBlank()) {
+            return false;
+        }
+        try {
+            Path artifact = Path.of(path);
+            return Files.isRegularFile(artifact) && Files.size(artifact) > 0;
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     private boolean hasExplicitTaskKey(String taskKey) {
@@ -571,6 +733,9 @@ public class ManifestTool {
         private String fingerprint;
         private String schema;
         private String artifactPath;
+        private String executionMode;
+        private String finalArtifactPath;
+        private String finalArtifactType;
         private LinkedHashMap<String, ManifestItem> items = new LinkedHashMap<>();
         private Instant createdAt;
         private Instant updatedAt;
@@ -585,6 +750,9 @@ public class ManifestTool {
                               String fingerprint,
                               String schema,
                               String artifactPath,
+                              String executionMode,
+                              String finalArtifactPath,
+                              String finalArtifactType,
                               LinkedHashMap<String, ManifestItem> items,
                               Instant createdAt,
                               Instant updatedAt) {
@@ -595,6 +763,9 @@ public class ManifestTool {
             this.fingerprint = fingerprint;
             this.schema = schema;
             this.artifactPath = artifactPath;
+            this.executionMode = executionMode;
+            this.finalArtifactPath = finalArtifactPath;
+            this.finalArtifactType = finalArtifactType;
             this.items = items != null ? items : new LinkedHashMap<>();
             this.createdAt = createdAt;
             this.updatedAt = updatedAt;
@@ -626,6 +797,18 @@ public class ManifestTool {
 
         public String artifactPath() {
             return artifactPath;
+        }
+
+        public String executionMode() {
+            return executionMode;
+        }
+
+        public String finalArtifactPath() {
+            return finalArtifactPath;
+        }
+
+        public String finalArtifactType() {
+            return finalArtifactType;
         }
 
         public LinkedHashMap<String, ManifestItem> items() {
@@ -697,6 +880,30 @@ public class ManifestTool {
 
         public void setArtifactPath(String artifactPath) {
             this.artifactPath = artifactPath;
+        }
+
+        public String getExecutionMode() {
+            return executionMode;
+        }
+
+        public void setExecutionMode(String executionMode) {
+            this.executionMode = executionMode;
+        }
+
+        public String getFinalArtifactPath() {
+            return finalArtifactPath;
+        }
+
+        public void setFinalArtifactPath(String finalArtifactPath) {
+            this.finalArtifactPath = finalArtifactPath;
+        }
+
+        public String getFinalArtifactType() {
+            return finalArtifactType;
+        }
+
+        public void setFinalArtifactType(String finalArtifactType) {
+            this.finalArtifactType = finalArtifactType;
         }
 
         public LinkedHashMap<String, ManifestItem> getItems() {

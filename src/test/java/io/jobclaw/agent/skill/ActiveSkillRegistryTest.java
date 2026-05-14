@@ -50,4 +50,21 @@ class ActiveSkillRegistryTest {
                 .contains("Use current-run parameters only")
                 .contains("E:\\skills\\batch");
     }
+
+    @Test
+    void shouldReadManagedRunnerParallelismFromSkillOnly() {
+        ActiveSkillRegistry registry = new ActiveSkillRegistry();
+
+        registry.activate("session-a", "run-1", "batch", """
+                # Skill
+                ## Managed Runtime
+                mode: runner
+                parallelism: 3
+                ### Item Loop
+                Process {{item.id}} only.
+                """, "E:\\skills\\batch");
+
+        assertThat(registry.hasManagedRunnerRuntime("session-a", "run-1")).isTrue();
+        assertThat(registry.managedRunnerParallelism("session-a", "run-1")).isEqualTo(3);
+    }
 }

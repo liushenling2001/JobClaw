@@ -78,6 +78,55 @@ class ManifestToolTest {
     }
 
     @Test
+    void createShouldStoreManagedExecutionModeWhenExplicit() {
+        AgentExecutionContext.setCurrentContext("session-managed", event -> {});
+        ManifestTool tool = new ManifestTool(tempDir);
+
+        String created = tool.manifest("create", null, "managed-batch",
+                "[{\"id\":\"doc-001\",\"title\":\"A\"}]",
+                "{\"columns\":[\"title\"]}", null, "D:/docs/results.jsonl",
+                null, null, null, null, null, null, "managed");
+
+        assertTrue(created.contains("executionMode: managed"));
+        assertTrue(created.contains("executionMode=managed"));
+    }
+
+    @Test
+    void createShouldStoreFinalArtifactExpectationWhenExplicit() {
+        AgentExecutionContext.setCurrentContext("session-final-artifact", event -> {});
+        ManifestTool tool = new ManifestTool(tempDir);
+
+        String created = tool.manifest("create", null, "managed-batch",
+                "[{\"id\":\"doc-001\",\"title\":\"A\"}]",
+                "{\"columns\":[\"title\"]}", null, "D:/docs/results.jsonl",
+                null, null, null, null, null, null, "managed", "D:/docs/results.xlsx", "xlsx");
+
+        assertTrue(created.contains("finalArtifactPath: D:/docs/results.xlsx"));
+        assertTrue(created.contains("finalArtifactType: xlsx"));
+        assertTrue(created.contains("[not ready]"));
+    }
+
+    @Test
+    void statusShouldFillMissingManagedFinalArtifactForExistingManifest() {
+        AgentExecutionContext.setCurrentContext("session-status-final", event -> {});
+        ManifestTool tool = new ManifestTool(tempDir);
+
+        String created = tool.manifest("create", null, "batch",
+                "[{\"id\":\"doc-001\",\"title\":\"A\"}]",
+                "{\"columns\":[\"title\"]}", null, "D:/docs/results.jsonl",
+                null, null, null, null, null, null);
+        String manifestId = extractManifestId(created);
+
+        String status = tool.manifest("status", manifestId, null, null, null,
+                null, null, null, null, null, null, null, null,
+                "managed", "D:/docs/results.xlsx", "xlsx");
+
+        assertTrue(status.contains("executionMode: managed"));
+        assertTrue(status.contains("finalArtifactPath: D:/docs/results.xlsx"));
+        assertTrue(status.contains("finalArtifactType: xlsx"));
+    }
+
+    @Test
     void addItemsShouldRequireExplicitActionAndDeduplicateByItemId() {
         AgentExecutionContext.setCurrentContext("session-b", event -> {});
         ManifestTool tool = new ManifestTool(tempDir);

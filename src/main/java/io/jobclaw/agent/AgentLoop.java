@@ -1,5 +1,7 @@
 package io.jobclaw.agent;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.jobclaw.agent.evolution.MemoryEvolver;
 import io.jobclaw.agent.evolution.MemoryStore;
 import io.jobclaw.agent.runtime.AgentRunIds;
@@ -44,6 +46,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.Consumer;
@@ -88,6 +91,9 @@ public class AgentLoop {
     private final ExecutorService toolExecutionExecutor;
     private static final String ACTIVE_SKILL_FRAME_MARKER = "[[JOBCLAW_ACTIVE_SKILL_FRAME]]";
     private static final String ACTIVE_MANIFEST_FRAME_MARKER = "[[JOBCLAW_CURRENT_RUN_MANIFESTS]]";
+    private static final int MANAGED_MANIFEST_MAX_CONTINUATIONS = 200;
+    private static final String MANAGED_MANIFEST_TAKEOVER_REASON = "managed manifest control returned to framework loop";
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     public AgentLoop(Config config, SessionManager sessionManager,
                      ToolCallback[] allToolCallbacks,
@@ -396,6 +402,8 @@ public class AgentLoop {
         boolean assistantMessagePersisted = false;
         StringBuilder fullResponse = new StringBuilder();
         long runStartAt = System.currentTimeMillis();
+        int managedManifestContinuations = 0;
+        boolean managedManifestHandoffIssued = false;
 
         try {
             Session session = sessionManager.getOrCreate(sessionKey);
@@ -451,6 +459,77 @@ public class AgentLoop {
                         eventCallback,
                         fullResponse
                 );
+
+                String managedContinuationPrompt = buildManagedManifestContinuationPrompt(scope.sessionKey(), scope.runId());
+                if (!managedContinuationPrompt.isBlank()) {
+                    managedManifestContinuations++;
+                    if (managedManifestContinuations > MANAGED_MANIFEST_MAX_CONTINUATIONS) {
+                        String errorResponse = "Error: managed manifest did not finish after "
+                                + MANAGED_MANIFEST_MAX_CONTINUATIONS
+                                + " continuation attempt(s). Check the manifest status and continue the task.";
+                        logger.warn("managed manifest continuation limit reached session={} run={} responseChars={}",
+                                sessionKey,
+                                scope.runId(),
+                                attemptResponse != null ? attemptResponse.length() : 0);
+                        if (eventCallback != null) {
+                            eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.ERROR, errorResponse));
+                        }
+                        sessionManager.addMessage(sessionKey, "assistant", partialOrErrorResponse(fullResponse, errorResponse));
+                        assistantMessagePersisted = true;
+                        return errorResponse;
+                    }
+                    logger.info("managed manifest continuation session={} run={} attempt={} promptChars={}",
+                            sessionKey,
+                            scope.runId(),
+                            managedManifestContinuations,
+                            managedContinuationPrompt.length());
+                    if (activeSkillRegistry.hasManagedRunnerRuntime(scope.sessionKey(), scope.runId())) {
+                        ManagedRunnerResult runnerResult = runManagedSkillRunner(
+                                executionClientBundle,
+                                tools,
+                                options,
+                                systemPrompt,
+                                userContent,
+                                sessionKey,
+                                scope.runId(),
+                                eventCallback,
+                                fullResponse
+                        );
+                        if (runnerResult.error()) {
+                            if (eventCallback != null) {
+                                eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.ERROR, runnerResult.message()));
+                            }
+                            sessionManager.addMessage(sessionKey, "assistant", partialOrErrorResponse(fullResponse, runnerResult.message()));
+                            assistantMessagePersisted = true;
+                            return runnerResult.message();
+                        }
+                        if (!runnerResult.message().isBlank()) {
+                            managedManifestHandoffIssued = true;
+                            promptMessages.add(new AssistantMessage(attemptResponse));
+                            promptMessages.add(new UserMessage(runnerResult.message()));
+                            continue;
+                        }
+                    }
+                    {
+                        promptMessages.add(new AssistantMessage(attemptResponse));
+                        promptMessages.add(new UserMessage(managedContinuationPrompt));
+                    }
+                    continue;
+                }
+
+                if (!managedManifestHandoffIssued) {
+                    String managedHandoffPrompt = buildManagedManifestHandoffPrompt(scope.sessionKey(), scope.runId());
+                    if (!managedHandoffPrompt.isBlank()) {
+                        managedManifestHandoffIssued = true;
+                        logger.info("managed manifest handoff session={} run={} promptChars={}",
+                                sessionKey,
+                                scope.runId(),
+                                managedHandoffPrompt.length());
+                        promptMessages.add(new AssistantMessage(attemptResponse));
+                        promptMessages.add(new UserMessage(managedHandoffPrompt));
+                        continue;
+                    }
+                }
 
                 CompletionGateResult gateResult = completionRegistry.evaluateForFinal(sessionKey, scope.runId(), attemptResponse);
                 if (gateResult.passed()) {
@@ -570,6 +649,199 @@ public class AgentLoop {
         }
     }
 
+    private String buildManagedManifestContinuationPrompt(String sessionKey, String runId) {
+        return activeManifestRegistry.findManagedBlockingState(sessionKey, runId)
+                .map(state -> buildManagedManifestContinuationPrompt(sessionKey, runId, state))
+                .orElse("");
+    }
+
+    private String buildManagedManifestContinuationPrompt(String sessionKey,
+                                                          String runId,
+                                                          ActiveManifestRegistry.ActiveManifestState state) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("FRAMEWORK-MANAGED MANIFEST LOOP\n");
+        sb.append("A manifest created with executionMode=managed is active. This is a loop-control frame, not a new user task.\n");
+        sb.append("Continue the current manifest unit described below. Apply the active skill Runtime Frame or current task instructions for the actual work.\n\n");
+        sb.append("manifestId: ").append(state.manifestId()).append("\n");
+        if (!state.taskKey().isBlank()) {
+            sb.append("taskKey: ").append(state.taskKey()).append("\n");
+        }
+        if (!state.schema().isBlank()) {
+            sb.append("schema: ").append(state.schema()).append("\n");
+        }
+        if (!state.artifactPath().isBlank()) {
+            sb.append("artifactPath: ").append(state.artifactPath()).append("\n");
+        }
+        if (!state.finalArtifactPath().isBlank()) {
+            sb.append("finalArtifactPath: ").append(state.finalArtifactPath()).append("\n");
+            if (!state.finalArtifactType().isBlank()) {
+                sb.append("finalArtifactType: ").append(state.finalArtifactType()).append("\n");
+            }
+            sb.append("finalArtifactReady: ").append(isFinalArtifactReadyNow(state)).append("\n");
+        }
+        sb.append("total: ").append(state.total()).append("\n");
+        sb.append("pending: ").append(state.pending()).append("\n");
+        sb.append("running: ").append(state.running()).append("\n");
+        sb.append("done: ").append(state.done()).append("\n");
+        sb.append("failed: ").append(state.failed()).append("\n\n");
+        String skillCard = activeSkillRegistry.renderManagedRuntime(sessionKey, runId, "item", state);
+        if (!skillCard.isBlank()) {
+            sb.append("Skill managed runtime card:\n");
+            sb.append(skillCard).append("\n\n");
+            sb.append("Framework boundary:\n");
+            sb.append("- Execute only the current managed card. Return control through the manifest action named by the skill card.\n");
+            return sb.toString();
+        }
+        sb.append("Current loop unit:\n");
+        if (state.running() > 0) {
+            appendManagedItem(sb, "running", state.runningItem());
+            sb.append("- Continue the listed running item. When the item is complete, call manifest(action='done' or 'fail', manifestId='")
+                    .append(state.manifestId()).append("', itemId='<completed item id>').\n");
+        } else if (state.pending() > 0) {
+            appendManagedItem(sb, "pending", state.nextPendingItem());
+            if (state.nextPendingItem() != null) {
+                sb.append("- Start and process only the listed pending item, then call manifest(action='done' or 'fail', manifestId='")
+                        .append(state.manifestId())
+                        .append("', itemId='<completed item id>').\n");
+            } else {
+                sb.append("- Ask manifest status for one pending item, then mark it done or failed after the active skill or task instructions are satisfied.\n");
+            }
+        } else if (!state.finalArtifactPath().isBlank() && !isFinalArtifactReadyNow(state)) {
+            sb.append("- All manifest items are closed. Required final artifact is not ready: ")
+                    .append(state.finalArtifactPath())
+                    .append("\n");
+        } else {
+            sb.append("- The manifest loop is closed. Wait for the handoff frame before final response.\n");
+        }
+        sb.append("Loop boundaries:\n");
+        sb.append("- Keep using this manifestId for this managed run.\n");
+        sb.append("- Keep the turn scoped to the manifest state above.\n");
+        sb.append("- Do not give a final answer until pending=0, running=0, and any required final artifact is ready.");
+        return sb.toString();
+    }
+
+    private String buildManagedManifestHandoffPrompt(String sessionKey, String runId) {
+        return activeManifestRegistry.findManagedHandoffState(sessionKey, runId)
+                .map(state -> {
+                    StringBuilder sb = new StringBuilder();
+                    sb.append("FRAMEWORK-MANAGED MANIFEST HANDOFF\n");
+                    sb.append("The managed loop is complete. This frame provides current state only; the next-stage procedure must come from the active skill Runtime Frame or current task instructions.\n\n");
+                    sb.append("manifestId: ").append(state.manifestId()).append("\n");
+                    if (!state.taskKey().isBlank()) {
+                        sb.append("taskKey: ").append(state.taskKey()).append("\n");
+                    }
+                    if (!state.schema().isBlank()) {
+                        sb.append("schema: ").append(state.schema()).append("\n");
+                    }
+                    if (!state.artifactPath().isBlank()) {
+                        sb.append("intermediateArtifactPath: ").append(state.artifactPath()).append("\n");
+                    }
+                    if (!state.finalArtifactPath().isBlank()) {
+                        sb.append("finalArtifactPath: ").append(state.finalArtifactPath()).append("\n");
+                        if (!state.finalArtifactType().isBlank()) {
+                            sb.append("finalArtifactType: ").append(state.finalArtifactType()).append("\n");
+                        }
+                        sb.append("finalArtifactReady: ").append(isFinalArtifactReadyNow(state)).append("\n");
+                    }
+                    sb.append("total: ").append(state.total()).append("\n");
+                    sb.append("done: ").append(state.done()).append("\n");
+                    sb.append("failed: ").append(state.failed()).append("\n");
+                    sb.append("pending: ").append(state.pending()).append("\n");
+                    sb.append("running: ").append(state.running()).append("\n\n");
+                    String skillCard = activeSkillRegistry.renderManagedRuntime(sessionKey, runId, "finalize", state);
+                    if (!skillCard.isBlank()) {
+                        sb.append("Skill managed runtime card:\n");
+                        sb.append(skillCard).append("\n\n");
+                        sb.append("Framework boundary:\n");
+                        sb.append("- This is the post-manifest handoff. Do not restart the managed item loop unless the user explicitly asks.\n");
+                        return sb.toString();
+                    }
+                    sb.append("Handoff boundaries:\n");
+                    sb.append("- Keep using the manifest state and artifact paths above for this run.\n");
+                    sb.append("- Do not create a replacement manifest for this closed managed run unless the user explicitly asks to start over.\n");
+                    sb.append("- Follow [[JOBCLAW_ACTIVE_SKILL_FRAME]] or current task instructions for the next stage.\n");
+                    sb.append("- If no active skill Runtime Frame or task instruction applies, report the closed manifest state and ask for the next instruction.\n");
+                    return sb.toString();
+                })
+                .orElse("");
+    }
+
+    private String buildManagedManifestClosedHandoffPrompt(String sessionKey, String runId) {
+        return activeManifestRegistry.findManagedClosedState(sessionKey, runId)
+                .map(state -> {
+                    StringBuilder sb = new StringBuilder();
+                    sb.append("FRAMEWORK-MANAGED MANIFEST HANDOFF\n");
+                    sb.append("The managed item loop is complete. This frame provides current state only; the next-stage procedure must come from the active skill Runtime Frame or current task instructions.\n\n");
+                    sb.append("manifestId: ").append(state.manifestId()).append("\n");
+                    if (!state.taskKey().isBlank()) {
+                        sb.append("taskKey: ").append(state.taskKey()).append("\n");
+                    }
+                    if (!state.schema().isBlank()) {
+                        sb.append("schema: ").append(state.schema()).append("\n");
+                    }
+                    if (!state.artifactPath().isBlank()) {
+                        sb.append("intermediateArtifactPath: ").append(state.artifactPath()).append("\n");
+                    }
+                    if (!state.finalArtifactPath().isBlank()) {
+                        sb.append("finalArtifactPath: ").append(state.finalArtifactPath()).append("\n");
+                        if (!state.finalArtifactType().isBlank()) {
+                            sb.append("finalArtifactType: ").append(state.finalArtifactType()).append("\n");
+                        }
+                        sb.append("finalArtifactReady: ").append(isFinalArtifactReadyNow(state)).append("\n");
+                    }
+                    sb.append("total: ").append(state.total()).append("\n");
+                    sb.append("done: ").append(state.done()).append("\n");
+                    sb.append("failed: ").append(state.failed()).append("\n");
+                    sb.append("pending: ").append(state.pending()).append("\n");
+                    sb.append("running: ").append(state.running()).append("\n\n");
+                    String skillCard = activeSkillRegistry.renderManagedRuntime(sessionKey, runId, "finalize", state);
+                    if (!skillCard.isBlank()) {
+                        sb.append("Skill managed runtime card:\n");
+                        sb.append(skillCard).append("\n\n");
+                        sb.append("Framework boundary:\n");
+                        sb.append("- Main agent flow waited for the managed runner. Continue only with the finalize card; do not restart item processing unless the user explicitly asks.\n");
+                        return sb.toString();
+                    }
+                    sb.append("Handoff boundaries:\n");
+                    sb.append("- The managed item loop is closed. Continue with the next stage; do not recreate the manifest.\n");
+                    return sb.toString();
+                })
+                .orElse("");
+    }
+
+    private boolean isFinalArtifactReadyNow(ActiveManifestRegistry.ActiveManifestState state) {
+        if (state == null || state.finalArtifactPath().isBlank()) {
+            return false;
+        }
+        if (state.finalArtifactReady()) {
+            return true;
+        }
+        try {
+            java.nio.file.Path path = java.nio.file.Path.of(state.finalArtifactPath().trim());
+            return java.nio.file.Files.isRegularFile(path) && java.nio.file.Files.size(path) > 0;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private void appendManagedItem(StringBuilder sb, String label, ActiveManifestRegistry.ActiveManifestItem item) {
+        if (item == null) {
+            sb.append("- ").append(label).append(" item: <not available in current manifest frame>\n");
+            return;
+        }
+        sb.append("- ").append(label).append(" item id: ").append(item.id()).append("\n");
+        sb.append("- ").append(label).append(" item title/path: ").append(item.title()).append("\n");
+        if (!item.artifactPath().isBlank()) {
+            sb.append("- ").append(label).append(" item artifact: ").append(item.artifactPath()).append("\n");
+        }
+        if (!item.resultRefId().isBlank()) {
+            sb.append("- ").append(label).append(" item refId: ").append(item.resultRefId()).append("\n");
+        }
+        if (!item.error().isBlank()) {
+            sb.append("- ").append(label).append(" item error: ").append(item.error()).append("\n");
+        }
+    }
+
     private void refreshActiveSkillFrame(List<Message> promptMessages, String sessionKey, String runId) {
         if (promptMessages == null) {
             return;
@@ -641,6 +913,115 @@ public class AgentLoop {
         return errorResponse;
     }
 
+    private ManagedRunnerResult runManagedSkillRunner(ExecutionClientBundle executionClientBundle,
+                                                      ToolCallback[] tools,
+                                                      OpenAiChatOptions options,
+                                                      String systemPrompt,
+                                                      String originalUserContent,
+                                                      String sessionKey,
+                                                      String runId,
+                                                      Consumer<ExecutionEvent> eventCallback,
+                                                      StringBuilder fullResponse) {
+        logger.info("managed skill runner start session={} run={}", sessionKey, runId);
+        int attempts = 0;
+        int parallelism = activeSkillRegistry.managedRunnerParallelism(sessionKey, runId);
+        while (true) {
+            var blockingState = activeManifestRegistry.findManagedBlockingState(sessionKey, runId);
+            if (blockingState.isEmpty() || (blockingState.get().pending() == 0 && blockingState.get().running() == 0)) {
+                break;
+            }
+            List<ActiveManifestRegistry.ActiveManifestState> runnerStates = selectManagedRunnerStates(blockingState.get(), parallelism);
+            if (runnerStates.isEmpty()) {
+                break;
+            }
+            attempts++;
+            if (attempts > MANAGED_MANIFEST_MAX_CONTINUATIONS) {
+                String error = "Error: managed runner did not finish after "
+                        + MANAGED_MANIFEST_MAX_CONTINUATIONS
+                        + " item attempt(s). Check the manifest status and continue the task.";
+                logger.warn("managed skill runner limit reached session={} run={}", sessionKey, runId);
+                return new ManagedRunnerResult(error, true);
+            }
+            logger.info("managed skill runner batch session={} run={} attempt={} workers={} configuredParallelism={}",
+                    sessionKey, runId, attempts, runnerStates.size(), parallelism);
+            List<CompletableFuture<String>> workers = new ArrayList<>();
+            for (ActiveManifestRegistry.ActiveManifestState runnerState : runnerStates) {
+                String runnerPrompt = buildManagedManifestContinuationPrompt(sessionKey, runId, runnerState);
+                if (runnerPrompt.isBlank()) {
+                    continue;
+                }
+                workers.add(CompletableFuture.supplyAsync(() -> {
+                    StringBuilder workerResponse = new StringBuilder();
+                    List<Message> runnerMessages = buildManagedRunnerMessages(systemPrompt, originalUserContent, runnerPrompt);
+                    runModelAttempt(
+                            executionClientBundle,
+                            runnerMessages,
+                            tools,
+                            options,
+                            sessionKey,
+                            eventCallback,
+                            workerResponse
+                    );
+                    return workerResponse.toString();
+                }, toolExecutionExecutor));
+            }
+            for (CompletableFuture<String> worker : workers) {
+                worker.join();
+            }
+        }
+
+        String handoffPrompt = buildManagedManifestHandoffPrompt(sessionKey, runId);
+        if (handoffPrompt.isBlank()) {
+            handoffPrompt = buildManagedManifestClosedHandoffPrompt(sessionKey, runId);
+        }
+        logger.info("managed skill runner complete session={} run={} attempts={} handoffChars={}",
+                sessionKey, runId, attempts, handoffPrompt.length());
+        return new ManagedRunnerResult(handoffPrompt, false);
+    }
+
+    private List<ActiveManifestRegistry.ActiveManifestState> selectManagedRunnerStates(
+            ActiveManifestRegistry.ActiveManifestState state,
+            int configuredParallelism) {
+        if (state == null) {
+            return List.of();
+        }
+        if (state.running() > 0 || configuredParallelism <= 1) {
+            return List.of(state);
+        }
+        int limit = Math.max(1, Math.min(4, configuredParallelism));
+        List<ActiveManifestRegistry.ActiveManifestItem> pendingItems = state.pendingQueue().stream()
+                .limit(limit)
+                .toList();
+        if (pendingItems.isEmpty()) {
+            return List.of(state);
+        }
+        return pendingItems.stream()
+                .map(state::withNextPendingItem)
+                .toList();
+    }
+
+    private List<Message> buildManagedRunnerMessages(String systemPrompt,
+                                                     String originalUserContent,
+                                                     String managedPrompt) {
+        List<Message> messages = new ArrayList<>();
+        if (systemPrompt != null && !systemPrompt.isBlank()) {
+            messages.add(new SystemMessage(systemPrompt));
+        }
+        StringBuilder user = new StringBuilder();
+        user.append("JOBCLAW_MANAGED_RUNNER\n");
+        user.append("The main agent flow is waiting while this managed runner advances one manifest unit with short context.\n");
+        user.append("Use only the current managed card, current tool results, and the original user request below. Do not rely on previous item outputs in conversation.\n\n");
+        if (originalUserContent != null && !originalUserContent.isBlank()) {
+            user.append("Original user request:\n").append(originalUserContent).append("\n\n");
+        }
+        user.append(managedPrompt);
+        messages.add(new UserMessage(user.toString()));
+        return messages;
+    }
+
+    private record ManagedRunnerResult(String message, boolean error) {
+    }
+
     private String runModelAttempt(ExecutionClientBundle executionClientBundle,
                                    List<Message> promptMessages,
                                    ToolCallback[] tools,
@@ -657,28 +1038,95 @@ public class AgentLoop {
                 .stream()
                 .content();
 
-        contentStream.toStream().forEach(content -> {
-            if (content != null && !content.isEmpty()) {
-                String delta = streamDeltaNormalizer.normalize(attemptResponse, content);
-                if (delta.isEmpty()) {
-                    return;
-                }
-                attemptResponse.append(delta);
-                fullResponse.append(delta);
-                if (eventCallback != null) {
-                    if (toolExecutionStateTracker.isExecuting(sessionKey)) {
-                        toolExecutionStateTracker.bufferThink(sessionKey, delta);
-                    } else {
-                        eventCallback.accept(new ExecutionEvent(
-                                sessionKey,
-                                ExecutionEvent.EventType.THINK_STREAM,
-                                delta
-                        ));
+        try {
+            contentStream.toStream().forEach(content -> {
+                if (content != null && !content.isEmpty()) {
+                    String delta = streamDeltaNormalizer.normalize(attemptResponse, content);
+                    if (delta.isEmpty()) {
+                        return;
+                    }
+                    attemptResponse.append(delta);
+                    fullResponse.append(delta);
+                    if (eventCallback != null) {
+                        if (toolExecutionStateTracker.isExecuting(sessionKey)) {
+                            toolExecutionStateTracker.bufferThink(sessionKey, delta);
+                        } else {
+                            eventCallback.accept(new ExecutionEvent(
+                                    sessionKey,
+                                    ExecutionEvent.EventType.THINK_STREAM,
+                                    delta
+                            ));
+                        }
                     }
                 }
+            });
+        } catch (RuntimeException e) {
+            if (containsManagedManifestTakeoverSignal(e)) {
+                logger.info("managed manifest takeover session={} attemptChars={}", sessionKey, attemptResponse.length());
+                return attemptResponse.toString();
             }
-        });
+            throw e;
+        }
         return attemptResponse.toString();
+    }
+
+    private boolean containsManagedManifestTakeoverSignal(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof ManagedManifestTakeoverSignal) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    private boolean shouldReturnManagedManifestControl(String toolName, String request, ToolExecutionResult result) {
+        if (!"manifest".equalsIgnoreCase(toolName) || result == null || !result.success()) {
+            return false;
+        }
+        AgentExecutionContext.ExecutionScope scope = AgentExecutionContext.getCurrentScope();
+        if (scope == null) {
+            return false;
+        }
+        String action = extractManifestAction(request);
+        if (!("create".equals(action) || "done".equals(action) || "fail".equals(action) || "failed".equals(action))) {
+            return false;
+        }
+        return activeManifestRegistry.findManagedBlockingState(scope.sessionKey(), scope.runId()).isPresent()
+                || activeManifestRegistry.findManagedHandoffState(scope.sessionKey(), scope.runId()).isPresent();
+    }
+
+    private String extractManifestAction(String request) {
+        if (request == null || request.isBlank()) {
+            return "";
+        }
+        try {
+            JsonNode node = OBJECT_MAPPER.readTree(request);
+            JsonNode action = node.get("action");
+            if (action != null && action.isTextual()) {
+                return action.asText("").trim().toLowerCase();
+            }
+        } catch (Exception ignored) {
+            // Fall back to a loose text match for non-JSON tool requests.
+        }
+        String normalized = request.toLowerCase();
+        for (String action : List.of("create", "done", "failed", "fail")) {
+            if (normalized.contains("\"action\":\"" + action + "\"")
+                    || normalized.contains("\"action\": \"" + action + "\"")
+                    || normalized.contains("\"action\" : \"" + action + "\"")
+                    || normalized.contains("action=" + action)
+                    || normalized.contains("action: " + action)) {
+                return action;
+            }
+        }
+        return "";
+    }
+
+    private static class ManagedManifestTakeoverSignal extends RuntimeException {
+        ManagedManifestTakeoverSignal() {
+            super(MANAGED_MANIFEST_TAKEOVER_REASON, null, false, false);
+        }
     }
 
     /**
@@ -907,6 +1355,14 @@ public class AgentLoop {
                             callback,
                             eventCallback
                     ));
+                    if (shouldReturnManagedManifestControl(getToolDefinition().name(), request, result)) {
+                        logger.info("managed manifest tool boundary reached session={} run={} tool={} request={}",
+                                capturedScope != null ? capturedScope.sessionKey() : sessionKey,
+                                capturedScope != null ? capturedScope.runId() : null,
+                                getToolDefinition().name(),
+                                request != null ? request : "");
+                        throw new ManagedManifestTakeoverSignal();
+                    }
                     return result.response();
                 } finally {
                     if (previousScope != null) {
