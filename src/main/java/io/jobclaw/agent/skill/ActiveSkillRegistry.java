@@ -242,6 +242,7 @@ public class ActiveSkillRegistry {
                 : manifestState.nextPendingItem();
         vars.put("manifestId", manifestState.manifestId());
         vars.put("taskKey", manifestState.taskKey());
+        vars.put("task.inputDir", taskKeyValue(manifestState.taskKey(), "inputDir"));
         vars.put("schema", manifestState.schema());
         vars.put("artifactPath", manifestState.artifactPath());
         vars.put("intermediateArtifactPath", manifestState.artifactPath());
@@ -254,6 +255,7 @@ public class ActiveSkillRegistry {
         vars.put("counts.failed", String.valueOf(manifestState.failed()));
         if (item != null) {
             vars.put("item.id", item.id());
+            vars.put("item.safeId", safePathName(item.id()));
             vars.put("item.title", item.title());
             vars.put("item.path", item.title());
             vars.put("item.status", item.status());
@@ -267,6 +269,27 @@ public class ActiveSkillRegistry {
 
     private static String safe(String value) {
         return value != null ? value : "";
+    }
+
+    private static String taskKeyValue(String taskKey, String name) {
+        if (taskKey == null || taskKey.isBlank() || name == null || name.isBlank()) {
+            return "";
+        }
+        String prefix = name + "=";
+        for (String part : taskKey.split("\\|")) {
+            String trimmed = part.trim();
+            if (trimmed.startsWith(prefix)) {
+                return trimmed.substring(prefix.length()).trim();
+            }
+        }
+        return "";
+    }
+
+    private static String safePathName(String value) {
+        if (value == null || value.isBlank()) {
+            return "";
+        }
+        return value.replaceAll("[\\\\/:*?\"<>|]", "_");
     }
 
     private static String key(String sessionKey, String runId) {

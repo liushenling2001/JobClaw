@@ -8,8 +8,6 @@ import io.jobclaw.config.Config;
 import io.jobclaw.context.result.ContextRef;
 import io.jobclaw.context.result.NoopResultStore;
 import io.jobclaw.context.result.ResultStore;
-import io.jobclaw.providers.Message;
-import io.jobclaw.providers.ToolCall;
 import io.jobclaw.session.SessionManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -104,12 +102,6 @@ public class ToolRuntime {
                 charLength(executionRequest.request()),
                 requestSummary);
 
-        Message assistantToolMessage = Message.assistant("");
-        assistantToolMessage.setToolCalls(List.of(
-                new ToolCall(toolId, executionRequest.toolName(), executionRequest.request())
-        ));
-        sessionManager.addFullMessage(executionRequest.sessionKey(), assistantToolMessage);
-
         stateTracker.markExecuting(executionRequest.sessionKey());
         activeExecutionRegistry.toolStarted(executionRequest.sessionKey());
         eventPublisher.publishStart(
@@ -129,7 +121,6 @@ public class ToolRuntime {
             );
             String modelResponse = prepareModelResponse(executionRequest, response);
             long durationMs = System.currentTimeMillis() - toolStartAt;
-            sessionManager.addFullMessage(executionRequest.sessionKey(), Message.tool(toolId, modelResponse));
             boolean externalized = isContextReferenceResponse(modelResponse);
             String refId = externalized ? extractRefId(modelResponse) : null;
 
@@ -195,7 +186,6 @@ public class ToolRuntime {
             throwable = e;
             long durationMs = System.currentTimeMillis() - toolStartAt;
             String errorResponse = "Error: " + safeErrorMessage(e);
-            sessionManager.addFullMessage(executionRequest.sessionKey(), Message.tool(toolId, errorResponse));
             logger.warn("tool call exception session={} run={} tool={} toolId={} durationMs={} request={} error={}",
                     executionRequest.sessionKey(),
                     currentRunId(),

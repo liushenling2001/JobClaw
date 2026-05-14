@@ -260,6 +260,12 @@ public class SessionSummarizer {
      * @return 角色为 user 或 assistant 返回 true，否则返回 false
      */
     private boolean isValidRole(Message message) {
+        if (message == null) {
+            return false;
+        }
+        if (message.getToolCalls() != null && !message.getToolCalls().isEmpty()) {
+            return false;
+        }
         String role = message.getRole();
         return AgentConstants.ROLE_USER.equals(role) || AgentConstants.ROLE_ASSISTANT.equals(role);
     }

@@ -187,6 +187,9 @@ public class DefaultContextAssembler implements ContextAssembler {
             if (message == null) {
                 continue;
             }
+            if (isToolProtocolMessage(message)) {
+                continue;
+            }
             filtered.add(message);
         }
         return filtered;
@@ -194,6 +197,18 @@ public class DefaultContextAssembler implements ContextAssembler {
 
     private boolean isToolMessage(String role) {
         return "tool".equals(role);
+    }
+
+    private boolean isToolProtocolMessage(Message message) {
+        if (message == null) {
+            return false;
+        }
+        if (isToolMessage(message.getRole())) {
+            return true;
+        }
+        return "assistant".equals(message.getRole())
+                && message.getToolCalls() != null
+                && !message.getToolCalls().isEmpty();
     }
 
     private int adjustStartIndexForToolIntegrity(List<Message> history, int startIndex) {

@@ -154,6 +154,48 @@ public class ExecutionEvent {
         return data;
     }
 
+    @SuppressWarnings("unchecked")
+    public static ExecutionEvent fromSseData(Map<String, Object> data) {
+        if (data == null) {
+            return null;
+        }
+        Object typeValue = data.get("type");
+        EventType eventType;
+        try {
+            eventType = EventType.valueOf(String.valueOf(typeValue));
+        } catch (Exception e) {
+            return null;
+        }
+        Instant eventTimestamp = Instant.now();
+        Object timestampValue = data.get("timestamp");
+        if (timestampValue != null) {
+            try {
+                eventTimestamp = Instant.parse(String.valueOf(timestampValue));
+            } catch (Exception ignored) {
+                eventTimestamp = Instant.now();
+            }
+        }
+        Object metadataValue = data.get("metadata");
+        Map<String, Object> eventMetadata = metadataValue instanceof Map<?, ?> raw
+                ? new HashMap<>((Map<String, Object>) raw)
+                : new HashMap<>();
+        return new ExecutionEvent(
+                stringValue(data.get("sessionId")),
+                eventType,
+                stringValue(data.get("content")),
+                eventMetadata,
+                stringValue(data.get("runId")),
+                stringValue(data.get("parentRunId")),
+                stringValue(data.get("agentId")),
+                stringValue(data.get("agentName")),
+                eventTimestamp
+        );
+    }
+
+    private static String stringValue(Object value) {
+        return value != null ? String.valueOf(value) : null;
+    }
+
     @Override
     public String toString() {
         return "ExecutionEvent{" +

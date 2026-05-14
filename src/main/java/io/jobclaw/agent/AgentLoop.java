@@ -42,6 +42,8 @@ import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 import reactor.core.publisher.Flux;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -739,6 +741,12 @@ public class AgentLoop {
                     if (!state.artifactPath().isBlank()) {
                         sb.append("intermediateArtifactPath: ").append(state.artifactPath()).append("\n");
                     }
+                    sb.append("itemArtifactIndex: stored in manifest item artifactPath fields\n");
+                    sb.append("itemArtifactAccess: call manifest(action='status', manifestId='")
+                            .append(state.manifestId())
+                            .append("', includeItems='all', limit='")
+                            .append(Math.max(1, state.total()))
+                            .append("') only when item-level result locations are needed\n");
                     if (!state.finalArtifactPath().isBlank()) {
                         sb.append("finalArtifactPath: ").append(state.finalArtifactPath()).append("\n");
                         if (!state.finalArtifactType().isBlank()) {
@@ -785,6 +793,12 @@ public class AgentLoop {
                     if (!state.artifactPath().isBlank()) {
                         sb.append("intermediateArtifactPath: ").append(state.artifactPath()).append("\n");
                     }
+                    sb.append("itemArtifactIndex: stored in manifest item artifactPath fields\n");
+                    sb.append("itemArtifactAccess: call manifest(action='status', manifestId='")
+                            .append(state.manifestId())
+                            .append("', includeItems='all', limit='")
+                            .append(Math.max(1, state.total()))
+                            .append("') only when item-level result locations are needed\n");
                     if (!state.finalArtifactPath().isBlank()) {
                         sb.append("finalArtifactPath: ").append(state.finalArtifactPath()).append("\n");
                         if (!state.finalArtifactType().isBlank()) {
@@ -949,10 +963,24 @@ public class AgentLoop {
                     sessionKey, runId, attempts, runnerStates.size(), parallelism);
             List<CompletableFuture<String>> workers = new ArrayList<>();
             for (ActiveManifestRegistry.ActiveManifestState runnerState : runnerStates) {
-                String runnerPrompt = buildManagedManifestContinuationPrompt(sessionKey, runId, runnerState);
+                ActiveManifestRegistry.ActiveManifestItem currentItem = managedRunnerItem(runnerState);
+                if (currentItem == null || currentItem.id().isBlank()) {
+                    continue;
+                }
+                ensureManagedItemStarted(sessionKey, runId, currentItem, eventCallback);
+                ActiveManifestRegistry.ActiveManifestState refreshedState = activeManifestRegistry
+                        .findManagedBlockingState(sessionKey, runId)
+                        .orElse(runnerState);
+                ActiveManifestRegistry.ActiveManifestItem refreshedItem = managedRunnerItem(refreshedState);
+                if (refreshedItem == null || !currentItem.id().equals(refreshedItem.id())) {
+                    refreshedState = runnerState;
+                }
+                String runnerPrompt = buildManagedManifestContinuationPrompt(sessionKey, runId, refreshedState);
                 if (runnerPrompt.isBlank()) {
                     continue;
                 }
+                String itemId = currentItem.id();
+                String itemArtifactPath = extractManagedItemArtifactPath(runnerPrompt);
                 workers.add(CompletableFuture.supplyAsync(() -> {
                     StringBuilder workerResponse = new StringBuilder();
                     List<Message> runnerMessages = buildManagedRunnerMessages(systemPrompt, originalUserContent, runnerPrompt);
@@ -966,6 +994,7 @@ public class AgentLoop {
                             workerResponse,
                             false
                     );
+                    closeManagedItemFromDeclaredArtifact(sessionKey, runId, itemId, itemArtifactPath, eventCallback);
                     return workerResponse.toString();
                 }, toolExecutionExecutor));
             }
@@ -1002,6 +1031,160 @@ public class AgentLoop {
         return pendingItems.stream()
                 .map(state::withNextPendingItem)
                 .toList();
+    }
+
+    private ActiveManifestRegistry.ActiveManifestItem managedRunnerItem(ActiveManifestRegistry.ActiveManifestState state) {
+        if (state == null) {
+            return null;
+        }
+        return state.runningItem() != null ? state.runningItem() : state.nextPendingItem();
+    }
+
+    private void ensureManagedItemStarted(String sessionKey,
+                                          String runId,
+                                          ActiveManifestRegistry.ActiveManifestItem item,
+                                          Consumer<ExecutionEvent> eventCallback) {
+        if (item == null || item.id().isBlank() || "running".equalsIgnoreCase(item.status())) {
+            return;
+        }
+        callFrameworkManifest(sessionKey, runId, eventCallback, "start", item.id(), null, null, "managed runner started item");
+    }
+
+    private void closeManagedItemFromDeclaredArtifact(String sessionKey,
+                                                      String runId,
+                                                      String itemId,
+                                                      String itemArtifactPath,
+                                                      Consumer<ExecutionEvent> eventCallback) {
+        if (itemId == null || itemId.isBlank()) {
+            return;
+        }
+        var state = activeManifestRegistry.findManagedBlockingState(sessionKey, runId).orElse(null);
+        if (state == null || state.runningItem() == null || !itemId.equals(state.runningItem().id())) {
+            return;
+        }
+        if (itemArtifactReady(itemArtifactPath)) {
+            callFrameworkManifest(
+                    sessionKey,
+                    runId,
+                    eventCallback,
+                    "done",
+                    itemId,
+                    null,
+                    itemArtifactPath,
+                    "managed runner item artifact ready"
+            );
+            return;
+        }
+        String reason = itemArtifactPath == null || itemArtifactPath.isBlank()
+                ? "Managed runner item did not declare an itemArtifactPath in the active skill runtime"
+                : "Managed runner item artifact was not created or is empty: " + itemArtifactPath;
+        callFrameworkManifest(
+                sessionKey,
+                runId,
+                eventCallback,
+                "fail",
+                itemId,
+                reason,
+                itemArtifactPath,
+                null
+        );
+    }
+
+    private String extractManagedItemArtifactPath(String runnerPrompt) {
+        if (runnerPrompt == null || runnerPrompt.isBlank()) {
+            return "";
+        }
+        var matcher = java.util.regex.Pattern
+                .compile("(?im)^\\s*(?:-\\s*)?(itemArtifactPath|item_artifact_path|resultPath|result_path)\\s*[:=]\\s*(.+?)\\s*$")
+                .matcher(runnerPrompt);
+        if (!matcher.find()) {
+            return "";
+        }
+        return matcher.group(2)
+                .replace("`", "")
+                .replace("\"", "")
+                .trim();
+    }
+
+    private boolean itemArtifactReady(String itemArtifactPath) {
+        if (itemArtifactPath == null || itemArtifactPath.isBlank()) {
+            return false;
+        }
+        try {
+            Path path = Path.of(itemArtifactPath.trim());
+            return Files.isRegularFile(path) && Files.size(path) > 0;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private void callFrameworkManifest(String sessionKey,
+                                       String runId,
+                                       Consumer<ExecutionEvent> eventCallback,
+                                       String action,
+                                       String itemId,
+                                       String error,
+                                       String artifactPath,
+                                       String note) {
+        ToolCallback manifestCallback = Arrays.stream(allToolCallbacks)
+                .filter(callback -> callback != null
+                        && callback.getToolDefinition() != null
+                        && "manifest".equalsIgnoreCase(callback.getToolDefinition().name()))
+                .findFirst()
+                .orElse(null);
+        if (manifestCallback == null) {
+            logger.warn("managed runner cannot update manifest because manifest tool is unavailable session={} run={} action={} itemId={}",
+                    sessionKey, runId, action, itemId);
+            return;
+        }
+        AgentExecutionContext.ExecutionScope previousScope = AgentExecutionContext.getCurrentScope();
+        AgentExecutionContext.setCurrentContext(new AgentExecutionContext.ExecutionScope(
+                sessionKey,
+                eventCallback,
+                runId,
+                null,
+                null,
+                null,
+                null
+        ));
+        var request = OBJECT_MAPPER.createObjectNode();
+        try {
+            request.put("action", action);
+            activeManifestRegistry.findManagedBlockingState(sessionKey, runId)
+                    .map(ActiveManifestRegistry.ActiveManifestState::manifestId)
+                    .filter(manifestId -> !manifestId.isBlank())
+                    .ifPresent(manifestId -> request.put("manifestId", manifestId));
+            request.put("itemId", itemId);
+            if (error != null && !error.isBlank()) {
+                request.put("error", error);
+            }
+            if (artifactPath != null && !artifactPath.isBlank()) {
+                request.put("artifactPath", artifactPath);
+            }
+            if (note != null && !note.isBlank()) {
+                request.put("note", note);
+            }
+            ToolExecutionResult result = toolRuntime.execute(new ToolExecutionRequest(
+                    sessionKey,
+                    "manifest",
+                    OBJECT_MAPPER.writeValueAsString(request),
+                    manifestCallback,
+                    eventCallback
+            ));
+            if (!result.success() || isToolErrorResponse(result.response())) {
+                logger.warn("managed runner manifest update failed session={} run={} action={} itemId={} response={}",
+                        sessionKey, runId, action, itemId, result.response());
+            }
+        } catch (Exception e) {
+            logger.warn("managed runner manifest update threw session={} run={} action={} itemId={} error={}",
+                    sessionKey, runId, action, itemId, e.getMessage());
+        } finally {
+            if (previousScope != null) {
+                AgentExecutionContext.setCurrentContext(previousScope);
+            } else {
+                AgentExecutionContext.clear();
+            }
+        }
     }
 
     private List<Message> buildManagedRunnerMessages(String systemPrompt,
@@ -1096,6 +1279,9 @@ public class AgentLoop {
         if (!"manifest".equalsIgnoreCase(toolName) || result == null || !result.success()) {
             return false;
         }
+        if (isToolErrorResponse(result.response())) {
+            return false;
+        }
         AgentExecutionContext.ExecutionScope scope = AgentExecutionContext.getCurrentScope();
         if (scope == null) {
             return false;
@@ -1106,6 +1292,61 @@ public class AgentLoop {
         }
         return activeManifestRegistry.findManagedBlockingState(scope.sessionKey(), scope.runId()).isPresent()
                 || activeManifestRegistry.findManagedHandoffState(scope.sessionKey(), scope.runId()).isPresent();
+    }
+
+    private String completeManagedManifestRequest(String toolName,
+                                                  String request,
+                                                  AgentExecutionContext.ExecutionScope scope) {
+        if (!"manifest".equalsIgnoreCase(toolName) || scope == null || request == null || request.isBlank()) {
+            return request;
+        }
+        String action = extractManifestAction(request);
+        if (!("start".equals(action) || "done".equals(action) || "fail".equals(action) || "failed".equals(action))) {
+            return request;
+        }
+        var state = activeManifestRegistry.findManagedBlockingState(scope.sessionKey(), scope.runId()).orElse(null);
+        if (state == null) {
+            return request;
+        }
+        ActiveManifestRegistry.ActiveManifestItem currentItem = state.runningItem() != null
+                ? state.runningItem()
+                : state.nextPendingItem();
+        if (currentItem == null || currentItem.id().isBlank()) {
+            return request;
+        }
+        try {
+            JsonNode node = OBJECT_MAPPER.readTree(request);
+            if (!node.isObject()) {
+                return request;
+            }
+            var object = (com.fasterxml.jackson.databind.node.ObjectNode) node;
+            boolean changed = false;
+            if (isBlankText(object.get("manifestId")) && !state.manifestId().isBlank()) {
+                object.put("manifestId", state.manifestId());
+                changed = true;
+            }
+            if (isBlankText(object.get("itemId"))) {
+                object.put("itemId", currentItem.id());
+                changed = true;
+            }
+            if (!changed) {
+                return request;
+            }
+            String completed = OBJECT_MAPPER.writeValueAsString(object);
+            logger.info("managed manifest request completed session={} run={} action={} manifestId={} itemId={}",
+                    scope.sessionKey(), scope.runId(), action, state.manifestId(), currentItem.id());
+            return completed;
+        } catch (Exception e) {
+            return request;
+        }
+    }
+
+    private boolean isBlankText(JsonNode node) {
+        return node == null || node.isNull() || (node.isTextual() && node.asText("").isBlank());
+    }
+
+    private boolean isToolErrorResponse(String response) {
+        return response != null && response.stripLeading().startsWith("Error:");
     }
 
     private String extractManifestAction(String request) {
@@ -1359,19 +1600,24 @@ public class AgentLoop {
                     AgentExecutionContext.setCurrentContext(capturedScope);
                 }
                 try {
+                    String effectiveRequest = completeManagedManifestRequest(
+                            getToolDefinition().name(),
+                            request,
+                            capturedScope != null ? capturedScope : AgentExecutionContext.getCurrentScope()
+                    );
                     ToolExecutionResult result = toolRuntime.execute(new ToolExecutionRequest(
                             sessionKey,
                             getToolDefinition().name(),
-                            request,
+                            effectiveRequest,
                             callback,
                             eventCallback
                     ));
-                    if (shouldReturnManagedManifestControl(getToolDefinition().name(), request, result)) {
+                    if (shouldReturnManagedManifestControl(getToolDefinition().name(), effectiveRequest, result)) {
                         logger.info("managed manifest tool boundary reached session={} run={} tool={} request={}",
                                 capturedScope != null ? capturedScope.sessionKey() : sessionKey,
                                 capturedScope != null ? capturedScope.runId() : null,
                                 getToolDefinition().name(),
-                                request != null ? request : "");
+                                effectiveRequest != null ? effectiveRequest : "");
                         throw new ManagedManifestTakeoverSignal();
                     }
                     return result.response();

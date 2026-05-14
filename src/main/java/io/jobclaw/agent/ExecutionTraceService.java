@@ -1,11 +1,19 @@
 package io.jobclaw.agent;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.jobclaw.config.Config;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -18,6 +26,9 @@ import java.util.concurrent.*;
 public class ExecutionTraceService {
 
     private static final Logger logger = LoggerFactory.getLogger(ExecutionTraceService.class);
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final int MAX_IN_MEMORY_EVENTS = 100;
+    private static final int MAX_REPLAY_EVENTS = 300;
 
     /**
      * 存储每个 session 的发射器，支持多个订阅者
@@ -33,11 +44,24 @@ public class ExecutionTraceService {
      * 用于生成订阅者 ID
      */
     private final AtomicIntegerCounter subscriberIdCounter;
+    private final Path executionRoot;
 
     public ExecutionTraceService() {
+        this((Path) null);
+    }
+
+    @Autowired
+    public ExecutionTraceService(Config config) {
+        this(config != null
+                ? Paths.get(config.getWorkspacePath(), "sessions", "execution")
+                : null);
+    }
+
+    private ExecutionTraceService(Path executionRoot) {
         this.sessionEmitters = new ConcurrentHashMap<>();
         this.eventHistory = new ConcurrentHashMap<>();
         this.subscriberIdCounter = new AtomicIntegerCounter();
+        this.executionRoot = executionRoot;
         logger.info("ExecutionTraceService initialized");
     }
 
@@ -108,10 +132,11 @@ public class ExecutionTraceService {
             sessionId, k -> new ConcurrentLinkedQueue<>());
 
         // 限制历史队列大小
-        while (history.size() > 100) {
+        while (history.size() > MAX_IN_MEMORY_EVENTS) {
             history.poll();
         }
         history.offer(event);
+        appendExecutionEvent(event);
 
         // 推送给所有订阅者
         ConcurrentHashMap<String, SseEmitter> emitters = sessionEmitters.get(sessionId);
@@ -148,7 +173,11 @@ public class ExecutionTraceService {
      * @return 历史事件列表
      */
     public ConcurrentLinkedQueue<ExecutionEvent> getHistory(String sessionId) {
-        return eventHistory.getOrDefault(sessionId, new ConcurrentLinkedQueue<>());
+        ConcurrentLinkedQueue<ExecutionEvent> inMemory = eventHistory.get(sessionId);
+        if (inMemory != null && !inMemory.isEmpty()) {
+            return inMemory;
+        }
+        return new ConcurrentLinkedQueue<>(readRecentExecutionEvents(sessionId, MAX_REPLAY_EVENTS));
     }
 
     public List<ExecutionEvent> getHistoryByRun(String sessionId, String runId, int limit) {
@@ -207,6 +236,60 @@ public class ExecutionTraceService {
 
     private int normalizeLimit(int limit) {
         return limit <= 0 ? Integer.MAX_VALUE : limit;
+    }
+
+    private void appendExecutionEvent(ExecutionEvent event) {
+        if (executionRoot == null || event == null || event.getSessionId() == null || event.getSessionId().isBlank()) {
+            return;
+        }
+        try {
+            Path sessionDir = executionRoot.resolve(safePathSegment(event.getSessionId()));
+            Files.createDirectories(sessionDir);
+            Path logFile = sessionDir.resolve("events.ndjson");
+            Files.writeString(
+                    logFile,
+                    MAPPER.writeValueAsString(event.toSseData()) + System.lineSeparator(),
+                    StandardCharsets.UTF_8,
+                    Files.exists(logFile) ? java.nio.file.StandardOpenOption.APPEND : java.nio.file.StandardOpenOption.CREATE
+            );
+        } catch (Exception e) {
+            logger.debug("Failed to append execution event for session {}: {}", event.getSessionId(), e.getMessage());
+        }
+    }
+
+    private List<ExecutionEvent> readRecentExecutionEvents(String sessionId, int limit) {
+        if (executionRoot == null || sessionId == null || sessionId.isBlank()) {
+            return List.of();
+        }
+        Path logFile = executionRoot.resolve(safePathSegment(sessionId)).resolve("events.ndjson");
+        if (!Files.exists(logFile)) {
+            return List.of();
+        }
+        try {
+            List<String> lines = Files.readAllLines(logFile, StandardCharsets.UTF_8);
+            int fromIndex = Math.max(0, lines.size() - Math.max(1, limit));
+            List<ExecutionEvent> events = new ArrayList<>();
+            for (String line : lines.subList(fromIndex, lines.size())) {
+                if (line == null || line.isBlank()) {
+                    continue;
+                }
+                Map<String, Object> data = MAPPER.readValue(line, new TypeReference<>() {});
+                ExecutionEvent event = ExecutionEvent.fromSseData(data);
+                if (event != null) {
+                    events.add(event);
+                }
+            }
+            return events;
+        } catch (Exception e) {
+            logger.debug("Failed to read execution events for session {}: {}", sessionId, e.getMessage());
+            return List.of();
+        }
+    }
+
+    private String safePathSegment(String value) {
+        return value == null || value.isBlank()
+                ? "unknown"
+                : value.replaceAll("[:/\\\\*?\"<>|]", "_");
     }
 
     /**

@@ -400,6 +400,13 @@ public class ManifestTool {
         metadata.put("failed", counts.failed());
         if (itemId != null && !itemId.isBlank()) {
             metadata.put("itemId", itemId);
+            ManifestItem item = record.items().get(itemId);
+            if (item != null) {
+                metadata.put("itemStatus", nullSafe(item.status()));
+                metadata.put("itemArtifactPath", nullSafe(item.artifactPath()));
+                metadata.put("itemResultRefId", nullSafe(item.resultRefId()));
+                metadata.put("itemError", nullSafe(item.error()));
+            }
         }
         AgentExecutionContext.publishEvent(new ExecutionEvent(
                 record.sessionKey(),
