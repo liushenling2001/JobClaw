@@ -23,6 +23,8 @@ The runtime no longer contains the old implicit planning executor. Long task rel
 - explicit skills for repeatable procedures
 - child agents only when the model or user intentionally requests collaboration
 
+Direct execution remains the default. The framework records and protects execution state, but it should not guess a plan or silently take control of ordinary direct tasks.
+
 ## Execution Reliability
 
 JobClaw keeps the main execution path direct. The framework should enhance execution without taking over task planning.
@@ -45,6 +47,34 @@ For explicit multi-item work, the model or a skill can create a manifest ledger:
 - `artifactPath`
 
 The framework records manifest events and exposes progress to the UI. It does not infer multi-item work from regexes or automatically split tasks. A manifest starts only when the model or skill explicitly calls the manifest tool.
+
+Creating a manifest in a normal direct run does not automatically start a framework-owned item loop. In direct mode, the manifest is a ledger only; the model still drives the work.
+
+### Managed manifest runner
+
+JobClaw supports an opt-in managed item loop for repeatable long tasks. This path is intentionally narrow.
+
+The runner starts only when all of these are true:
+
+- the current run has activated a skill
+- the active skill declares `mode: runner`
+- the skill calls `manifest.create` with `executionMode=managed`
+- the manifest contract includes the required item list, schema, and artifact paths
+
+In this mode, the main model creates the manifest, then the framework takes over the mechanical item loop:
+
+1. Select one pending item.
+2. Render one skill-defined execution card for that item.
+3. Give the item model only the skill-allowed tools.
+4. Save the item result to the skill-defined item artifact path.
+5. Append the result to the intermediate aggregate artifact.
+6. Mark the manifest item `done` or `failed`.
+7. Continue until `pending=0` and `running=0`.
+8. Return control to the main model for the skill-defined finalize step.
+
+The framework does not parse business meaning from item results. It only stores the structured result returned by the model, updates the manifest, and keeps the loop moving. A malformed tool call or failed item should mark that item failed and continue, rather than blocking the entire job.
+
+If there is no active runner skill, `executionMode=managed` in a direct prompt is not enough to trigger the runner. This protects ordinary direct tasks from accidental takeover.
 
 ### Completion gate
 
@@ -71,11 +101,64 @@ Skills should describe repeatable workflows and tool usage constraints. They are
 
 For long artifact-producing skills, the recommended pattern is:
 
-1. Create or reuse a manifest when the job has explicit multiple items.
-2. Write intermediate results to durable files as each item completes.
-3. Register a completion contract for the required artifact type or concrete output path.
-4. Generate final artifacts from intermediate files with existing tools or scripts.
-5. Include the final artifact path in the final response.
+1. List the real input items with tools, not examples or placeholders.
+2. Create or reuse a manifest when the job has explicit multiple items.
+3. Let `mode: runner` skills use the managed runner for per-item work.
+4. Save one durable item artifact per item and one aggregate artifact for the batch.
+5. Generate final artifacts from intermediate files with existing tools or scripts.
+6. Include the final artifact path in the final response.
+
+A runner skill should define its own runtime contract, for example:
+
+```text
+mode: runner
+parallelism: 1
+frameworkWrites: item-json,jsonl,manifest
+itemResultPathTemplate: {{task.inputDir}}\results.items\{{item.safeId}}.json
+aggregatePathTemplate: {{artifactPath}}
+itemOutput: json_object
+allowedTools: read_pdf, read_word, read_file, context_ref
+```
+
+The `allowedTools` list is local to the item loop. It should be as small as practical so the model cannot restart the whole workflow from inside one item.
+
+Skills can still support resume behavior. If item artifacts already exist and are complete, the skill may reuse them and skip re-reading source files. If only part of the work exists, the skill should create a manifest only for missing items or use the existing manifest to continue.
+
+Example external skills used in testing:
+
+- `batch-document-extract-excel`: per-document extraction to item JSON/JSONL, then Excel generation.
+- `paper-folder-literature-review`: per-paper research notes, then Markdown literature review generation.
+
+These skills live outside the jar in the configured skills directory, such as `E:\jobwork\skills`.
+
+## Long Task Guidance
+
+For direct long-form work, make the prompt artifact-oriented. Ask the model to create files with `write_file` and extend them with `append_file`, then verify the result with a tool. Do not ask for a 40,000-character report as one chat response.
+
+Recommended direct pattern:
+
+1. Write an outline file.
+2. Create the final report file.
+3. Append one section at a time.
+4. Check size or completeness with a tool.
+5. Continue until the target is satisfied.
+6. Return only paths and validation facts in the final answer.
+
+For multi-object long tasks, prefer a runner skill. Direct prompts can work for small batches, but they do not get the managed item loop unless a runner skill is active.
+
+## Provider Notes
+
+### DeepSeek
+
+DeepSeek-compatible providers can return reasoning side-channel content. JobClaw disables DeepSeek thinking for non-reasoner DeepSeek models to avoid providers requiring `reasoning_content` to be replayed across tool calls.
+
+Built-in model entries include:
+
+- `deepseek-chat`
+- `deepseek-reasoner`
+- `deepseek-v4-flash` when configured through the provider/model settings
+
+For non-reasoner DeepSeek models, JobClaw sends `thinking: { "type": "disabled" }` where supported and uses a safer non-stream call path to avoid incompatible reasoning-content replay behavior.
 
 ## Voice
 
