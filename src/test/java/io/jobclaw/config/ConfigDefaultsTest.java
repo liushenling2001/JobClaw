@@ -7,6 +7,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ConfigDefaultsTest {
@@ -29,6 +31,15 @@ class ConfigDefaultsTest {
         assertTrue(json.contains("\"contextRefTurnBudgetChars\""));
         assertTrue(json.contains("\"baseUrl\""));
         assertTrue(json.contains("\"dashscope\""));
+        assertFalse(json.contains("\"subtaskTimeoutMs\""));
+        assertFalse(json.contains("\"maxSubtaskRepairAttempts\""));
+        assertEquals(60, config.getAgent().getSummarizeTokenPercentage());
+        assertEquals(16, config.getAgent().getRecentMessagesToKeep());
+        assertEquals(60, config.getAgent().getContextMaxPromptTokenPercentage());
+        assertEquals(50, config.getAgent().getContextLongInputPromptTokenPercentage());
+        assertEquals(0, config.getAgent().getContextMaxHistoryRetrieval());
+        assertEquals(4, config.getAgent().getContextMaxSummaryRetrieval());
+        assertEquals(8, config.getAgent().getContextMaxMemoryRetrieval());
     }
 
     @Test

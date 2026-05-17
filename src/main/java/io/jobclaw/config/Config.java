@@ -224,22 +224,23 @@ public class Config {
         config.getAgent().setChildAgentResultMaxChars(4000);
         config.getAgent().setContextRefEnabled(true);
         config.getAgent().setContextRefThresholdChars(20_000);
+        config.getAgent().setContextRefTurnBudgetChars(45_000);
         config.getAgent().setContextRefPreviewChars(2_000);
         config.getAgent().setContextRefReadMaxChars(12_000);
         // 上下文管理默认值（参考 TinyClaw）
         config.getAgent().setContextWindow(128_000);
         config.getAgent().setSummarizeMessageThreshold(200);
-        config.getAgent().setSummarizeTokenPercentage(90);
-        config.getAgent().setRecentMessagesToKeep(40);
+        config.getAgent().setSummarizeTokenPercentage(60);
+        config.getAgent().setRecentMessagesToKeep(16);
         config.getAgent().setMemoryTokenBudgetPercentage(20);
         config.getAgent().setMemoryMinTokenBudget(1024);
         config.getAgent().setMemoryMaxTokenBudget(16384);
-        config.getAgent().setContextMaxPromptTokenPercentage(75);
-        config.getAgent().setContextLongInputPromptTokenPercentage(60);
+        config.getAgent().setContextMaxPromptTokenPercentage(60);
+        config.getAgent().setContextLongInputPromptTokenPercentage(50);
         config.getAgent().setContextLongInputTokenPercentage(6);
-        config.getAgent().setContextMaxHistoryRetrieval(10);
-        config.getAgent().setContextMaxSummaryRetrieval(6);
-        config.getAgent().setContextMaxMemoryRetrieval(10);
+        config.getAgent().setContextMaxHistoryRetrieval(0);
+        config.getAgent().setContextMaxSummaryRetrieval(4);
+        config.getAgent().setContextMaxMemoryRetrieval(8);
     }
 
     private static void setGatewayDefaults(Config config) {

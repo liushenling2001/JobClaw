@@ -87,17 +87,17 @@ public class AgentConfig {
         // 上下文管理默认值（参考 TinyClaw）
         this.contextWindow = 128_000;
         this.summarizeMessageThreshold = 200;
-        this.summarizeTokenPercentage = 90;
-        this.recentMessagesToKeep = 40;
+        this.summarizeTokenPercentage = 60;
+        this.recentMessagesToKeep = 16;
         this.memoryTokenBudgetPercentage = 20;
         this.memoryMinTokenBudget = 1024;
         this.memoryMaxTokenBudget = 16384;
-        this.contextMaxPromptTokenPercentage = 75;
-        this.contextLongInputPromptTokenPercentage = 60;
+        this.contextMaxPromptTokenPercentage = 60;
+        this.contextLongInputPromptTokenPercentage = 50;
         this.contextLongInputTokenPercentage = 6;
-        this.contextMaxHistoryRetrieval = 10;
-        this.contextMaxSummaryRetrieval = 6;
-        this.contextMaxMemoryRetrieval = 10;
+        this.contextMaxHistoryRetrieval = 0;
+        this.contextMaxSummaryRetrieval = 4;
+        this.contextMaxMemoryRetrieval = 8;
     }
 
     public String getWorkspace() {
