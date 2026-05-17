@@ -2,6 +2,7 @@ package io.jobclaw.tools;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.jobclaw.agent.AgentExecutionContext;
+import io.jobclaw.agent.skill.ActiveSkillRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -107,6 +108,46 @@ class ManifestToolTest {
     }
 
     @Test
+    void directCreateShouldNotRequireManagedSkillContract() {
+        AgentExecutionContext.setCurrentContext(new AgentExecutionContext.ExecutionScope(
+                "session-direct-managed", event -> {}, "run-direct", null, null, null, null
+        ));
+        ManifestTool tool = new ManifestTool(tempDir);
+
+        String created = tool.manifest("create", null, "managed-batch",
+                "[{\"id\":\"doc-001\",\"title\":\"A\"}]",
+                null, null, null,
+                null, null, null, null, null, null, "managed");
+
+        assertTrue(created.contains("Manifest ready."));
+        assertTrue(created.contains("executionMode: managed"));
+    }
+
+    @Test
+    void skillManagedCreateShouldRejectIncompleteRunnerContract() {
+        ActiveSkillRegistry skillRegistry = new ActiveSkillRegistry();
+        AgentExecutionContext.setCurrentContext(new AgentExecutionContext.ExecutionScope(
+                "session-skill-managed", event -> {}, "run-managed", null, null, null, null
+        ));
+        skillRegistry.activate("session-skill-managed", "run-managed", "batch", """
+                # Skill
+                ## Managed Runtime
+                mode: runner
+                ### Item Loop
+                Process {{item.id}}.
+                """, "E:\\skills\\batch");
+        ManifestTool tool = new ManifestTool(tempDir, new io.jobclaw.agent.manifest.ActiveManifestRegistry(), skillRegistry);
+
+        String created = tool.manifest("create", null, "managed-batch",
+                "[{\"id\":\"doc-001\",\"title\":\"A\"}]",
+                "{\"columns\":[\"title\"]}", null, "D:/docs/results.jsonl",
+                null, null, null, null, null, null, "managed");
+
+        assertTrue(created.contains("Error: managed manifest contract is incomplete"));
+        assertTrue(created.contains("itemResultPathTemplate"));
+    }
+
+    @Test
     void statusShouldFillMissingManagedFinalArtifactForExistingManifest() {
         AgentExecutionContext.setCurrentContext("session-status-final", event -> {});
         ManifestTool tool = new ManifestTool(tempDir);
@@ -145,6 +186,20 @@ class ManifestToolTest {
         assertTrue(status.contains("total: 2"));
         assertTrue(status.contains("- a | pending | A"));
         assertTrue(status.contains("- b | pending | B"));
+    }
+
+    @Test
+    void createShouldRepairCommonMalformedJsonItemArray() {
+        AgentExecutionContext.setCurrentContext("session-repair-items", event -> {});
+        ManifestTool tool = new ManifestTool(tempDir);
+
+        String created = tool.manifest("create", null, "batch",
+                "[{\"id\":\"doc-01.txt\",\"title\":\"doc-01.txt\"} {\"id\":\"doc-02.txt\",\"title\":\"doc-02.txt\"}]",
+                "{\"columns\":[\"title\"]}", null, "D:/docs/results.jsonl",
+                null, null, null, null, null, null);
+
+        assertTrue(created.contains("Manifest ready."));
+        assertTrue(created.contains("total: 2"));
     }
 
     @Test

@@ -3,6 +3,12 @@ package io.jobclaw.agent;
 import io.jobclaw.config.Config;
 import io.jobclaw.context.ContextAssembler;
 import io.jobclaw.context.ContextAssemblyPolicy;
+import io.jobclaw.agent.completion.ActiveExecutionRegistry;
+import io.jobclaw.agent.completion.CompletionRegistry;
+import io.jobclaw.agent.manifest.ActiveManifestRegistry;
+import io.jobclaw.agent.skill.ActiveSkillRegistry;
+import io.jobclaw.context.result.NoopResultStore;
+import io.jobclaw.runtime.provider.ProviderRuntime;
 import io.jobclaw.session.SessionManager;
 import io.jobclaw.summary.SummaryService;
 import org.junit.jupiter.api.Test;
@@ -68,6 +74,93 @@ class AgentLoopToolSelectionTest {
         assertTrue(names.contains("context_ref"));
     }
 
+    @Test
+    void managedRunnerShouldUseDefaultReadOnlyToolsWhenSkillDoesNotDeclareAllowlist() throws Exception {
+        AgentLoop loop = loopWithTools(
+                "skills", "manifest", "write_file", "append_file", "read_file",
+                "read_word", "read_pdf", "context_ref", "run_command", "spawn"
+        );
+
+        ToolCallback[] selected = invokeManagedRunnerFilter(loop,
+                Arrays.stream(new String[]{
+                "skills", "manifest", "write_file", "append_file", "read_file",
+                "read_word", "read_pdf", "context_ref", "run_command", "spawn"
+                }).map(this::tool).toArray(ToolCallback[]::new),
+                "session-a",
+                "run-1");
+        List<String> names = names(selected);
+
+        assertTrue(names.contains("read_file"));
+        assertTrue(names.contains("read_word"));
+        assertTrue(names.contains("read_pdf"));
+        assertTrue(names.contains("context_ref"));
+        assertFalse(names.contains("skills"));
+        assertFalse(names.contains("manifest"));
+        assertFalse(names.contains("write_file"));
+        assertFalse(names.contains("append_file"));
+        assertFalse(names.contains("run_command"));
+        assertFalse(names.contains("spawn"));
+    }
+
+    @Test
+    void managedRunnerShouldUseSkillDeclaredAllowlist() throws Exception {
+        ActiveSkillRegistry skillRegistry = new ActiveSkillRegistry();
+        AgentLoop loop = loopWithRegistries(skillRegistry, new ActiveManifestRegistry(),
+                "skills", "manifest", "read_file", "mcp", "run_command", "context_ref");
+        skillRegistry.activate("session-a", "run-1", "custom", """
+                # Skill
+                ## Managed Runtime
+                mode: runner
+                frameworkWrites: item-json,manifest
+                itemResultPathTemplate: D:\\tmp\\{{item.safeId}}.txt
+                aggregatePathTemplate: D:\\tmp\\index.jsonl
+                itemOutput: text
+                allowedTools: mcp, context_ref
+                ### Item Loop
+                Call the declared tool for {{item.id}}.
+                """, "E:\\skills\\custom");
+
+        ToolCallback[] selected = invokeManagedRunnerFilter(loop,
+                Arrays.stream(new String[]{
+                        "skills", "manifest", "read_file", "mcp", "run_command", "context_ref"
+                }).map(this::tool).toArray(ToolCallback[]::new),
+                "session-a",
+                "run-1");
+        List<String> names = names(selected);
+
+        assertTrue(names.contains("mcp"));
+        assertTrue(names.contains("context_ref"));
+        assertFalse(names.contains("read_file"));
+        assertFalse(names.contains("skills"));
+        assertFalse(names.contains("manifest"));
+        assertFalse(names.contains("run_command"));
+    }
+
+    @Test
+    void managedRunnerShouldAskForCreateRepairBeforeFinalAnswer() throws Exception {
+        ActiveSkillRegistry skillRegistry = new ActiveSkillRegistry();
+        ActiveManifestRegistry manifestRegistry = new ActiveManifestRegistry();
+        AgentLoop loop = loopWithRegistries(skillRegistry, manifestRegistry, "manifest", "skills", "list_dir");
+        skillRegistry.activate("session-a", "run-1", "batch", """
+                # Skill
+                ## Managed Runtime
+                mode: runner
+                frameworkWrites: item-json,jsonl,manifest
+                itemResultPathTemplate: {{task.inputDir}}\\items\\{{item.safeId}}.json
+                aggregatePathTemplate: {{artifactPath}}
+                itemOutput: json_object
+                ### Item Loop
+                Return JSON for {{item.id}}.
+                """, "E:\\skills\\batch");
+
+        String repair = invokeManagedCreateRepair(loop, "session-a", "run-1",
+                "Error: managed manifest contract is incomplete. schema is required;", 0);
+
+        assertTrue(repair.contains("JOBCLAW_MANAGED_MANIFEST_CREATE_REPAIR"));
+        assertTrue(repair.contains("Do not answer the user yet"));
+        assertTrue(repair.contains("manifest.create must include taskKey, items, schema, artifactPath"));
+    }
+
     private AgentLoop loopWithTools(String... toolNames) {
         ToolCallback[] callbacks = Arrays.stream(toolNames)
                 .map(this::tool)
@@ -94,6 +187,60 @@ class AgentLoopToolSelectionTest {
         );
         method.setAccessible(true);
         return (ToolCallback[]) method.invoke(loop, definition, userContent);
+    }
+
+    private AgentLoop loopWithRegistries(ActiveSkillRegistry skillRegistry,
+                                         ActiveManifestRegistry manifestRegistry,
+                                         String... toolNames) {
+        ToolCallback[] callbacks = Arrays.stream(toolNames)
+                .map(this::tool)
+                .toArray(ToolCallback[]::new);
+        Config config = Config.defaultConfig();
+        config.getAgent().setProvider("ollama");
+        config.getAgent().setModel("llama3.1");
+        return new AgentLoop(
+                config,
+                new SessionManager(),
+                callbacks,
+                mock(ContextBuilder.class),
+                mock(ContextAssembler.class),
+                mock(ContextAssemblyPolicy.class),
+                mock(SummaryService.class),
+                null,
+                null,
+                new ProviderRuntime(),
+                new ActiveExecutionRegistry(),
+                new NoopResultStore(),
+                new CompletionRegistry(config),
+                skillRegistry,
+                manifestRegistry
+        );
+    }
+
+    private ToolCallback[] invokeManagedRunnerFilter(AgentLoop loop,
+                                                     ToolCallback[] tools,
+                                                     String sessionKey,
+                                                     String runId) throws Exception {
+        Method method = AgentLoop.class.getDeclaredMethod("filterManagedRunnerTools",
+                ToolCallback[].class, String.class, String.class);
+        method.setAccessible(true);
+        return (ToolCallback[]) method.invoke(loop, tools, sessionKey, runId);
+    }
+
+    private String invokeManagedCreateRepair(AgentLoop loop,
+                                             String sessionKey,
+                                             String runId,
+                                             String attemptResponse,
+                                             int attempts) throws Exception {
+        Method method = AgentLoop.class.getDeclaredMethod(
+                "buildManagedCreateRepairPrompt",
+                String.class,
+                String.class,
+                String.class,
+                int.class
+        );
+        method.setAccessible(true);
+        return (String) method.invoke(loop, sessionKey, runId, attemptResponse, attempts);
     }
 
     private List<String> names(ToolCallback[] callbacks) {

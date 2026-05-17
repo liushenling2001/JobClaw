@@ -11,6 +11,7 @@ public class ProvidersConfig {
 
     private ProviderConfig openrouter;
     private ProviderConfig anthropic;
+    private ProviderConfig deepseek;
     private ProviderConfig openai;
     private ProviderConfig zhipu;
     private ProviderConfig gemini;
@@ -20,6 +21,7 @@ public class ProvidersConfig {
     public ProvidersConfig() {
         this.openrouter = new ProviderConfig(getDefaultApiBase("openrouter"));
         this.anthropic = new ProviderConfig(getDefaultApiBase("anthropic"));
+        this.deepseek = new ProviderConfig(getDefaultApiBase("deepseek"));
         this.openai = new ProviderConfig(getDefaultApiBase("openai"));
         this.zhipu = new ProviderConfig(getDefaultApiBase("zhipu"));
         this.gemini = new ProviderConfig(getDefaultApiBase("gemini"));
@@ -31,6 +33,8 @@ public class ProvidersConfig {
     public void setOpenrouter(ProviderConfig openrouter) { this.openrouter = openrouter; }
     public ProviderConfig getAnthropic() { return anthropic; }
     public void setAnthropic(ProviderConfig anthropic) { this.anthropic = anthropic; }
+    public ProviderConfig getDeepseek() { return deepseek; }
+    public void setDeepseek(ProviderConfig deepseek) { this.deepseek = deepseek; }
     public ProviderConfig getOpenai() { return openai; }
     public void setOpenai(ProviderConfig openai) { this.openai = openai; }
     public ProviderConfig getZhipu() { return zhipu; }
@@ -44,7 +48,7 @@ public class ProvidersConfig {
 
     @JsonIgnore
     public List<ProviderConfig> getAllProviders() {
-        return Arrays.asList(openrouter, anthropic, openai, gemini, zhipu, dashscope, ollama);
+        return Arrays.asList(openrouter, anthropic, deepseek, openai, gemini, zhipu, dashscope, ollama);
     }
 
     @JsonIgnore
@@ -61,6 +65,7 @@ public class ProvidersConfig {
         }
         List<ProviderWithName> providers = Arrays.asList(
                 new ProviderWithName("openrouter", openrouter),
+                new ProviderWithName("deepseek", deepseek),
                 new ProviderWithName("openai", openai),
                 new ProviderWithName("anthropic", anthropic),
                 new ProviderWithName("zhipu", zhipu),
@@ -75,6 +80,7 @@ public class ProvidersConfig {
     public String getProviderName(ProviderConfig provider) {
         if (provider == openrouter) return "openrouter";
         if (provider == anthropic) return "anthropic";
+        if (provider == deepseek) return "deepseek";
         if (provider == openai) return "openai";
         if (provider == gemini) return "gemini";
         if (provider == zhipu) return "zhipu";
@@ -87,6 +93,7 @@ public class ProvidersConfig {
         return switch (providerName) {
             case "openrouter" -> "https://openrouter.ai/api/v1";
             case "anthropic" -> "https://api.anthropic.com/v1";
+            case "deepseek" -> "https://api.deepseek.com/v1";
             case "openai" -> "https://api.openai.com/v1";
             case "gemini" -> "https://generativelanguage.googleapis.com/v1beta";
             case "zhipu" -> "https://open.bigmodel.cn/api/paas/v4";

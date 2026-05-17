@@ -3,7 +3,9 @@ package io.jobclaw.agent.skill;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
@@ -87,6 +89,61 @@ public class ActiveSkillRegistry {
         return state.managedRuntime().parallelism();
     }
 
+    public boolean hasManagedRunnerContract(String sessionKey, String runId) {
+        ActiveSkillState state = get(sessionKey, runId);
+        return state != null
+                && state.managedRuntime() != null
+                && state.managedRuntime().runnerMode()
+                && !isBlank(state.managedRuntime().itemResultPathTemplate())
+                && !isBlank(state.managedRuntime().aggregatePathTemplate())
+                && !isBlank(state.managedRuntime().itemOutput());
+    }
+
+    public String managedRunnerContractError(String sessionKey, String runId) {
+        ActiveSkillState state = get(sessionKey, runId);
+        if (state == null || state.managedRuntime() == null || !state.managedRuntime().runnerMode()) {
+            return "active skill does not declare Managed Runtime mode: runner";
+        }
+        ManagedRuntime runtime = state.managedRuntime();
+        StringBuilder sb = new StringBuilder();
+        if (isBlank(runtime.itemResultPathTemplate())) {
+            sb.append("itemResultPathTemplate is required; ");
+        }
+        if (isBlank(runtime.aggregatePathTemplate())) {
+            sb.append("aggregatePathTemplate is required; ");
+        }
+        if (isBlank(runtime.itemOutput())) {
+            sb.append("itemOutput is required; ");
+        }
+        return sb.isEmpty() ? "" : sb.toString().trim();
+    }
+
+    public String renderManagedItemResultPath(String sessionKey,
+                                              String runId,
+                                              ActiveManifestRegistry.ActiveManifestState manifestState) {
+        ActiveSkillState state = get(sessionKey, runId);
+        if (state == null || state.managedRuntime() == null) {
+            return "";
+        }
+        return renderTemplate(state.managedRuntime().itemResultPathTemplate(), variables(state, manifestState)).trim();
+    }
+
+    public String managedRunnerItemOutput(String sessionKey, String runId) {
+        ActiveSkillState state = get(sessionKey, runId);
+        if (state == null || state.managedRuntime() == null) {
+            return "";
+        }
+        return safe(state.managedRuntime().itemOutput()).trim().toLowerCase();
+    }
+
+    public List<String> managedRunnerAllowedTools(String sessionKey, String runId) {
+        ActiveSkillState state = get(sessionKey, runId);
+        if (state == null || state.managedRuntime() == null) {
+            return List.of();
+        }
+        return state.managedRuntime().allowedTools();
+    }
+
     public String renderManagedRuntime(String sessionKey,
                                        String runId,
                                        String phase,
@@ -134,7 +191,13 @@ public class ActiveSkillRegistry {
         String fallback = trimManagedRuntime(section);
         String mode = extractMode(section);
         int parallelism = extractParallelism(section);
-        return new ManagedRuntime(mode, parallelism, itemLoop, finalizeTemplate, fallback);
+        String frameworkWrites = extractScalar(section, "frameworkWrites|framework_writes|框架写入");
+        String itemResultPathTemplate = extractScalar(section, "itemResultPathTemplate|item_result_path_template|itemArtifactPathTemplate|item_artifact_path_template|单项结果路径模板");
+        String aggregatePathTemplate = extractScalar(section, "aggregatePathTemplate|aggregate_path_template|JSONLPathTemplate|jsonl_path_template|聚合结果路径模板");
+        String itemOutput = extractScalar(section, "itemOutput|item_output|单项输出");
+        List<String> allowedTools = extractList(section, "allowedTools|allowed_tools|tools|工具白名单|允许工具");
+        return new ManagedRuntime(mode, parallelism, frameworkWrites, itemResultPathTemplate,
+                aggregatePathTemplate, itemOutput, allowedTools, itemLoop, finalizeTemplate, fallback);
     }
 
     private static String extractMode(String section) {
@@ -167,6 +230,40 @@ public class ActiveSkillRegistry {
         } catch (NumberFormatException ignored) {
             return 1;
         }
+    }
+
+    private static String extractScalar(String section, String keyAlternatives) {
+        if (section == null || section.isBlank()) {
+            return "";
+        }
+        Matcher matcher = Pattern.compile("(?im)^\\s*(?:" + keyAlternatives + ")\\s*[:=]\\s*(.+?)\\s*$")
+                .matcher(section);
+        if (!matcher.find()) {
+            return "";
+        }
+        return matcher.group(1)
+                .replace("`", "")
+                .trim();
+    }
+
+    private static List<String> extractList(String section, String keyAlternatives) {
+        String scalar = extractScalar(section, keyAlternatives);
+        if (scalar.isBlank()) {
+            return List.of();
+        }
+        String cleaned = scalar
+                .replace("[", "")
+                .replace("]", "")
+                .replace("\"", "")
+                .replace("'", "");
+        List<String> values = new ArrayList<>();
+        for (String part : cleaned.split("[,，]")) {
+            String value = part.trim();
+            if (!value.isBlank()) {
+                values.add(value);
+            }
+        }
+        return List.copyOf(values);
     }
 
     private static String extractHeadingSection(String content, Pattern headingPattern) {
@@ -242,11 +339,14 @@ public class ActiveSkillRegistry {
                 : manifestState.nextPendingItem();
         vars.put("manifestId", manifestState.manifestId());
         vars.put("taskKey", manifestState.taskKey());
-        vars.put("task.inputDir", taskKeyValue(manifestState.taskKey(), "inputDir"));
+        vars.putAll(taskKeyVariables(manifestState.taskKey()));
         vars.put("schema", manifestState.schema());
         vars.put("artifactPath", manifestState.artifactPath());
         vars.put("intermediateArtifactPath", manifestState.artifactPath());
+        vars.put("artifactDir", parentPath(manifestState.artifactPath()));
+        vars.put("intermediateArtifactDir", parentPath(manifestState.artifactPath()));
         vars.put("finalArtifactPath", manifestState.finalArtifactPath());
+        vars.put("finalArtifactDir", parentPath(manifestState.finalArtifactPath()));
         vars.put("finalArtifactType", manifestState.finalArtifactType());
         vars.put("counts.total", String.valueOf(manifestState.total()));
         vars.put("counts.pending", String.valueOf(manifestState.pending()));
@@ -271,18 +371,36 @@ public class ActiveSkillRegistry {
         return value != null ? value : "";
     }
 
-    private static String taskKeyValue(String taskKey, String name) {
-        if (taskKey == null || taskKey.isBlank() || name == null || name.isBlank()) {
-            return "";
+    private static Map<String, String> taskKeyVariables(String taskKey) {
+        Map<String, String> vars = new LinkedHashMap<>();
+        if (taskKey == null || taskKey.isBlank()) {
+            return vars;
         }
-        String prefix = name + "=";
         for (String part : taskKey.split("\\|")) {
             String trimmed = part.trim();
-            if (trimmed.startsWith(prefix)) {
-                return trimmed.substring(prefix.length()).trim();
+            int index = trimmed.indexOf('=');
+            if (index <= 0 || index >= trimmed.length() - 1) {
+                continue;
+            }
+            String key = trimmed.substring(0, index).trim();
+            String value = trimmed.substring(index + 1).trim();
+            if (!key.isBlank()) {
+                vars.put("task." + key, value);
             }
         }
-        return "";
+        return vars;
+    }
+
+    private static String parentPath(String path) {
+        if (path == null || path.isBlank()) {
+            return "";
+        }
+        try {
+            java.nio.file.Path parent = java.nio.file.Path.of(path.trim()).getParent();
+            return parent != null ? parent.toString() : "";
+        } catch (Exception ignored) {
+            return "";
+        }
     }
 
     private static String safePathName(String value) {
@@ -363,9 +481,31 @@ public class ActiveSkillRegistry {
         }
     }
 
-    public record ManagedRuntime(String mode, int parallelism, String itemLoop, String finalizeTemplate, String fallback) {
+    private static String renderTemplate(String template, Map<String, String> variables) {
+        if (isBlank(template)) {
+            return "";
+        }
+        String rendered = template;
+        if (variables != null) {
+            for (Map.Entry<String, String> entry : variables.entrySet()) {
+                rendered = rendered.replace("{{" + entry.getKey() + "}}", safe(entry.getValue()));
+            }
+        }
+        return rendered;
+    }
+
+    public record ManagedRuntime(String mode,
+                                 int parallelism,
+                                 String frameworkWrites,
+                                 String itemResultPathTemplate,
+                                 String aggregatePathTemplate,
+                                 String itemOutput,
+                                 List<String> allowedTools,
+                                 String itemLoop,
+                                 String finalizeTemplate,
+                                 String fallback) {
         static ManagedRuntime empty() {
-            return new ManagedRuntime("", 1, "", "", "");
+            return new ManagedRuntime("", 1, "", "", "", "", List.of(), "", "", "");
         }
 
         boolean isEmpty() {
@@ -385,12 +525,7 @@ public class ActiveSkillRegistry {
             if (isBlank(template)) {
                 return "";
             }
-            String rendered = template;
-            if (variables != null) {
-                for (Map.Entry<String, String> entry : variables.entrySet()) {
-                    rendered = rendered.replace("{{" + entry.getKey() + "}}", safe(entry.getValue()));
-                }
-            }
+            String rendered = renderTemplate(template, variables);
             return trimManagedRuntime(rendered);
         }
     }

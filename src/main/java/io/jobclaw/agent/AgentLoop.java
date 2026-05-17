@@ -2,6 +2,7 @@ package io.jobclaw.agent;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.jobclaw.agent.evolution.MemoryEvolver;
 import io.jobclaw.agent.evolution.MemoryStore;
 import io.jobclaw.agent.runtime.AgentRunIds;
@@ -39,13 +40,18 @@ import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.openai.api.OpenAiApi;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.http.client.ClientHttpRequestInterceptor;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Flux;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -270,17 +276,25 @@ public class AgentLoop {
         OpenAiApi openAiApi = createOpenAiApi(resolvedProvider);
 
         // 创建 ChatModel（带工具调用）
-        OpenAiChatModel chatModel = OpenAiChatModel.builder()
-                .openAiApi(openAiApi)
-                .build();
+        OpenAiChatModel.Builder chatModelBuilder = OpenAiChatModel.builder()
+                .openAiApi(openAiApi);
+        OpenAiChatOptions defaultOptions = deepSeekThinkingDisabledOptions(
+                resolvedProvider.providerName(), resolvedProvider.model());
+        if (defaultOptions != null) {
+            chatModelBuilder.defaultOptions(defaultOptions);
+        }
+        OpenAiChatModel chatModel = chatModelBuilder.build();
 
         // 创建 ChatClient（带工具调用）
         this.chatClient = chatClient != null ? chatClient : ChatClient.builder(chatModel).build();
 
         // 创建简单的 ChatClient（用于摘要生成，不带工具调用）
-        OpenAiChatModel simpleChatModel = OpenAiChatModel.builder()
-                .openAiApi(openAiApi)
-                .build();
+        OpenAiChatModel.Builder simpleChatModelBuilder = OpenAiChatModel.builder()
+                .openAiApi(openAiApi);
+        if (defaultOptions != null) {
+            simpleChatModelBuilder.defaultOptions(defaultOptions);
+        }
+        OpenAiChatModel simpleChatModel = simpleChatModelBuilder.build();
         this.simpleChatClient = ChatClient.builder(simpleChatModel).build();
 
         // 初始化 ContextBuilder（需要 SkillsService）
@@ -408,6 +422,7 @@ public class AgentLoop {
         long runStartAt = System.currentTimeMillis();
         int managedManifestContinuations = 0;
         boolean managedManifestHandoffIssued = false;
+        int managedCreateRepairAttempts = 0;
 
         try {
             Session session = sessionManager.getOrCreate(sessionKey);
@@ -437,7 +452,8 @@ public class AgentLoop {
             ToolCallback[] tools = wrapToolCallbacks(rawTools, sessionKey, eventCallback);
 
             ExecutionClientBundle executionClientBundle = createExecutionClientBundle(definition);
-            OpenAiChatOptions options = buildExecutionOptions(definition, executionClientBundle.model());
+            OpenAiChatOptions options = buildExecutionOptions(definition, executionClientBundle.model(),
+                    executionClientBundle.providerName());
 
             // 使用结构化上下文装配器，保留消息边界，不再拍平成单段文本
             ContextAssemblyOptions assemblyOptions = contextAssemblyPolicy.buildOptions(sessionKey, userContent);
@@ -464,6 +480,24 @@ public class AgentLoop {
                         fullResponse,
                         true
                 );
+
+                String createRepairPrompt = buildManagedCreateRepairPrompt(
+                        scope.sessionKey(),
+                        scope.runId(),
+                        attemptResponse,
+                        managedCreateRepairAttempts
+                );
+                if (!createRepairPrompt.isBlank()) {
+                    managedCreateRepairAttempts++;
+                    logger.info("managed manifest create repair session={} run={} attempt={} promptChars={}",
+                            sessionKey,
+                            scope.runId(),
+                            managedCreateRepairAttempts,
+                            createRepairPrompt.length());
+                    promptMessages.add(new AssistantMessage(attemptResponse));
+                    promptMessages.add(new UserMessage(createRepairPrompt));
+                    continue;
+                }
 
                 String managedContinuationPrompt = buildManagedManifestContinuationPrompt(scope.sessionKey(), scope.runId());
                 if (!managedContinuationPrompt.isBlank()) {
@@ -658,6 +692,57 @@ public class AgentLoop {
         return activeManifestRegistry.findManagedBlockingState(sessionKey, runId)
                 .map(state -> buildManagedManifestContinuationPrompt(sessionKey, runId, state))
                 .orElse("");
+    }
+
+    private String buildManagedCreateRepairPrompt(String sessionKey,
+                                                  String runId,
+                                                  String attemptResponse,
+                                                  int repairAttempts) {
+        if (repairAttempts >= 2 || !activeSkillRegistry.hasManagedRunnerRuntime(sessionKey, runId)) {
+            return "";
+        }
+        if (activeManifestRegistry.findManagedBlockingState(sessionKey, runId).isPresent()
+                || activeManifestRegistry.findManagedHandoffState(sessionKey, runId).isPresent()
+                || activeManifestRegistry.findManagedClosedState(sessionKey, runId).isPresent()) {
+            return "";
+        }
+        if (!looksLikeManagedCreateNeedsRepair(attemptResponse)) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("JOBCLAW_MANAGED_MANIFEST_CREATE_REPAIR\n");
+        sb.append("The active skill declares a managed runner, but the managed manifest has not been created successfully.\n");
+        sb.append("Do not answer the user yet. Repair only the setup step and retry the necessary tool call(s).\n\n");
+        sb.append("Required behavior:\n");
+        sb.append("- If a current-run list_dir result already contains the real input files, use that result. Do not ask the user to confirm.\n");
+        sb.append("- If no current-run file list is available, call list_dir once for the current input directory from the user request.\n");
+        sb.append("- Call manifest(action='create', ...) with real item objects from the current-run file list.\n");
+        sb.append("- manifest.create must include taskKey, items, schema, artifactPath, and executionMode='managed'.\n");
+        sb.append("- items must be a JSON array of real objects such as {\"id\":\"relative-file-name.md\",\"title\":\"relative-file-name.md\"}; never use examples or placeholders.\n");
+        sb.append("- schema must describe the user-requested columns, for example {\"columns\":[\"字段1\",\"字段2\"]}.\n");
+        sb.append("- artifactPath is the intermediate aggregate path required by the skill for this item loop.\n");
+        sb.append("- Do not invent the next-stage/final artifact contract during create unless the active skill explicitly asks for it in the current setup card.\n");
+        sb.append("- After manifest.create succeeds, stop choosing the next item yourself; the framework will enter the managed runner.\n\n");
+        if (attemptResponse != null && !attemptResponse.isBlank()) {
+            sb.append("Previous failed setup response:\n```text\n");
+            sb.append(truncateForCompletionRecovery(attemptResponse));
+            sb.append("\n```\n");
+        }
+        return sb.toString();
+    }
+
+    private boolean looksLikeManagedCreateNeedsRepair(String attemptResponse) {
+        if (attemptResponse == null || attemptResponse.isBlank()) {
+            return false;
+        }
+        String lower = attemptResponse.toLowerCase();
+        return lower.contains("manifest.create")
+                || lower.contains("manifest")
+                || lower.contains("schema is required")
+                || lower.contains("items are required")
+                || lower.contains("managed manifest contract is incomplete")
+                || lower.contains("请确认")
+                || lower.contains("确认授权");
     }
 
     private String buildManagedManifestContinuationPrompt(String sessionKey,
@@ -962,6 +1047,7 @@ public class AgentLoop {
             logger.info("managed skill runner batch session={} run={} attempt={} workers={} configuredParallelism={}",
                     sessionKey, runId, attempts, runnerStates.size(), parallelism);
             List<CompletableFuture<String>> workers = new ArrayList<>();
+            ToolCallback[] runnerTools = filterManagedRunnerTools(tools, sessionKey, runId);
             for (ActiveManifestRegistry.ActiveManifestState runnerState : runnerStates) {
                 ActiveManifestRegistry.ActiveManifestItem currentItem = managedRunnerItem(runnerState);
                 if (currentItem == null || currentItem.id().isBlank()) {
@@ -980,21 +1066,35 @@ public class AgentLoop {
                     continue;
                 }
                 String itemId = currentItem.id();
-                String itemArtifactPath = extractManagedItemArtifactPath(runnerPrompt);
+                String itemArtifactPath = activeSkillRegistry.renderManagedItemResultPath(sessionKey, runId, refreshedState);
+                if (itemArtifactPath.isBlank()) {
+                    itemArtifactPath = extractManagedItemArtifactPath(runnerPrompt);
+                }
+                String resolvedItemArtifactPath = itemArtifactPath;
+                if (reuseExistingManagedItemArtifact(sessionKey, runId, eventCallback, itemId, resolvedItemArtifactPath)) {
+                    continue;
+                }
                 workers.add(CompletableFuture.supplyAsync(() -> {
                     StringBuilder workerResponse = new StringBuilder();
-                    List<Message> runnerMessages = buildManagedRunnerMessages(systemPrompt, originalUserContent, runnerPrompt);
-                    runModelAttempt(
-                            executionClientBundle,
-                            runnerMessages,
-                            tools,
-                            options,
-                            sessionKey,
-                            eventCallback,
-                            workerResponse,
-                            false
-                    );
-                    closeManagedItemFromDeclaredArtifact(sessionKey, runId, itemId, itemArtifactPath, eventCallback);
+                    try {
+                        List<Message> runnerMessages = buildManagedRunnerMessages(systemPrompt, originalUserContent, runnerPrompt);
+                        runModelAttempt(
+                                executionClientBundle,
+                                runnerMessages,
+                                runnerTools,
+                                options,
+                                sessionKey,
+                                eventCallback,
+                                workerResponse,
+                                false
+                        );
+                        closeManagedItemFromModelResult(sessionKey, runId, itemId, resolvedItemArtifactPath,
+                                workerResponse.toString(), eventCallback);
+                    } catch (Exception e) {
+                        logger.warn("managed runner item failed session={} run={} itemId={} error={}",
+                                sessionKey, runId, itemId, e.getMessage());
+                        writeFailedManagedItem(sessionKey, runId, itemId, resolvedItemArtifactPath, e.getMessage(), eventCallback);
+                    }
                     return workerResponse.toString();
                 }, toolExecutionExecutor));
             }
@@ -1018,19 +1118,7 @@ public class AgentLoop {
         if (state == null) {
             return List.of();
         }
-        if (state.running() > 0 || configuredParallelism <= 1) {
-            return List.of(state);
-        }
-        int limit = Math.max(1, Math.min(4, configuredParallelism));
-        List<ActiveManifestRegistry.ActiveManifestItem> pendingItems = state.pendingQueue().stream()
-                .limit(limit)
-                .toList();
-        if (pendingItems.isEmpty()) {
-            return List.of(state);
-        }
-        return pendingItems.stream()
-                .map(state::withNextPendingItem)
-                .toList();
+        return List.of(state);
     }
 
     private ActiveManifestRegistry.ActiveManifestItem managedRunnerItem(ActiveManifestRegistry.ActiveManifestState state) {
@@ -1090,6 +1178,317 @@ public class AgentLoop {
         );
     }
 
+    private void closeManagedItemFromModelResult(String sessionKey,
+                                                 String runId,
+                                                 String itemId,
+                                                 String itemArtifactPath,
+                                                 String modelResult,
+                                                 Consumer<ExecutionEvent> eventCallback) {
+        if (itemId == null || itemId.isBlank()) {
+            return;
+        }
+        if (itemArtifactPath == null || itemArtifactPath.isBlank()) {
+            writeFailedManagedItem(sessionKey, runId, itemId, itemArtifactPath,
+                    "managed runner itemResultPathTemplate did not render a path", eventCallback);
+            return;
+        }
+        ManagedItemOutput output = ManagedItemOutput.from(activeSkillRegistry.managedRunnerItemOutput(sessionKey, runId));
+        String content = extractManagedItemContent(output, modelResult);
+        if (content.isBlank()) {
+            writeFailedManagedItem(sessionKey, runId, itemId, itemArtifactPath,
+                    "managed runner model did not return " + output.contractName() + " content", eventCallback);
+            return;
+        }
+        if (output == ManagedItemOutput.JSON_OBJECT) {
+            try {
+                JsonNode parsed = OBJECT_MAPPER.readTree(content);
+                if (!parsed.isObject()) {
+                    writeFailedManagedItem(sessionKey, runId, itemId, itemArtifactPath,
+                            "managed runner model returned non-object JSON", eventCallback);
+                    return;
+                }
+                List<String> missingColumns = missingSchemaColumns(sessionKey, runId, parsed);
+                if (!missingColumns.isEmpty()) {
+                    writeFailedManagedItem(sessionKey, runId, itemId, itemArtifactPath,
+                            "managed runner JSON missing required schema field(s): " + String.join(", ", missingColumns),
+                            eventCallback);
+                    return;
+                }
+                content = OBJECT_MAPPER.writeValueAsString(parsed);
+            } catch (Exception e) {
+                writeFailedManagedItem(sessionKey, runId, itemId, itemArtifactPath,
+                        "managed runner returned invalid JSON: " + e.getMessage(), eventCallback);
+                return;
+            }
+        }
+        writeManagedItemArtifacts(sessionKey, runId, itemId, itemArtifactPath, output, content, eventCallback, true, "");
+    }
+
+    private String extractManagedItemContent(ManagedItemOutput output, String modelResult) {
+        if (modelResult == null || modelResult.isBlank()) {
+            return "";
+        }
+        return switch (output) {
+            case JSON_OBJECT -> extractJsonObject(modelResult);
+            case FILE_PATH -> extractFirstPath(modelResult);
+            case TEXT, MARKDOWN -> stripOuterFence(modelResult).strip();
+        };
+    }
+
+    private String stripOuterFence(String text) {
+        String stripped = text == null ? "" : text.strip();
+        if (!stripped.startsWith("```")) {
+            return stripped;
+        }
+        return stripped.replaceFirst("(?s)^```[A-Za-z0-9_-]*\\s*", "")
+                .replaceFirst("(?s)\\s*```\\s*$", "")
+                .strip();
+    }
+
+    private String extractFirstPath(String text) {
+        String stripped = stripOuterFence(text);
+        for (String line : stripped.lines().toList()) {
+            String candidate = line.replace("`", "").replace("\"", "").trim();
+            if (!candidate.isBlank()) {
+                return candidate;
+            }
+        }
+        return "";
+    }
+
+    private enum ManagedItemOutput {
+        JSON_OBJECT("json_object"),
+        TEXT("text"),
+        MARKDOWN("markdown"),
+        FILE_PATH("file_path");
+
+        private final String contractName;
+
+        ManagedItemOutput(String contractName) {
+            this.contractName = contractName;
+        }
+
+        String contractName() {
+            return contractName;
+        }
+
+        static ManagedItemOutput from(String value) {
+            if (value == null || value.isBlank()) {
+                return JSON_OBJECT;
+            }
+            String normalized = value.trim().toLowerCase().replace('-', '_');
+            return switch (normalized) {
+                case "text", "plain_text" -> TEXT;
+                case "markdown", "md" -> MARKDOWN;
+                case "file_path", "path" -> FILE_PATH;
+                default -> JSON_OBJECT;
+            };
+        }
+    }
+
+    private boolean reuseExistingManagedItemArtifact(String sessionKey,
+                                                    String runId,
+                                                    Consumer<ExecutionEvent> eventCallback,
+                                                    String itemId,
+                                                    String itemArtifactPath) {
+        if (!itemArtifactReady(itemArtifactPath)) {
+            return false;
+        }
+        try {
+            String content = Files.readString(Path.of(itemArtifactPath.trim()), StandardCharsets.UTF_8).trim();
+            if (content.isBlank()) {
+                return false;
+            }
+            ManagedItemOutput output = ManagedItemOutput.from(activeSkillRegistry.managedRunnerItemOutput(sessionKey, runId));
+            if (output == ManagedItemOutput.JSON_OBJECT) {
+                JsonNode parsed = OBJECT_MAPPER.readTree(extractJsonObject(content));
+                if (!missingSchemaColumns(sessionKey, runId, parsed).isEmpty()) {
+                    return false;
+                }
+                content = OBJECT_MAPPER.writeValueAsString(parsed);
+            }
+            writeManagedAggregate(sessionKey, runId, itemId, itemArtifactPath, output, content, true, "");
+            callFrameworkManifest(
+                    sessionKey,
+                    runId,
+                    eventCallback,
+                    "done",
+                    itemId,
+                    null,
+                    itemArtifactPath,
+                    "managed runner reused existing item artifact"
+            );
+            return true;
+        } catch (Exception e) {
+            logger.warn("managed runner existing item artifact unusable session={} run={} itemId={} path={} error={}",
+                    sessionKey, runId, itemId, itemArtifactPath, e.getMessage());
+            return false;
+        }
+    }
+
+    private void writeFailedManagedItem(String sessionKey,
+                                        String runId,
+                                        String itemId,
+                                        String itemArtifactPath,
+                                        String error,
+                                        Consumer<ExecutionEvent> eventCallback) {
+        String json;
+        try {
+            json = OBJECT_MAPPER.writeValueAsString(buildManagedFailureRow(sessionKey, runId, itemId, error));
+        } catch (Exception e) {
+            json = "{\"itemId\":\"" + safeJson(itemId) + "\",\"status\":\"failed\",\"error\":\"" + safeJson(error) + "\"}";
+        }
+        writeManagedItemArtifacts(sessionKey, runId, itemId, itemArtifactPath,
+                ManagedItemOutput.JSON_OBJECT, json, eventCallback, false, error);
+    }
+
+    private void writeManagedItemArtifacts(String sessionKey,
+                                           String runId,
+                                           String itemId,
+                                           String itemArtifactPath,
+                                           ManagedItemOutput output,
+                                           String json,
+                                           Consumer<ExecutionEvent> eventCallback,
+                                           boolean success,
+                                           String error) {
+        try {
+            if (itemArtifactPath != null && !itemArtifactPath.isBlank()) {
+                Path itemPath = Path.of(itemArtifactPath.trim());
+                if (itemPath.getParent() != null) {
+                    Files.createDirectories(itemPath.getParent());
+                }
+                Files.writeString(itemPath, json + System.lineSeparator(), StandardCharsets.UTF_8);
+            }
+            writeManagedAggregate(sessionKey, runId, itemId, itemArtifactPath, output, json, success, error);
+            callFrameworkManifest(
+                    sessionKey,
+                    runId,
+                    eventCallback,
+                    success ? "done" : "fail",
+                    itemId,
+                    success ? null : error,
+                    itemArtifactPath,
+                    success ? "managed runner wrote item result" : "managed runner wrote failed item result"
+            );
+        } catch (Exception e) {
+            logger.warn("managed runner failed to write item artifacts session={} run={} itemId={} path={} error={}",
+                    sessionKey, runId, itemId, itemArtifactPath, e.getMessage());
+            callFrameworkManifest(
+                    sessionKey,
+                    runId,
+                    eventCallback,
+                    "fail",
+                    itemId,
+                    e.getMessage(),
+                    itemArtifactPath,
+                    null
+            );
+        }
+    }
+
+    private void writeManagedAggregate(String sessionKey,
+                                       String runId,
+                                       String itemId,
+                                       String itemArtifactPath,
+                                       ManagedItemOutput output,
+                                       String content,
+                                       boolean success,
+                                       String error) throws IOException {
+        var state = activeManifestRegistry.findManagedBlockingState(sessionKey, runId).orElse(null);
+        if (state == null || state.artifactPath().isBlank()) {
+            return;
+        }
+        Path aggregate = Path.of(state.artifactPath().trim());
+        if (aggregate.getParent() != null) {
+            Files.createDirectories(aggregate.getParent());
+        }
+        String line = output == ManagedItemOutput.JSON_OBJECT && success
+                ? content
+                : OBJECT_MAPPER.writeValueAsString(buildManagedAggregateIndexRow(itemId, itemArtifactPath, output, success, error));
+        Files.writeString(aggregate, line + System.lineSeparator(), StandardCharsets.UTF_8,
+                java.nio.file.StandardOpenOption.CREATE,
+                java.nio.file.StandardOpenOption.APPEND);
+    }
+
+    private Map<String, Object> buildManagedAggregateIndexRow(String itemId,
+                                                              String itemArtifactPath,
+                                                              ManagedItemOutput output,
+                                                              boolean success,
+                                                              String error) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("itemId", itemId);
+        row.put("status", success ? "success" : "failed");
+        row.put("outputType", output.contractName());
+        row.put("artifactPath", itemArtifactPath != null ? itemArtifactPath : "");
+        if (!success) {
+            row.put("error", error != null ? error : "unknown managed runner error");
+        }
+        return row;
+    }
+
+    private Map<String, Object> buildManagedFailureRow(String sessionKey, String runId, String itemId, String error) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        var state = activeManifestRegistry.findManagedBlockingState(sessionKey, runId).orElse(null);
+        List<String> columns = parseSchemaColumns(state != null ? state.schema() : "");
+        if (columns.isEmpty()) {
+            row.put("itemId", itemId);
+            row.put("status", "failed");
+            row.put("error", error != null ? error : "unknown managed runner error");
+            return row;
+        }
+        for (String column : columns) {
+            String lower = column.toLowerCase();
+            if (column.contains("状态") || lower.equals("status")) {
+                row.put(column, "failed");
+            } else if (column.contains("错误") || lower.equals("error")) {
+                row.put(column, error != null ? error : "unknown managed runner error");
+            } else {
+                row.put(column, "");
+            }
+        }
+        return row;
+    }
+
+    private List<String> parseSchemaColumns(String schema) {
+        if (schema == null || schema.isBlank()) {
+            return List.of();
+        }
+        try {
+            JsonNode root = OBJECT_MAPPER.readTree(schema);
+            JsonNode columns = root.path("columns");
+            if (!columns.isArray()) {
+                return List.of();
+            }
+            List<String> values = new ArrayList<>();
+            columns.forEach(node -> {
+                if (node.isTextual() && !node.asText().isBlank()) {
+                    values.add(node.asText());
+                }
+            });
+            return values;
+        } catch (Exception ignored) {
+            return List.of();
+        }
+    }
+
+    private List<String> missingSchemaColumns(String sessionKey, String runId, JsonNode json) {
+        if (json == null || !json.isObject()) {
+            return List.of();
+        }
+        var state = activeManifestRegistry.findManagedBlockingState(sessionKey, runId).orElse(null);
+        List<String> columns = parseSchemaColumns(state != null ? state.schema() : "");
+        if (columns.isEmpty()) {
+            return List.of();
+        }
+        List<String> missing = new ArrayList<>();
+        for (String column : columns) {
+            if (!json.has(column)) {
+                missing.add(column);
+            }
+        }
+        return missing;
+    }
+
     private String extractManagedItemArtifactPath(String runnerPrompt) {
         if (runnerPrompt == null || runnerPrompt.isBlank()) {
             return "";
@@ -1116,6 +1515,60 @@ public class AgentLoop {
         } catch (Exception ignored) {
             return false;
         }
+    }
+
+    private ToolCallback[] filterManagedRunnerTools(ToolCallback[] tools, String sessionKey, String runId) {
+        if (tools == null) {
+            return new ToolCallback[0];
+        }
+        List<String> allowedTools = activeSkillRegistry.managedRunnerAllowedTools(sessionKey, runId);
+        return Arrays.stream(tools)
+                .filter(callback -> callback != null && callback.getToolDefinition() != null)
+                .filter(callback -> isManagedRunnerToolAllowed(callback.getToolDefinition().name(), allowedTools))
+                .toArray(ToolCallback[]::new);
+    }
+
+    private boolean isManagedRunnerToolAllowed(String name, List<String> allowedTools) {
+        if (name == null || name.isBlank()) {
+            return false;
+        }
+        String normalized = name.trim().toLowerCase();
+        if (allowedTools != null && !allowedTools.isEmpty()) {
+            return allowedTools.stream()
+                    .filter(tool -> tool != null && !tool.isBlank())
+                    .map(tool -> tool.trim().toLowerCase())
+                    .anyMatch(normalized::equals);
+        }
+        return normalized.startsWith("read_")
+                || "list_dir".equals(normalized)
+                || "context_ref".equals(normalized)
+                || "web_fetch".equals(normalized)
+                || "web_search".equals(normalized);
+    }
+
+    private String extractJsonObject(String text) {
+        if (text == null || text.isBlank()) {
+            return "";
+        }
+        String stripped = text.strip();
+        if (stripped.startsWith("```")) {
+            stripped = stripped.replaceFirst("(?s)^```(?:json)?\\s*", "")
+                    .replaceFirst("(?s)\\s*```\\s*$", "")
+                    .strip();
+        }
+        int start = stripped.indexOf('{');
+        int end = stripped.lastIndexOf('}');
+        if (start < 0 || end <= start) {
+            return "";
+        }
+        return stripped.substring(start, end + 1).strip();
+    }
+
+    private String safeJson(String value) {
+        if (value == null) {
+            return "";
+        }
+        return value.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     private void callFrameworkManifest(String sessionKey,
@@ -1219,7 +1672,51 @@ public class AgentLoop {
                                    boolean checkpointAssistantDraft) {
         StringBuilder attemptResponse = new StringBuilder();
         StreamDeltaNormalizer streamDeltaNormalizer = new StreamDeltaNormalizer();
+        ReasoningContentFilter reasoningContentFilter = ReasoningContentFilter.forModel(
+                isReasoningSideChannelProvider(executionClientBundle.providerName(), executionClientBundle.model()));
+        int fullResponseStartLength = fullResponse != null ? fullResponse.length() : 0;
         AtomicInteger lastDraftCheckpoint = new AtomicInteger(fullResponse != null ? fullResponse.length() : 0);
+
+        if (shouldDisableDeepSeekThinking(executionClientBundle.providerName(), executionClientBundle.model())) {
+            try {
+                String content = executionClientBundle.chatClient().prompt()
+                        .messages(promptMessages)
+                        .toolCallbacks(tools)
+                        .options(options)
+                        .call()
+                        .content();
+                String delta = reasoningContentFilter.sanitizeFinal(content != null ? content : "");
+                if (!delta.isEmpty()) {
+                    attemptResponse.append(delta);
+                    fullResponse.append(delta);
+                    if (checkpointAssistantDraft) {
+                        sessionManager.saveAssistantDraft(sessionKey, fullResponse.toString());
+                    }
+                    if (eventCallback != null) {
+                        eventCallback.accept(new ExecutionEvent(
+                                sessionKey,
+                                ExecutionEvent.EventType.THINK_STREAM,
+                                delta
+                        ));
+                    }
+                }
+                return attemptResponse.toString();
+            } catch (RuntimeException e) {
+                if (containsManagedManifestTakeoverSignal(e)) {
+                    logger.info("managed manifest takeover session={} attemptChars={}", sessionKey, attemptResponse.length());
+                    return attemptResponse.toString();
+                }
+                WebClientResponseException responseException = findWebClientResponseException(e);
+                if (responseException != null) {
+                    logger.warn("LLM HTTP error session={} status={} body={}",
+                            sessionKey,
+                            responseException.getStatusCode(),
+                            responseException.getResponseBodyAsString());
+                }
+                throw e;
+            }
+        }
+
         Flux<String> contentStream = executionClientBundle.chatClient().prompt()
                 .messages(promptMessages)
                 .toolCallbacks(tools)
@@ -1231,6 +1728,10 @@ public class AgentLoop {
             contentStream.toStream().forEach(content -> {
                 if (content != null && !content.isEmpty()) {
                     String delta = streamDeltaNormalizer.normalize(attemptResponse, content);
+                    if (delta.isEmpty()) {
+                        return;
+                    }
+                    delta = reasoningContentFilter.filterDelta(delta);
                     if (delta.isEmpty()) {
                         return;
                     }
@@ -1259,9 +1760,25 @@ public class AgentLoop {
                 logger.info("managed manifest takeover session={} attemptChars={}", sessionKey, attemptResponse.length());
                 return attemptResponse.toString();
             }
+            WebClientResponseException responseException = findWebClientResponseException(e);
+            if (responseException != null) {
+                logger.warn("LLM HTTP error session={} status={} body={}",
+                        sessionKey,
+                        responseException.getStatusCode(),
+                        responseException.getResponseBodyAsString());
+            }
             throw e;
         }
-        return attemptResponse.toString();
+        String sanitized = reasoningContentFilter.sanitizeFinal(attemptResponse.toString());
+        if (sanitized.length() != attemptResponse.length()) {
+            attemptResponse.setLength(0);
+            attemptResponse.append(sanitized);
+            if (fullResponse != null && fullResponse.length() >= fullResponseStartLength) {
+                fullResponse.setLength(fullResponseStartLength);
+                fullResponse.append(sanitized);
+            }
+        }
+        return sanitized;
     }
 
     private boolean containsManagedManifestTakeoverSignal(Throwable throwable) {
@@ -1273,6 +1790,17 @@ public class AgentLoop {
             current = current.getCause();
         }
         return false;
+    }
+
+    private WebClientResponseException findWebClientResponseException(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof WebClientResponseException responseException) {
+                return responseException;
+            }
+            current = current.getCause();
+        }
+        return null;
     }
 
     private boolean shouldReturnManagedManifestControl(String toolName, String request, ToolExecutionResult result) {
@@ -1445,6 +1973,10 @@ public class AgentLoop {
 
         String role = message.getRole();
         String content = message.getContent() != null ? message.getContent() : "";
+        if ("assistant".equals(message.getRole())
+                && isReasoningSideChannelProvider(defaultProviderConfig.providerName(), model)) {
+            content = ReasoningContentFilter.sanitizeText(content);
+        }
         return switch (role) {
             case "system" -> new SystemMessage(content);
             case "assistant" -> toSpringAssistantMessage(message, content);
@@ -1718,6 +2250,10 @@ public class AgentLoop {
     }
 
     private OpenAiChatOptions buildExecutionOptions(AgentDefinition definition, String baseModel) {
+        return buildExecutionOptions(definition, baseModel, defaultProviderConfig.providerName());
+    }
+
+    private OpenAiChatOptions buildExecutionOptions(AgentDefinition definition, String baseModel, String providerName) {
         String effectiveModel = baseModel != null && !baseModel.isBlank() ? baseModel : model;
         Integer effectiveMaxTokens = null;
         Double effectiveTemperature = null;
@@ -1743,7 +2279,28 @@ public class AgentLoop {
         if (effectiveTemperature != null) {
             builder.temperature(effectiveTemperature);
         }
+        if (shouldDisableDeepSeekThinking(providerName, effectiveModel)) {
+            builder.extraBody(Map.of("thinking", Map.of("type", "disabled")));
+        }
         return builder.build();
+    }
+
+    private boolean shouldDisableDeepSeekThinking(String providerName, String modelName) {
+        if (!isReasoningSideChannelProvider(providerName, modelName)) {
+            return false;
+        }
+        String modelValue = modelName != null ? modelName.toLowerCase() : "";
+        return !modelValue.contains("reasoner");
+    }
+
+    private OpenAiChatOptions deepSeekThinkingDisabledOptions(String providerName, String modelName) {
+        if (!shouldDisableDeepSeekThinking(providerName, modelName)) {
+            return null;
+        }
+        return OpenAiChatOptions.builder()
+                .model(modelName)
+                .extraBody(Map.of("thinking", Map.of("type", "disabled")))
+                .build();
     }
 
     private ExecutionClientBundle createExecutionClientBundle(AgentDefinition definition) {
@@ -1755,7 +2312,7 @@ public class AgentLoop {
         if ((providerOverride == null || providerOverride.isBlank())
                 && (apiBaseOverride == null || apiBaseOverride.isBlank())
                 && (modelOverride == null || modelOverride.isBlank())) {
-            return new ExecutionClientBundle(chatClient, model);
+            return new ExecutionClientBundle(chatClient, model, defaultProviderConfig.providerName());
         }
 
         ResolvedProviderConfig resolved = providerRuntime.resolve(
@@ -1765,22 +2322,123 @@ public class AgentLoop {
                 modelOverride
         );
         OpenAiApi openAiApi = createOpenAiApi(resolved);
-        OpenAiChatModel chatModel = OpenAiChatModel.builder()
-                .openAiApi(openAiApi)
-                .build();
+        OpenAiChatModel.Builder chatModelBuilder = OpenAiChatModel.builder()
+                .openAiApi(openAiApi);
+        OpenAiChatOptions defaultOptions = deepSeekThinkingDisabledOptions(resolved.providerName(), resolved.model());
+        if (defaultOptions != null) {
+            chatModelBuilder.defaultOptions(defaultOptions);
+        }
+        OpenAiChatModel chatModel = chatModelBuilder.build();
         ChatClient executionChatClient = ChatClient.builder(chatModel).build();
-        return new ExecutionClientBundle(executionChatClient, resolved.model());
+        return new ExecutionClientBundle(executionChatClient, resolved.model(), resolved.providerName());
     }
 
-    private record ExecutionClientBundle(ChatClient chatClient, String model) {
+    private record ExecutionClientBundle(ChatClient chatClient, String model, String providerName) {
+    }
+
+    private boolean isReasoningSideChannelProvider(String providerName, String modelName) {
+        String provider = providerName != null ? providerName.toLowerCase() : "";
+        String modelValue = modelName != null ? modelName.toLowerCase() : "";
+        return provider.contains("deepseek") || modelValue.contains("deepseek");
+    }
+
+    private static final class ReasoningContentFilter {
+        private final boolean enabled;
+        private boolean inThinkBlock;
+
+        private ReasoningContentFilter(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        static ReasoningContentFilter forModel(boolean enabled) {
+            return new ReasoningContentFilter(enabled);
+        }
+
+        String filterDelta(String delta) {
+            if (!enabled || delta == null || delta.isEmpty()) {
+                return delta != null ? delta : "";
+            }
+            StringBuilder visible = new StringBuilder(delta.length());
+            int index = 0;
+            while (index < delta.length()) {
+                if (inThinkBlock) {
+                    int close = indexOfIgnoreCase(delta, "</think>", index);
+                    if (close < 0) {
+                        return visible.toString();
+                    }
+                    inThinkBlock = false;
+                    index = close + "</think>".length();
+                    continue;
+                }
+                int open = indexOfIgnoreCase(delta, "<think>", index);
+                if (open < 0) {
+                    visible.append(delta, index, delta.length());
+                    break;
+                }
+                visible.append(delta, index, open);
+                inThinkBlock = true;
+                index = open + "<think>".length();
+            }
+            return visible.toString();
+        }
+
+        String sanitizeFinal(String text) {
+            if (!enabled) {
+                return text != null ? text : "";
+            }
+            return sanitizeText(text);
+        }
+
+        static String sanitizeText(String text) {
+            if (text == null || text.isEmpty()) {
+                return "";
+            }
+            String sanitized = text.replaceAll("(?is)<think>.*?</think>", "");
+            sanitized = sanitized.replaceAll("(?im)^\\s*\"?reasoning_content\"?\\s*:\\s*\".*\"\\s*,?\\s*$", "");
+            return sanitized;
+        }
+
+        private static int indexOfIgnoreCase(String source, String target, int fromIndex) {
+            int max = source.length() - target.length();
+            for (int i = Math.max(0, fromIndex); i <= max; i++) {
+                if (source.regionMatches(true, i, target, 0, target.length())) {
+                    return i;
+                }
+            }
+            return -1;
+        }
     }
 
     private OpenAiApi createOpenAiApi(ResolvedProviderConfig resolvedProvider) {
+        RestClient.Builder restClientBuilder = RestClient.builder().requestFactory(openAiRequestFactory());
+        if (shouldDisableDeepSeekThinking(resolvedProvider.providerName(), resolvedProvider.model())) {
+            restClientBuilder.requestInterceptor(deepSeekThinkingDisabledInterceptor());
+        }
         return OpenAiApi.builder()
                 .apiKey(resolvedProvider.apiKey())
                 .baseUrl(resolvedProvider.springAiBaseUrl())
-                .restClientBuilder(RestClient.builder().requestFactory(openAiRequestFactory()))
+                .restClientBuilder(restClientBuilder)
                 .build();
+    }
+
+    private ClientHttpRequestInterceptor deepSeekThinkingDisabledInterceptor() {
+        return (request, body, execution) -> {
+            byte[] patchedBody = body;
+            if (body != null && body.length > 0) {
+                try {
+                    JsonNode root = OBJECT_MAPPER.readTree(body);
+                    if (root instanceof ObjectNode objectNode && !objectNode.has("thinking")) {
+                        ObjectNode thinking = OBJECT_MAPPER.createObjectNode();
+                        thinking.put("type", "disabled");
+                        objectNode.set("thinking", thinking);
+                        patchedBody = OBJECT_MAPPER.writeValueAsBytes(objectNode);
+                    }
+                } catch (Exception e) {
+                    logger.debug("failed to inject DeepSeek thinking disabled flag: {}", e.getMessage());
+                }
+            }
+            return execution.execute(request, patchedBody);
+        };
     }
 
     private SimpleClientHttpRequestFactory openAiRequestFactory() {

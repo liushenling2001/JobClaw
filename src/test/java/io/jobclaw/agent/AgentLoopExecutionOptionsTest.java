@@ -10,7 +10,10 @@ import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.tool.ToolCallback;
 
 import java.lang.reflect.Method;
+import java.util.Map;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.Mockito.mock;
 
 class AgentLoopExecutionOptionsTest {
@@ -71,5 +74,55 @@ class AgentLoopExecutionOptionsTest {
         method.setAccessible(true);
 
         assertEquals(240_000, method.invoke(loop, config.getAgent().getLlmCallTimeoutSeconds(), 300));
+    }
+
+    @Test
+    void shouldDisableDeepSeekThinkingForToolCompatibleModels() throws Exception {
+        Config config = Config.defaultConfig();
+        config.getAgent().setProvider("deepseek");
+        config.getAgent().setModel("deepseek-v4-flash");
+        config.getProviders().getDeepseek().setApiKey("sk-test");
+        AgentLoop loop = new AgentLoop(
+                config,
+                new SessionManager(),
+                new ToolCallback[0],
+                mock(ContextBuilder.class),
+                mock(ContextAssembler.class),
+                mock(ContextAssemblyPolicy.class),
+                mock(SummaryService.class)
+        );
+
+        Method method = AgentLoop.class.getDeclaredMethod("buildExecutionOptions",
+                AgentDefinition.class, String.class, String.class);
+        method.setAccessible(true);
+
+        OpenAiChatOptions options = (OpenAiChatOptions) method.invoke(loop, null, "deepseek-v4-flash", "deepseek");
+
+        assertEquals(Map.of("thinking", Map.of("type", "disabled")), options.getExtraBody());
+    }
+
+    @Test
+    void shouldNotDisableThinkingForDeepSeekReasoner() throws Exception {
+        Config config = Config.defaultConfig();
+        config.getAgent().setProvider("deepseek");
+        config.getAgent().setModel("deepseek-reasoner");
+        config.getProviders().getDeepseek().setApiKey("sk-test");
+        AgentLoop loop = new AgentLoop(
+                config,
+                new SessionManager(),
+                new ToolCallback[0],
+                mock(ContextBuilder.class),
+                mock(ContextAssembler.class),
+                mock(ContextAssemblyPolicy.class),
+                mock(SummaryService.class)
+        );
+
+        Method method = AgentLoop.class.getDeclaredMethod("buildExecutionOptions",
+                AgentDefinition.class, String.class, String.class);
+        method.setAccessible(true);
+
+        OpenAiChatOptions options = (OpenAiChatOptions) method.invoke(loop, null, "deepseek-reasoner", "deepseek");
+
+        assertNull(options.getExtraBody());
     }
 }

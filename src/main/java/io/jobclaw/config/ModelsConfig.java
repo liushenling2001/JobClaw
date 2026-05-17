@@ -18,6 +18,10 @@ public class ModelsConfig {
         definitions.put("gpt-4o", new ModelDefinition("openai", "gpt-4o", 128000));
         definitions.put("gpt-4o-mini", new ModelDefinition("openai", "gpt-4o-mini", 128000));
 
+        // DeepSeek 系列
+        definitions.put("deepseek-chat", new ModelDefinition("deepseek", "deepseek-chat", 128000));
+        definitions.put("deepseek-reasoner", new ModelDefinition("deepseek", "deepseek-reasoner", 128000));
+
         // Claude 系列
         definitions.put("claude-3-5-sonnet-20241022", new ModelDefinition("anthropic", "claude-3-5-sonnet-20241022", 200000));
         definitions.put("claude-3-5-haiku-20241022", new ModelDefinition("anthropic", "claude-3-5-haiku-20241022", 200000));

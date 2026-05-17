@@ -330,6 +330,7 @@ public class AgentBeansConfig {
         return switch (name) {
             case "openrouter" -> providers.getOpenrouter();
             case "anthropic" -> providers.getAnthropic();
+            case "deepseek" -> providers.getDeepseek();
             case "openai" -> providers.getOpenai();
             case "zhipu" -> providers.getZhipu();
             case "gemini" -> providers.getGemini();

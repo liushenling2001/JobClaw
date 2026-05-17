@@ -152,6 +152,10 @@ public class Config {
         if (selectedProvider.equals("openai") && !apiKey.startsWith("sk-")) {
             return "OpenAI API Key 应该以 'sk-' 开头，请检查配置";
         }
+
+        if (selectedProvider.equals("deepseek") && !apiKey.startsWith("sk-")) {
+            return "DeepSeek API Key 应该以 'sk-' 开头，请检查配置";
+        }
         
         return null;
     }
@@ -165,6 +169,7 @@ public class Config {
         
         return switch (providerName) {
             case "dashscope" -> providers.getDashscope();
+            case "deepseek" -> providers.getDeepseek();
             case "openai" -> providers.getOpenai();
             case "openrouter" -> providers.getOpenrouter();
             case "anthropic" -> providers.getAnthropic();
@@ -265,6 +270,14 @@ public class Config {
             config.getProviders().setOpenai(
                 new ProvidersConfig.ProviderConfig("https://api.openai.com/v1")
             );
+        }
+        if (config.getProviders().getDeepseek() == null) {
+            config.getProviders().setDeepseek(
+                new ProvidersConfig.ProviderConfig("https://api.deepseek.com/v1")
+            );
+        } else if (config.getProviders().getDeepseek().getApiBase() == null
+                || config.getProviders().getDeepseek().getApiBase().isEmpty()) {
+            config.getProviders().getDeepseek().setApiBase("https://api.deepseek.com/v1");
         }
         if (config.getProviders().getOllama() == null) {
             config.getProviders().setOllama(

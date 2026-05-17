@@ -7,6 +7,7 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.jobclaw.agent.AgentExecutionContext;
 import io.jobclaw.agent.ExecutionEvent;
 import io.jobclaw.agent.manifest.ActiveManifestRegistry;
+import io.jobclaw.agent.skill.ActiveSkillRegistry;
 import io.jobclaw.config.Config;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.ai.tool.annotation.Tool;
@@ -44,39 +45,45 @@ public class ManifestTool {
 
     private final Path rootDir;
     private final ActiveManifestRegistry activeManifestRegistry;
+    private final ActiveSkillRegistry activeSkillRegistry;
     private final Object manifestLock = new Object();
 
     @Autowired
-    public ManifestTool(Config config, ActiveManifestRegistry activeManifestRegistry) {
-        this(Paths.get(config.getWorkspacePath(), ".jobclaw", "manifests"), activeManifestRegistry);
+    public ManifestTool(Config config, ActiveManifestRegistry activeManifestRegistry, ActiveSkillRegistry activeSkillRegistry) {
+        this(Paths.get(config.getWorkspacePath(), ".jobclaw", "manifests"), activeManifestRegistry, activeSkillRegistry);
     }
 
     ManifestTool(Path rootDir) {
-        this(rootDir, new ActiveManifestRegistry());
+        this(rootDir, new ActiveManifestRegistry(), new ActiveSkillRegistry());
     }
 
     ManifestTool(Path rootDir, ActiveManifestRegistry activeManifestRegistry) {
-        this.rootDir = rootDir;
-        this.activeManifestRegistry = activeManifestRegistry != null ? activeManifestRegistry : new ActiveManifestRegistry();
+        this(rootDir, activeManifestRegistry, new ActiveSkillRegistry());
     }
 
-    @Tool(name = "manifest", description = "Explicit multi-item task ledger. Use only after you intentionally start a batch task. Actions: create, status, start, done, fail, add_items, reset.")
+    ManifestTool(Path rootDir, ActiveManifestRegistry activeManifestRegistry, ActiveSkillRegistry activeSkillRegistry) {
+        this.rootDir = rootDir;
+        this.activeManifestRegistry = activeManifestRegistry != null ? activeManifestRegistry : new ActiveManifestRegistry();
+        this.activeSkillRegistry = activeSkillRegistry != null ? activeSkillRegistry : new ActiveSkillRegistry();
+    }
+
+    @Tool(name = "manifest", description = "Explicit multi-item task ledger. Use create only after you know the real item list. create is idempotent per session taskKey and merges missing items instead of replacing existing work. Items must be real task objects, not examples or placeholders. artifactPath is the intermediate aggregate path; finalArtifactPath is only the expected final output path. executionMode=managed means the framework may run the item loop for an active runner skill; it does not generate the final artifact by itself. Actions: create, status, start, done, fail, add_items, reset.")
     public String manifest(
             @ToolParam(description = "Action: create/status/start/done/fail/add_items/reset") String action,
             @ToolParam(description = "Manifest id returned by create; required except for create", required = false) String manifestId,
-            @ToolParam(description = "Stable task key for idempotent create, for example 招生PDF分析", required = false) String taskKey,
-            @ToolParam(description = "Items for create/add_items. JSON array of strings or objects with id/itemId/title/path, or newline-separated values.", required = false) String items,
+            @ToolParam(description = "Stable task key for idempotent create in this session. Reuse the same key for the same current batch task.", required = false) String taskKey,
+            @ToolParam(description = "Items for create/add_items. Prefer a JSON array of real objects with stable id and title/path. Do not pass example names, placeholders, or fake ids.", required = false) String items,
             @ToolParam(description = "Optional JSON schema/columns description for this batch task", required = false) String schema,
             @ToolParam(description = "Item id for start/done/fail", required = false) String itemId,
-            @ToolParam(description = "Artifact path for the manifest or item", required = false) String artifactPath,
+            @ToolParam(description = "Intermediate aggregate artifact path for create, or item artifact path for done/fail.", required = false) String artifactPath,
             @ToolParam(description = "Context reference id for an item result/evidence", required = false) String resultRefId,
             @ToolParam(description = "Short note/result summary", required = false) String note,
             @ToolParam(description = "Failure message for fail", required = false) String error,
             @ToolParam(description = "Include item status in status response: pending/running/done/failed/all", required = false) String includeItems,
             @ToolParam(description = "Maximum items returned by status; default 10", required = false) String limit,
             @ToolParam(description = "Explicitly reset an existing manifest on create/reset. Defaults false.", required = false) String reset,
-            @ToolParam(description = "Optional create mode. Use managed only when the framework should keep the run moving until manifest items finish.", required = false) String executionMode,
-            @ToolParam(description = "Optional expected final artifact path for managed manifests. Use when the user asked for a file/report/export.", required = false) String finalArtifactPath,
+            @ToolParam(description = "Optional create mode. Use managed only with an active runner skill; direct manifests remain ledger-only.", required = false) String executionMode,
+            @ToolParam(description = "Optional expected final artifact path. The active skill finalize step is responsible for creating it.", required = false) String finalArtifactPath,
             @ToolParam(description = "Optional expected final artifact type, for example xlsx/pdf/docx/csv/json/report.", required = false) String finalArtifactType
     ) {
         String normalizedAction = action == null || action.isBlank()
@@ -168,6 +175,12 @@ public class ManifestTool {
         List<ManifestItem> parsedItems = parseItems(itemsValue);
         if (parsedItems.isEmpty()) {
             return "Error: items are required for manifest.create";
+        }
+        String contractError = validateManagedRunnerContract(schema, artifactPath, executionMode);
+        if (!contractError.isBlank()) {
+            return "Error: managed manifest contract is incomplete for the active runner skill. "
+                    + contractError
+                    + " Fix the manifest.create arguments only; do not process items until create succeeds.";
         }
 
         String sessionKey = currentSessionKey();
@@ -381,6 +394,32 @@ public class ManifestTool {
         return sb.toString();
     }
 
+    private String validateManagedRunnerContract(String schema, String artifactPath, String executionMode) {
+        if (!"managed".equalsIgnoreCase(normalizeExecutionMode(executionMode))) {
+            return "";
+        }
+        String sessionKey = currentSessionKey();
+        String runId = AgentExecutionContext.getCurrentRunId();
+        if (sessionKey.isBlank() || runId == null || runId.isBlank()) {
+            return "";
+        }
+        if (!activeSkillRegistry.hasManagedRunnerRuntime(sessionKey, runId)) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        if (schema == null || schema.isBlank()) {
+            sb.append("schema is required; ");
+        }
+        if (artifactPath == null || artifactPath.isBlank()) {
+            sb.append("artifactPath is required for intermediate results; ");
+        }
+        String skillContractError = activeSkillRegistry.managedRunnerContractError(sessionKey, runId);
+        if (!skillContractError.isBlank()) {
+            sb.append(skillContractError);
+        }
+        return sb.toString().trim();
+    }
+
     private void publishManifestEvent(ManifestRecord record, String action, String itemId, String content) {
         Counts counts = counts(record);
         Map<String, Object> metadata = new LinkedHashMap<>();
@@ -437,7 +476,7 @@ public class ManifestTool {
         }
         String trimmed = value.trim();
         if (trimmed.startsWith("[")) {
-            List<Object> rawItems = OBJECT_MAPPER.readValue(trimmed, new TypeReference<>() {});
+            List<Object> rawItems = readItemsArray(trimmed);
             List<ManifestItem> items = new ArrayList<>();
             int index = 1;
             for (Object rawItem : rawItems) {
@@ -461,6 +500,76 @@ public class ManifestTool {
             index++;
         }
         return items;
+    }
+
+    private List<Object> readItemsArray(String value) throws IOException {
+        IOException firstError = null;
+        for (String candidate : itemArrayCandidates(value)) {
+            try {
+                return OBJECT_MAPPER.readValue(candidate, new TypeReference<>() {});
+            } catch (IOException e) {
+                if (firstError == null) {
+                    firstError = e;
+                }
+            }
+        }
+        throw firstError != null ? firstError : new IOException("items is not a JSON array");
+    }
+
+    private List<String> itemArrayCandidates(String value) {
+        List<String> candidates = new ArrayList<>();
+        addCandidate(candidates, value);
+        String stripped = stripJsonFence(value);
+        addCandidate(candidates, stripped);
+        addCandidate(candidates, repairObjectArrayCommas(stripped));
+        String unquoted = unquoteJsonString(stripped);
+        addCandidate(candidates, unquoted);
+        addCandidate(candidates, repairObjectArrayCommas(unquoted));
+        return candidates;
+    }
+
+    private void addCandidate(List<String> candidates, String value) {
+        if (value == null) {
+            return;
+        }
+        String trimmed = value.trim();
+        if (!trimmed.isBlank() && !candidates.contains(trimmed)) {
+            candidates.add(trimmed);
+        }
+    }
+
+    private String stripJsonFence(String value) {
+        String trimmed = value == null ? "" : value.trim();
+        if (!trimmed.startsWith("```")) {
+            return trimmed;
+        }
+        return trimmed.replaceFirst("(?s)^```[A-Za-z0-9_-]*\\s*", "")
+                .replaceFirst("(?s)\\s*```\\s*$", "")
+                .trim();
+    }
+
+    private String repairObjectArrayCommas(String value) {
+        if (value == null || value.isBlank()) {
+            return "";
+        }
+        return value.trim()
+                .replaceAll("}\\s*\\{", "},{")
+                .replaceAll("]\\s*\\[", "],[");
+    }
+
+    private String unquoteJsonString(String value) {
+        if (value == null || value.length() < 2) {
+            return value;
+        }
+        String trimmed = value.trim();
+        if (!((trimmed.startsWith("\"") && trimmed.endsWith("\""))
+                || (trimmed.startsWith("'") && trimmed.endsWith("'")))) {
+            return trimmed;
+        }
+        String inner = trimmed.substring(1, trimmed.length() - 1);
+        return inner.replace("\\\"", "\"")
+                .replace("\\\\", "\\")
+                .trim();
     }
 
     @SuppressWarnings("unchecked")

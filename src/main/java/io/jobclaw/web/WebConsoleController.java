@@ -856,6 +856,7 @@ public class WebConsoleController {
 
         addProviderInfo(providers, "openrouter", providersConfig.getOpenrouter());
         addProviderInfo(providers, "anthropic", providersConfig.getAnthropic());
+        addProviderInfo(providers, "deepseek", providersConfig.getDeepseek());
         addProviderInfo(providers, "openai", providersConfig.getOpenai());
         addProviderInfo(providers, "zhipu", providersConfig.getZhipu());
         addProviderInfo(providers, "gemini", providersConfig.getGemini());
@@ -939,6 +940,7 @@ public class WebConsoleController {
         return switch (name) {
             case "openrouter" -> providers.getOpenrouter();
             case "anthropic" -> providers.getAnthropic();
+            case "deepseek" -> providers.getDeepseek();
             case "openai" -> providers.getOpenai();
             case "zhipu" -> providers.getZhipu();
             case "gemini" -> providers.getGemini();
