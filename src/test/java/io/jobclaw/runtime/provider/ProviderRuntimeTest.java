@@ -26,7 +26,7 @@ class ProviderRuntimeTest {
         assertEquals("gpt-test", resolved.model());
         assertEquals("sk-openai", resolved.apiKey());
         assertEquals("https://example.openai.test/v1", resolved.apiBase());
-        assertEquals("https://example.openai.test", resolved.springAiBaseUrl());
+        assertEquals("https://example.openai.test/v1", resolved.springAiBaseUrl());
         assertFalse(resolved.fallbackUsed());
     }
 
@@ -56,7 +56,7 @@ class ProviderRuntimeTest {
         ResolvedProviderConfig resolved = providerRuntime.resolve(config, null);
 
         assertEquals("https://api.openai.com/v1", resolved.apiBase());
-        assertEquals("https://api.openai.com", resolved.springAiBaseUrl());
+        assertEquals("https://api.openai.com/v1", resolved.springAiBaseUrl());
     }
 
     @Test

@@ -47,7 +47,7 @@ class AgentLoopExecutionOptionsTest {
 
         Method method = AgentLoop.class.getDeclaredMethod("buildExecutionOptions", AgentDefinition.class, String.class);
         method.setAccessible(true);
-        OpenAiChatOptions options = (OpenAiChatOptions) method.invoke(loop, definition, config.getAgent().getModel());
+        OpenAiChatOptions options = buildOptions(method.invoke(loop, definition, config.getAgent().getModel()));
 
         assertEquals("custom-model", options.getModel());
         assertEquals(4096, options.getMaxTokens());
@@ -96,7 +96,7 @@ class AgentLoopExecutionOptionsTest {
                 AgentDefinition.class, String.class, String.class);
         method.setAccessible(true);
 
-        OpenAiChatOptions options = (OpenAiChatOptions) method.invoke(loop, null, "deepseek-v4-flash", "deepseek");
+        OpenAiChatOptions options = buildOptions(method.invoke(loop, null, "deepseek-v4-flash", "deepseek"));
 
         assertEquals(Map.of("thinking", Map.of("type", "disabled")), options.getExtraBody());
     }
@@ -121,8 +121,18 @@ class AgentLoopExecutionOptionsTest {
                 AgentDefinition.class, String.class, String.class);
         method.setAccessible(true);
 
-        OpenAiChatOptions options = (OpenAiChatOptions) method.invoke(loop, null, "deepseek-reasoner", "deepseek");
+        OpenAiChatOptions options = buildOptions(method.invoke(loop, null, "deepseek-reasoner", "deepseek"));
 
         assertNull(options.getExtraBody());
+    }
+
+    private OpenAiChatOptions buildOptions(Object value) {
+        if (value instanceof OpenAiChatOptions options) {
+            return options;
+        }
+        if (value instanceof OpenAiChatOptions.Builder builder) {
+            return builder.build();
+        }
+        throw new IllegalArgumentException("Unexpected options type: " + value);
     }
 }

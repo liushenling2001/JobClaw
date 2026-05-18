@@ -66,7 +66,7 @@ public class ProviderRuntime {
     }
 
     private String toSpringAiBaseUrl(String apiBase) {
-        return apiBase.replaceAll("/v1$", "");
+        return apiBase;
     }
 
     private boolean isProviderUsable(String providerName, ProvidersConfig.ProviderConfig providerConfig) {

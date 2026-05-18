@@ -3,12 +3,16 @@ package io.jobclaw.tools;
 import io.jobclaw.config.Config;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Paths;
+import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -25,6 +29,7 @@ import java.util.concurrent.TimeUnit;
 @Component
 public class ExecTool {
 
+    private static final Logger logger = LoggerFactory.getLogger(ExecTool.class);
     private static final int MAX_OUTPUT_LENGTH = 10000;         // 输出最大长度
     private static final long THREAD_JOIN_TIMEOUT_MS = 1000;    // 线程等待超时（毫秒）
     private static final int MAX_INLINE_SCRIPT_COMMAND_LENGTH = 2000;
@@ -56,7 +61,7 @@ public class ExecTool {
             : System.getProperty("user.dir");
 
         // Security warning
-        System.out.println("[ExecTool] WARNING: Executing command without SecurityGuard: " + command);
+        logger.warn("Executing command without SecurityGuard: {}", command);
 
         try {
             return executeCommand(command, cwd, timeout != null ? timeout : defaultTimeoutSeconds());
@@ -124,8 +129,18 @@ public class ExecTool {
         ProcessBuilder pb = new ProcessBuilder(shellCmd);
         pb.directory(Paths.get(cwd).toFile());
         pb.redirectErrorStream(false);
+        configureUtf8Environment(pb);
 
         return pb.start();
+    }
+
+    private void configureUtf8Environment(ProcessBuilder pb) {
+        pb.environment().put("PYTHONUTF8", "1");
+        pb.environment().put("PYTHONIOENCODING", "utf-8");
+        if (!isWindows()) {
+            pb.environment().putIfAbsent("LANG", "C.UTF-8");
+            pb.environment().putIfAbsent("LC_ALL", "C.UTF-8");
+        }
     }
 
     /**
@@ -134,10 +149,20 @@ public class ExecTool {
     private String[] getShellCommand(String command) {
         String os = System.getProperty("os.name").toLowerCase();
         if (os.contains("win")) {
-            return new String[]{"cmd", "/c", command};
+            return new String[]{
+                    "cmd",
+                    "/d",
+                    "/s",
+                    "/c",
+                    "chcp 65001 >NUL & set \"PYTHONUTF8=1\" & set \"PYTHONIOENCODING=utf-8\" & " + command
+            };
         } else {
             return new String[]{"sh", "-c", command};
         }
+    }
+
+    private boolean isWindows() {
+        return System.getProperty("os.name").toLowerCase(Locale.ROOT).contains("win");
     }
 
     /**
@@ -161,7 +186,7 @@ public class ExecTool {
      */
     private Thread createOutputThread(InputStream inputStream, StringBuilder output, String threadName) {
         return new Thread(() -> {
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream))) {
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8))) {
                 String line;
                 while ((line = reader.readLine()) != null) {
                     synchronized (output) {
@@ -169,7 +194,7 @@ public class ExecTool {
                     }
                 }
             } catch (Exception e) {
-                System.out.println("[ExecTool] Output reader exception: " + e.getMessage());
+                logger.warn("Output reader exception: {}", e.getMessage());
             }
         }, threadName);
     }

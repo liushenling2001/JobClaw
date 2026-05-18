@@ -1,6 +1,7 @@
 package io.jobclaw.tools;
 
 import io.jobclaw.config.Config;
+import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
 import org.apache.tika.Tika;
@@ -250,7 +251,7 @@ public class FileTools {
     }
 
     private String extractPdfSample(Path path, PageSelection selection) throws Exception {
-        try (PDDocument document = PDDocument.load(path.toFile())) {
+        try (PDDocument document = Loader.loadPDF(path.toFile())) {
             int totalPages = document.getNumberOfPages();
             if (totalPages <= 0) {
                 return "Error: PDF contains no readable pages";

@@ -6,8 +6,8 @@ spring:
     openai:
       # 使用 DashScope Coding Plan 的 API Key（从 config.json 读取，这里是占位符）
       api-key: ${DASHSCOPE_API_KEY:sk-placeholder}
-      # Spring AI 会自动追加/v1，所以这里不需要/v1
-      base-url: ${DASHSCOPE_BASE_URL:https://coding.dashscope.aliyuncs.com}
+      # Spring AI 2 uses the OpenAI Java client, so keep the full OpenAI-compatible base URL.
+      base-url: ${DASHSCOPE_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
       chat:
         options:
           model: ${DASHSCOPE_MODEL:qwen3.5-plus}
