@@ -81,7 +81,7 @@ class ToolRuntimeTest {
 
         assertEquals(longResponse, result.response());
         List<Message> history = sessionManager.getHistory("session-display-limit");
-        assertEquals(longResponse, history.get(history.size() - 1).getContent());
+        assertTrue(history.isEmpty());
 
         ExecutionEvent outputEvent = events.stream()
                 .filter(event -> event.getType() == ExecutionEvent.EventType.TOOL_OUTPUT)
@@ -123,8 +123,7 @@ class ToolRuntimeTest {
         assertFalse(result.response().contains("ijklmnopqrstuvwxyz"));
 
         List<Message> history = sessionManager.getHistory("session-context-ref");
-        assertTrue(history.get(history.size() - 1).getContent().contains("refId: ref-"));
-        assertFalse(history.get(history.size() - 1).getContent().contains("ijklmnopqrstuvwxyz"));
+        assertTrue(history.isEmpty());
 
         String refId = result.response().lines()
                 .filter(line -> line.startsWith("refId: "))

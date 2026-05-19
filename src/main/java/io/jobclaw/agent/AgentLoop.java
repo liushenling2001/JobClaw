@@ -15,6 +15,7 @@ import io.jobclaw.context.ContextAssembler;
 import io.jobclaw.context.ContextAssemblyOptions;
 import io.jobclaw.context.ContextAssemblyPolicy;
 import io.jobclaw.config.Config;
+import io.jobclaw.context.result.ContextRef;
 import io.jobclaw.context.result.NoopResultStore;
 import io.jobclaw.context.result.ResultStore;
 import io.jobclaw.runtime.provider.ProviderRuntime;
@@ -54,6 +55,7 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -1071,7 +1073,8 @@ public class AgentLoop {
                     itemArtifactPath = extractManagedItemArtifactPath(runnerPrompt);
                 }
                 String resolvedItemArtifactPath = itemArtifactPath;
-                if (reuseExistingManagedItemArtifact(sessionKey, runId, eventCallback, itemId, resolvedItemArtifactPath)) {
+                if (activeSkillRegistry.managedRunnerWritesItemFile(sessionKey, runId)
+                        && reuseExistingManagedItemArtifact(sessionKey, runId, eventCallback, itemId, resolvedItemArtifactPath)) {
                     continue;
                 }
                 workers.add(CompletableFuture.supplyAsync(() -> {
@@ -1093,7 +1096,8 @@ public class AgentLoop {
                     } catch (Exception e) {
                         logger.warn("managed runner item failed session={} run={} itemId={} error={}",
                                 sessionKey, runId, itemId, e.getMessage());
-                        writeFailedManagedItem(sessionKey, runId, itemId, resolvedItemArtifactPath, e.getMessage(), eventCallback);
+                        writeFailedManagedItem(sessionKey, runId, itemId, resolvedItemArtifactPath, "",
+                                e.getMessage(), eventCallback);
                     }
                     return workerResponse.toString();
                 }, toolExecutionExecutor));
@@ -1135,7 +1139,8 @@ public class AgentLoop {
         if (item == null || item.id().isBlank() || "running".equalsIgnoreCase(item.status())) {
             return;
         }
-        callFrameworkManifest(sessionKey, runId, eventCallback, "start", item.id(), null, null, "managed runner started item");
+        callFrameworkManifest(sessionKey, runId, eventCallback, "start", item.id(), null, null, null,
+                "managed runner started item");
     }
 
     private void closeManagedItemFromDeclaredArtifact(String sessionKey,
@@ -1159,6 +1164,7 @@ public class AgentLoop {
                     itemId,
                     null,
                     itemArtifactPath,
+                    null,
                     "managed runner item artifact ready"
             );
             return;
@@ -1174,6 +1180,7 @@ public class AgentLoop {
                 itemId,
                 reason,
                 itemArtifactPath,
+                null,
                 null
         );
     }
@@ -1187,15 +1194,17 @@ public class AgentLoop {
         if (itemId == null || itemId.isBlank()) {
             return;
         }
-        if (itemArtifactPath == null || itemArtifactPath.isBlank()) {
-            writeFailedManagedItem(sessionKey, runId, itemId, itemArtifactPath,
+        String resultRefId = saveManagedRunnerRawResult(sessionKey, runId, itemId, modelResult);
+        if (activeSkillRegistry.managedRunnerWritesItemFile(sessionKey, runId)
+                && (itemArtifactPath == null || itemArtifactPath.isBlank())) {
+            writeFailedManagedItem(sessionKey, runId, itemId, itemArtifactPath, resultRefId,
                     "managed runner itemResultPathTemplate did not render a path", eventCallback);
             return;
         }
         ManagedItemOutput output = ManagedItemOutput.from(activeSkillRegistry.managedRunnerItemOutput(sessionKey, runId));
         String content = extractManagedItemContent(output, modelResult);
         if (content.isBlank()) {
-            writeFailedManagedItem(sessionKey, runId, itemId, itemArtifactPath,
+            writeFailedManagedItem(sessionKey, runId, itemId, itemArtifactPath, resultRefId,
                     "managed runner model did not return " + output.contractName() + " content", eventCallback);
             return;
         }
@@ -1203,25 +1212,41 @@ public class AgentLoop {
             try {
                 JsonNode parsed = OBJECT_MAPPER.readTree(content);
                 if (!parsed.isObject()) {
-                    writeFailedManagedItem(sessionKey, runId, itemId, itemArtifactPath,
+                    writeFailedManagedItem(sessionKey, runId, itemId, itemArtifactPath, resultRefId,
                             "managed runner model returned non-object JSON", eventCallback);
                     return;
                 }
                 List<String> missingColumns = missingSchemaColumns(sessionKey, runId, parsed);
                 if (!missingColumns.isEmpty()) {
-                    writeFailedManagedItem(sessionKey, runId, itemId, itemArtifactPath,
+                    writeFailedManagedItem(sessionKey, runId, itemId, itemArtifactPath, resultRefId,
                             "managed runner JSON missing required schema field(s): " + String.join(", ", missingColumns),
                             eventCallback);
                     return;
                 }
                 content = OBJECT_MAPPER.writeValueAsString(parsed);
             } catch (Exception e) {
-                writeFailedManagedItem(sessionKey, runId, itemId, itemArtifactPath,
+                writeFailedManagedItem(sessionKey, runId, itemId, itemArtifactPath, resultRefId,
                         "managed runner returned invalid JSON: " + e.getMessage(), eventCallback);
                 return;
             }
         }
-        writeManagedItemArtifacts(sessionKey, runId, itemId, itemArtifactPath, output, content, eventCallback, true, "");
+        writeManagedItemArtifacts(sessionKey, runId, itemId, itemArtifactPath, resultRefId, output, content,
+                eventCallback, true, "");
+    }
+
+    private String saveManagedRunnerRawResult(String sessionKey, String runId, String itemId, String modelResult) {
+        String raw = modelResult == null ? "" : modelResult;
+        if (raw.isBlank() || resultStore instanceof NoopResultStore) {
+            return "";
+        }
+        try {
+            ContextRef ref = resultStore.save(sessionKey, runId, "managed_item", itemId, raw);
+            return ref != null && ref.getRefId() != null ? ref.getRefId() : "";
+        } catch (Exception e) {
+            logger.warn("managed runner failed to save raw item result session={} run={} itemId={} error={}",
+                    sessionKey, runId, itemId, e.getMessage());
+            return "";
+        }
     }
 
     private String extractManagedItemContent(ManagedItemOutput output, String modelResult) {
@@ -1316,6 +1341,7 @@ public class AgentLoop {
                     itemId,
                     null,
                     itemArtifactPath,
+                    "",
                     "managed runner reused existing item artifact"
             );
             return true;
@@ -1330,6 +1356,7 @@ public class AgentLoop {
                                         String runId,
                                         String itemId,
                                         String itemArtifactPath,
+                                        String resultRefId,
                                         String error,
                                         Consumer<ExecutionEvent> eventCallback) {
         String json;
@@ -1339,20 +1366,22 @@ public class AgentLoop {
             json = "{\"itemId\":\"" + safeJson(itemId) + "\",\"status\":\"failed\",\"error\":\"" + safeJson(error) + "\"}";
         }
         writeManagedItemArtifacts(sessionKey, runId, itemId, itemArtifactPath,
-                ManagedItemOutput.JSON_OBJECT, json, eventCallback, false, error);
+                resultRefId, ManagedItemOutput.JSON_OBJECT, json, eventCallback, false, error);
     }
 
     private void writeManagedItemArtifacts(String sessionKey,
                                            String runId,
                                            String itemId,
                                            String itemArtifactPath,
+                                           String resultRefId,
                                            ManagedItemOutput output,
                                            String json,
                                            Consumer<ExecutionEvent> eventCallback,
                                            boolean success,
                                            String error) {
         try {
-            if (itemArtifactPath != null && !itemArtifactPath.isBlank()) {
+            if (activeSkillRegistry.managedRunnerWritesItemFile(sessionKey, runId)
+                    && itemArtifactPath != null && !itemArtifactPath.isBlank()) {
                 Path itemPath = Path.of(itemArtifactPath.trim());
                 if (itemPath.getParent() != null) {
                     Files.createDirectories(itemPath.getParent());
@@ -1368,6 +1397,7 @@ public class AgentLoop {
                     itemId,
                     success ? null : error,
                     itemArtifactPath,
+                    resultRefId,
                     success ? "managed runner wrote item result" : "managed runner wrote failed item result"
             );
         } catch (Exception e) {
@@ -1381,6 +1411,7 @@ public class AgentLoop {
                     itemId,
                     e.getMessage(),
                     itemArtifactPath,
+                    resultRefId,
                     null
             );
         }
@@ -1395,16 +1426,46 @@ public class AgentLoop {
                                        boolean success,
                                        String error) throws IOException {
         var state = activeManifestRegistry.findManagedBlockingState(sessionKey, runId).orElse(null);
-        if (state == null || state.artifactPath().isBlank()) {
+        if (state == null
+                || state.artifactPath().isBlank()
+                || !activeSkillRegistry.managedRunnerWritesAggregate(sessionKey, runId)) {
             return;
         }
         Path aggregate = Path.of(state.artifactPath().trim());
         if (aggregate.getParent() != null) {
             Files.createDirectories(aggregate.getParent());
         }
+        String aggregateSink = activeSkillRegistry.managedRunnerAggregateSink(sessionKey, runId);
+        Object row = output == ManagedItemOutput.JSON_OBJECT && success
+                ? OBJECT_MAPPER.readValue(content, Object.class)
+                : buildManagedAggregateIndexRow(itemId, itemArtifactPath, output, success, error);
+        if ("json_array".equals(aggregateSink) || "jsonarray".equals(aggregateSink)) {
+            List<Object> rows = new ArrayList<>();
+            if (Files.isRegularFile(aggregate) && Files.size(aggregate) > 0) {
+                JsonNode existing = OBJECT_MAPPER.readTree(aggregate.toFile());
+                if (existing.isArray()) {
+                    existing.forEach(node -> rows.add(OBJECT_MAPPER.convertValue(node, Object.class)));
+                }
+            }
+            rows.add(row);
+            Files.writeString(aggregate,
+                    OBJECT_MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(rows) + System.lineSeparator(),
+                    StandardCharsets.UTF_8,
+                    java.nio.file.StandardOpenOption.CREATE,
+                    java.nio.file.StandardOpenOption.TRUNCATE_EXISTING);
+            return;
+        }
+        if ("markdown".equals(aggregateSink) || "md".equals(aggregateSink)) {
+            Files.writeString(aggregate,
+                    "\n\n## " + itemId + "\n\n" + content.strip() + System.lineSeparator(),
+                    StandardCharsets.UTF_8,
+                    java.nio.file.StandardOpenOption.CREATE,
+                    java.nio.file.StandardOpenOption.APPEND);
+            return;
+        }
         String line = output == ManagedItemOutput.JSON_OBJECT && success
                 ? content
-                : OBJECT_MAPPER.writeValueAsString(buildManagedAggregateIndexRow(itemId, itemArtifactPath, output, success, error));
+                : OBJECT_MAPPER.writeValueAsString(row);
         Files.writeString(aggregate, line + System.lineSeparator(), StandardCharsets.UTF_8,
                 java.nio.file.StandardOpenOption.CREATE,
                 java.nio.file.StandardOpenOption.APPEND);
@@ -1546,22 +1607,152 @@ public class AgentLoop {
                 || "web_search".equals(normalized);
     }
 
-    private String extractJsonObject(String text) {
+    static String extractJsonObject(String text) {
         if (text == null || text.isBlank()) {
             return "";
         }
-        String stripped = text.strip();
-        if (stripped.startsWith("```")) {
-            stripped = stripped.replaceFirst("(?s)^```(?:json)?\\s*", "")
-                    .replaceFirst("(?s)\\s*```\\s*$", "")
-                    .strip();
+        String stripped = stripJsonFence(text.strip());
+        Optional<String> candidate = firstParseableJsonObject(stripped);
+        if (candidate.isPresent()) {
+            return candidate.get();
         }
-        int start = stripped.indexOf('{');
-        int end = stripped.lastIndexOf('}');
-        if (start < 0 || end <= start) {
+
+        String repaired = repairCommonJson(stripped);
+        if (!repaired.equals(stripped)) {
+            return firstParseableJsonObject(repaired)
+                    .orElse("");
+        }
+        return "";
+    }
+
+    private static String stripJsonFence(String text) {
+        String value = text == null ? "" : text.trim();
+        if (!value.startsWith("```")) {
+            return value;
+        }
+        int firstNewline = value.indexOf('\n');
+        int lastFence = value.lastIndexOf("```");
+        if (firstNewline >= 0 && lastFence > firstNewline) {
+            return value.substring(firstNewline + 1, lastFence).trim();
+        }
+        return value.replaceFirst("(?s)^```(?:json)?\\s*", "")
+                .replaceFirst("(?s)\\s*```\\s*$", "")
+                .trim();
+    }
+
+    private static Optional<String> firstParseableJsonObject(String text) {
+        for (String candidate : balancedJsonObjects(text)) {
+            String repaired = repairCommonJson(candidate);
+            try {
+                JsonNode node = OBJECT_MAPPER.readTree(repaired);
+                if (node.isObject()) {
+                    return Optional.of(repaired);
+                }
+            } catch (Exception ignored) {
+                // Try the next balanced object in the model response.
+            }
+        }
+        return Optional.empty();
+    }
+
+    private static List<String> balancedJsonObjects(String text) {
+        if (text == null || text.isBlank()) {
+            return List.of();
+        }
+        List<String> candidates = new ArrayList<>();
+        int searchFrom = 0;
+        while (searchFrom < text.length()) {
+            int start = text.indexOf('{', searchFrom);
+            if (start < 0) {
+                break;
+            }
+            Optional<String> candidate = balancedJsonObjectAt(text, start);
+            candidate.ifPresent(candidates::add);
+            searchFrom = start + 1;
+        }
+        return candidates;
+    }
+
+    private static Optional<String> balancedJsonObjectAt(String text, int start) {
+        boolean inString = false;
+        boolean escaped = false;
+        int depth = 0;
+        for (int i = start; i < text.length(); i++) {
+            char ch = text.charAt(i);
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (ch == '\\' && inString) {
+                escaped = true;
+                continue;
+            }
+            if (ch == '"') {
+                inString = !inString;
+                continue;
+            }
+            if (inString) {
+                continue;
+            }
+            if (ch == '{') {
+                depth++;
+            } else if (ch == '}') {
+                depth--;
+                if (depth == 0) {
+                    return Optional.of(text.substring(start, i + 1).trim());
+                }
+            }
+        }
+        return Optional.empty();
+    }
+
+    private static String repairCommonJson(String raw) {
+        if (raw == null || raw.isBlank()) {
             return "";
         }
-        return stripped.substring(start, end + 1).strip();
+        String normalized = raw
+                .replace('\uFEFF', ' ')
+                .replace('“', '"')
+                .replace('”', '"')
+                .replace('‘', '\'')
+                .replace('’', '\'')
+                .replaceAll("[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F]", "")
+                .replaceAll(",\\s*([}\\]])", "$1");
+        return escapeJsonStringLineBreaks(normalized);
+    }
+
+    private static String escapeJsonStringLineBreaks(String raw) {
+        StringBuilder sb = new StringBuilder(raw.length());
+        boolean inString = false;
+        boolean escaped = false;
+        for (int i = 0; i < raw.length(); i++) {
+            char ch = raw.charAt(i);
+            if (escaped) {
+                sb.append(ch);
+                escaped = false;
+                continue;
+            }
+            if (ch == '\\' && inString) {
+                sb.append(ch);
+                escaped = true;
+                continue;
+            }
+            if (ch == '"') {
+                inString = !inString;
+                sb.append(ch);
+                continue;
+            }
+            if (inString && ch == '\n') {
+                sb.append("\\n");
+            } else if (inString && ch == '\r') {
+                sb.append("\\r");
+            } else if (inString && ch == '\t') {
+                sb.append("\\t");
+            } else {
+                sb.append(ch);
+            }
+        }
+        return sb.toString();
     }
 
     private String safeJson(String value) {
@@ -1578,6 +1769,7 @@ public class AgentLoop {
                                        String itemId,
                                        String error,
                                        String artifactPath,
+                                       String resultRefId,
                                        String note) {
         ToolCallback manifestCallback = Arrays.stream(allToolCallbacks)
                 .filter(callback -> callback != null
@@ -1613,6 +1805,9 @@ public class AgentLoop {
             }
             if (artifactPath != null && !artifactPath.isBlank()) {
                 request.put("artifactPath", artifactPath);
+            }
+            if (resultRefId != null && !resultRefId.isBlank()) {
+                request.put("resultRefId", resultRefId);
             }
             if (note != null && !note.isBlank()) {
                 request.put("note", note);
@@ -1700,6 +1895,9 @@ public class AgentLoop {
                         ));
                     }
                 }
+                if (attemptResponse.isEmpty()) {
+                    throw new IllegalStateException("LLM returned empty content in non-stream call");
+                }
                 return attemptResponse.toString();
             } catch (RuntimeException e) {
                 if (containsManagedManifestTakeoverSignal(e)) {
@@ -1769,6 +1967,52 @@ public class AgentLoop {
             }
             throw e;
         }
+        if (attemptResponse.isEmpty()) {
+            logger.warn("LLM stream returned no visible content; retrying once with non-stream call session={} model={}",
+                    sessionKey,
+                    executionClientBundle.model());
+            try {
+                String fallbackContent = executionClientBundle.chatClient().prompt()
+                        .messages(promptMessages)
+                        .toolCallbacks(tools)
+                        .options(options)
+                        .call()
+                        .content();
+                String delta = reasoningContentFilter.sanitizeFinal(fallbackContent != null ? fallbackContent : "");
+                if (!delta.isEmpty()) {
+                    attemptResponse.append(delta);
+                    fullResponse.append(delta);
+                    if (checkpointAssistantDraft) {
+                        sessionManager.saveAssistantDraft(sessionKey, fullResponse.toString());
+                    }
+                    if (eventCallback != null) {
+                        eventCallback.accept(new ExecutionEvent(
+                                sessionKey,
+                                ExecutionEvent.EventType.THINK_STREAM,
+                                delta
+                        ));
+                    }
+                }
+            } catch (RuntimeException e) {
+                if (containsManagedManifestTakeoverSignal(e)) {
+                    logger.info("managed manifest takeover during non-stream fallback session={} attemptChars={}",
+                            sessionKey,
+                            attemptResponse.length());
+                    return attemptResponse.toString();
+                }
+                WebClientResponseException responseException = findWebClientResponseException(e);
+                if (responseException != null) {
+                    logger.warn("LLM HTTP error during non-stream fallback session={} status={} body={}",
+                            sessionKey,
+                            responseException.getStatusCode(),
+                            responseException.getResponseBodyAsString());
+                }
+                throw e;
+            }
+            if (attemptResponse.isEmpty()) {
+                throw new IllegalStateException("LLM returned empty content in both stream and non-stream calls");
+            }
+        }
         String sanitized = reasoningContentFilter.sanitizeFinal(attemptResponse.toString());
         if (sanitized.length() != attemptResponse.length()) {
             attemptResponse.setLength(0);
@@ -1818,8 +2062,7 @@ public class AgentLoop {
         if (!("create".equals(action) || "done".equals(action) || "fail".equals(action) || "failed".equals(action))) {
             return false;
         }
-        return activeManifestRegistry.findManagedBlockingState(scope.sessionKey(), scope.runId()).isPresent()
-                || activeManifestRegistry.findManagedHandoffState(scope.sessionKey(), scope.runId()).isPresent();
+        return activeManifestRegistry.findManagedBlockingState(scope.sessionKey(), scope.runId()).isPresent();
     }
 
     private String completeManagedManifestRequest(String toolName,

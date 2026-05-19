@@ -144,7 +144,7 @@ class ManifestToolTest {
                 null, null, null, null, null, null, "managed");
 
         assertTrue(created.contains("Error: managed manifest contract is incomplete"));
-        assertTrue(created.contains("itemResultPathTemplate"));
+        assertTrue(created.contains("itemOutput"));
     }
 
     @Test
