@@ -1122,7 +1122,28 @@ public class AgentLoop {
         if (state == null) {
             return List.of();
         }
-        return List.of(state);
+        int limit = Math.max(1, Math.min(configuredParallelism, 8));
+        List<ActiveManifestRegistry.ActiveManifestState> selected = new ArrayList<>();
+        for (ActiveManifestRegistry.ActiveManifestItem item : state.runningQueue()) {
+            if (item == null || item.id().isBlank()) {
+                continue;
+            }
+            selected.add(state.withRunningItem(item));
+            if (selected.size() >= limit) {
+                return selected;
+            }
+        }
+        for (ActiveManifestRegistry.ActiveManifestItem item : state.pendingQueue()) {
+            if (item == null || item.id().isBlank()) {
+                continue;
+            }
+            selected.add(state.withNextPendingItem(item));
+            if (selected.size() >= limit) {
+                return selected;
+            }
+        }
+        ActiveManifestRegistry.ActiveManifestItem item = managedRunnerItem(state);
+        return item == null || item.id().isBlank() ? List.of() : List.of(state);
     }
 
     private ActiveManifestRegistry.ActiveManifestItem managedRunnerItem(ActiveManifestRegistry.ActiveManifestState state) {
@@ -1417,14 +1438,14 @@ public class AgentLoop {
         }
     }
 
-    private void writeManagedAggregate(String sessionKey,
-                                       String runId,
-                                       String itemId,
-                                       String itemArtifactPath,
-                                       ManagedItemOutput output,
-                                       String content,
-                                       boolean success,
-                                       String error) throws IOException {
+    private synchronized void writeManagedAggregate(String sessionKey,
+                                                    String runId,
+                                                    String itemId,
+                                                    String itemArtifactPath,
+                                                    ManagedItemOutput output,
+                                                    String content,
+                                                    boolean success,
+                                                    String error) throws IOException {
         var state = activeManifestRegistry.findManagedBlockingState(sessionKey, runId).orElse(null);
         if (state == null
                 || state.artifactPath().isBlank()

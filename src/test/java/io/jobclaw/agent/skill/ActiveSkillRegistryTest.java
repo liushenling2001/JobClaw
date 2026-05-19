@@ -172,6 +172,7 @@ class ActiveSkillRegistryTest {
                 "",
                 false,
                 item,
+                List.of(item),
                 null,
                 List.of(),
                 1,

@@ -125,7 +125,7 @@ allowedTools: read_pdf, read_word, read_file, context_ref
 Managed runtime fields:
 
 - `mode: runner`: enables framework-managed item execution only when the model also creates a managed manifest.
-- `parallelism`: currently stable at `1`; higher values are reserved for future true concurrent item workers.
+- `parallelism`: number of managed item workers to run concurrently. Default is `1`; values above `8` are capped. Use `1` unless the skill's per-item tools and output sinks are safe to run in parallel.
 - `itemOutput`: model contract for one item. Supported values are `json_object`, `text`, `markdown`, and `file_path`.
 - `resultSink`: where the framework stores each item result. `context_ref` stores only the raw model output reference; `item_file` writes only the rendered item artifact; `both` does both. If omitted, JobClaw uses `both` when `itemResultPathTemplate` exists, otherwise `context_ref`.
 - `aggregateSink`: how the framework maintains a batch-level intermediate artifact. Supported values are `jsonl`, `json_array`, `markdown`, and `none`. If omitted, JobClaw uses `jsonl` when `aggregatePathTemplate` exists, otherwise `none`.

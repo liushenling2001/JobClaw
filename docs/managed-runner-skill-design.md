@@ -94,8 +94,9 @@ allowedTools: read_file, context_ref
   - 只有模型创建 `executionMode=managed` 的 manifest 后才生效。
 
 - `parallelism`
-  - 当前稳定值是 `1`。
-  - 后续如支持真正并发，也应该由 skill 显式声明。
+  - 由 skill 显式声明并发 item worker 数。
+  - 默认 `1`，大于 `8` 会被框架截断为 `8`。
+  - 只有当 item 之间互不依赖、读取工具和中间结果写入可以并行时才设置为大于 `1`。
 
 - `frameworkWrites`
   - 给人看的职责说明。
