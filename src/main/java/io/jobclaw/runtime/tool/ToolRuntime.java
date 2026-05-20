@@ -8,7 +8,6 @@ import io.jobclaw.config.Config;
 import io.jobclaw.context.result.ContextRef;
 import io.jobclaw.context.result.NoopResultStore;
 import io.jobclaw.context.result.ResultStore;
-import io.jobclaw.providers.Message;
 import io.jobclaw.session.SessionManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -182,7 +181,6 @@ public class ToolRuntime {
                     truncateToolOutput(response, executionRequest.toolName())
             );
 
-            sessionManager.addFullMessage(executionRequest.sessionKey(), Message.tool(toolId, modelResponse));
             return new ToolExecutionResult(toolId, modelResponse, durationMs, true, null);
         } catch (Throwable e) {
             throwable = e;

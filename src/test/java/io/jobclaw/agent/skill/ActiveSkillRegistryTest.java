@@ -97,9 +97,51 @@ class ActiveSkillRegistryTest {
         assertThat(registry.hasManagedRunnerRuntime("session-a", "run-1")).isTrue();
         assertThat(registry.hasManagedRunnerContract("session-a", "run-1")).isFalse();
         assertThat(registry.managedRunnerContractError("session-a", "run-1"))
-                .contains("itemResultPathTemplate")
-                .contains("aggregatePathTemplate")
                 .contains("itemOutput");
+    }
+
+    @Test
+    void shouldNotRequireItemOrAggregatePathsForContextRefOnlyRunner() {
+        ActiveSkillRegistry registry = new ActiveSkillRegistry();
+
+        registry.activate("session-a", "run-1", "notes", """
+                # Skill
+                ## Managed Runtime
+                mode: runner
+                resultSink: context_ref
+                aggregateSink: none
+                itemOutput: markdown
+                ### Item Loop
+                Return one markdown note for {{item.id}}.
+                """, "E:\\skills\\notes");
+
+        assertThat(registry.hasManagedRunnerContract("session-a", "run-1")).isTrue();
+        assertThat(registry.managedRunnerResultSink("session-a", "run-1")).isEqualTo("context_ref");
+        assertThat(registry.managedRunnerAggregateSink("session-a", "run-1")).isEqualTo("none");
+        assertThat(registry.managedRunnerWritesItemFile("session-a", "run-1")).isFalse();
+        assertThat(registry.managedRunnerWritesAggregate("session-a", "run-1")).isFalse();
+    }
+
+    @Test
+    void shouldRequireItemPathOnlyWhenSkillAsksForItemFileSink() {
+        ActiveSkillRegistry registry = new ActiveSkillRegistry();
+
+        registry.activate("session-a", "run-1", "batch", """
+                # Skill
+                ## Managed Runtime
+                mode: runner
+                resultSink: both
+                aggregateSink: jsonl
+                aggregatePathTemplate: {{artifactPath}}
+                itemOutput: json_object
+                ### Item Loop
+                Return one object for {{item.id}}.
+                """, "E:\\skills\\batch");
+
+        assertThat(registry.hasManagedRunnerContract("session-a", "run-1")).isFalse();
+        assertThat(registry.managedRunnerContractError("session-a", "run-1"))
+                .contains("itemResultPathTemplate")
+                .doesNotContain("aggregatePathTemplate");
     }
 
     @Test
@@ -130,6 +172,7 @@ class ActiveSkillRegistryTest {
                 "",
                 false,
                 item,
+                List.of(item),
                 null,
                 List.of(),
                 1,
