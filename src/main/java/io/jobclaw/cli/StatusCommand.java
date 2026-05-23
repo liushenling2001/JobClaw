@@ -3,6 +3,8 @@ package io.jobclaw.cli;
 import io.jobclaw.config.Config;
 import io.jobclaw.config.ConfigLoader;
 import io.jobclaw.config.ProvidersConfig;
+import io.jobclaw.run.RunRecord;
+import io.jobclaw.run.RunService;
 import org.springframework.stereotype.Component;
 
 import java.io.File;
@@ -12,6 +14,7 @@ import java.io.File;
  */
 @Component
 public class StatusCommand extends CliCommand {
+    private final RunService runService;
 
     private static final String CHECK_MARK = "✓";          // 检查通过标记
     private static final String CROSS_MARK = "✗";          // 检查失败标记
@@ -38,6 +41,10 @@ public class StatusCommand extends CliCommand {
     private static final String PROVIDER_DASHSCOPE = "DashScope API: ";
     private static final String PROVIDER_OLLAMA = "Ollama: ";
 
+    public StatusCommand(RunService runService) {
+        this.runService = runService;
+    }
+
     @Override
     public String name() {
         return "status";
@@ -57,6 +64,10 @@ public class StatusCommand extends CliCommand {
      */
     @Override
     public int execute(String[] args) throws Exception {
+        if (args.length > 0 && args[0].startsWith("run-")) {
+            printRunStatus(args[0]);
+            return 0;
+        }
         String configPath = getConfigPath();
 
         printTitle();
@@ -75,6 +86,20 @@ public class StatusCommand extends CliCommand {
         printApiKeyStatus(config);
 
         return 0;
+    }
+
+    private void printRunStatus(String runId) throws Exception {
+        RunRecord run = runService.getRequired(runId);
+        System.out.println("Run: " + run.getRunId());
+        System.out.println("Status: " + run.getStatus());
+        System.out.println("Session: " + run.getSessionKey());
+        System.out.println("Project: " + run.getProjectRoot());
+        System.out.println("Started: " + run.getStartedAt());
+        System.out.println("Updated: " + run.getUpdatedAt());
+        System.out.println("Artifacts: " + (run.getArtifactPaths() != null ? run.getArtifactPaths().size() : 0));
+        if (run.getError() != null && !run.getError().isBlank()) {
+            System.out.println("Error: " + run.getError());
+        }
     }
 
     /**
@@ -209,6 +234,6 @@ public class StatusCommand extends CliCommand {
     public void printHelp() {
         System.out.println(LOGO + " jobclaw status - 显示状态");
         System.out.println();
-        System.out.println("Usage: jobclaw status");
+        System.out.println("Usage: jobclaw status [runId]");
     }
 }

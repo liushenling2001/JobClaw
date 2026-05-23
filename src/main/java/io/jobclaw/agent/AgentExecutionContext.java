@@ -22,8 +22,23 @@ public class AgentExecutionContext {
             String parentRunId,
             String agentId,
             String agentName,
-            AgentDefinition definition
+            AgentDefinition definition,
+            String projectRoot,
+            String cwd,
+            String source,
+            String approvalMode,
+            String sandboxMode
     ) {
+        public ExecutionScope(String sessionKey,
+                              Consumer<ExecutionEvent> eventCallback,
+                              String runId,
+                              String parentRunId,
+                              String agentId,
+                              String agentName,
+                              AgentDefinition definition) {
+            this(sessionKey, eventCallback, runId, parentRunId, agentId, agentName, definition,
+                    null, null, null, null, null);
+        }
     }
 
     private static final ThreadLocal<ExecutionScope> currentScope = new ThreadLocal<>();
@@ -78,6 +93,16 @@ public class AgentExecutionContext {
     public static AgentDefinition getCurrentDefinition() {
         ExecutionScope scope = currentScope.get();
         return scope != null ? scope.definition() : null;
+    }
+
+    public static String getCurrentProjectRoot() {
+        ExecutionScope scope = currentScope.get();
+        return scope != null ? scope.projectRoot() : null;
+    }
+
+    public static String getCurrentCwd() {
+        ExecutionScope scope = currentScope.get();
+        return scope != null ? scope.cwd() : null;
     }
 
     public static void setRuntimeRequiredToolNames(Collection<String> toolNames) {

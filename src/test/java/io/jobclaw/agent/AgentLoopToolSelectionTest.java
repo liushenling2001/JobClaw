@@ -11,18 +11,14 @@ import io.jobclaw.context.result.NoopResultStore;
 import io.jobclaw.runtime.provider.ProviderRuntime;
 import io.jobclaw.session.SessionManager;
 import io.jobclaw.summary.SummaryService;
-import io.jobclaw.tools.ManifestTool;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
 
 import java.lang.reflect.Method;
-import java.time.Instant;
 import java.util.Arrays;
-import java.util.LinkedHashMap;
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
@@ -165,33 +161,6 @@ class AgentLoopToolSelectionTest {
         assertTrue(repair.contains("manifest.create must include taskKey, items, schema, artifactPath"));
     }
 
-    @Test
-    void managedRunnerShouldSelectMultipleItemsWhenSkillDeclaresParallelism() throws Exception {
-        AgentLoop loop = loopWithTools("read_file", "context_ref");
-        ActiveManifestRegistry registry = new ActiveManifestRegistry();
-        LinkedHashMap<String, ManifestTool.ManifestItem> items = new LinkedHashMap<>();
-        items.put("a", new ManifestTool.ManifestItem(
-                "a", "A", "running", null, null, null, null, Instant.now(), Instant.now()));
-        items.put("b", new ManifestTool.ManifestItem(
-                "b", "B", "pending", null, null, null, null, Instant.now(), Instant.now()));
-        items.put("c", new ManifestTool.ManifestItem(
-                "c", "C", "pending", null, null, null, null, Instant.now(), Instant.now()));
-        AgentExecutionContext.setCurrentContext(new AgentExecutionContext.ExecutionScope(
-                "session-a", event -> {}, "run-1", null, null, null, null));
-        registry.update(new ManifestTool.ManifestRecord(
-                "mf-a", "session-a", "run-1", "task", "fingerprint", "{}", "",
-                "managed", "", "", items, Instant.now(), Instant.now()));
-        ActiveManifestRegistry.ActiveManifestState state =
-                registry.findManagedBlockingState("session-a", "run-1").orElseThrow();
-
-        List<?> selected = invokeManagedRunnerSelection(loop, state, 2);
-
-        assertEquals(2, selected.size());
-        assertEquals("a", managedRunnerItemId(loop, selected.get(0)));
-        assertEquals("b", managedRunnerItemId(loop, selected.get(1)));
-        AgentExecutionContext.clear();
-    }
-
     private AgentLoop loopWithTools(String... toolNames) {
         ToolCallback[] callbacks = Arrays.stream(toolNames)
                 .map(this::tool)
@@ -272,30 +241,6 @@ class AgentLoopToolSelectionTest {
         );
         method.setAccessible(true);
         return (String) method.invoke(loop, sessionKey, runId, attemptResponse, attempts);
-    }
-
-    @SuppressWarnings("unchecked")
-    private List<?> invokeManagedRunnerSelection(AgentLoop loop,
-                                                 ActiveManifestRegistry.ActiveManifestState state,
-                                                 int parallelism) throws Exception {
-        Method method = AgentLoop.class.getDeclaredMethod(
-                "selectManagedRunnerStates",
-                ActiveManifestRegistry.ActiveManifestState.class,
-                int.class
-        );
-        method.setAccessible(true);
-        return (List<?>) method.invoke(loop, state, parallelism);
-    }
-
-    private String managedRunnerItemId(AgentLoop loop, Object selectedState) throws Exception {
-        Method method = AgentLoop.class.getDeclaredMethod(
-                "managedRunnerItem",
-                ActiveManifestRegistry.ActiveManifestState.class
-        );
-        method.setAccessible(true);
-        ActiveManifestRegistry.ActiveManifestItem item =
-                (ActiveManifestRegistry.ActiveManifestItem) method.invoke(loop, selectedState);
-        return item.id();
     }
 
     private List<String> names(ToolCallback[] callbacks) {

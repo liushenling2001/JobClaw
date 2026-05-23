@@ -410,6 +410,9 @@ public class ManifestTool {
         if (schema == null || schema.isBlank()) {
             sb.append("schema is required; ");
         }
+        if (artifactPath == null || artifactPath.isBlank()) {
+            sb.append("artifactPath is required for intermediate results; ");
+        }
         String skillContractError = activeSkillRegistry.managedRunnerContractError(sessionKey, runId);
         if (!skillContractError.isBlank()) {
             sb.append(skillContractError);

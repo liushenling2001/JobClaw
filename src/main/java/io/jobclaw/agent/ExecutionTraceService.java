@@ -7,9 +7,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
-import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
+import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -33,7 +33,7 @@ public class ExecutionTraceService {
     /**
      * 存储每个 session 的发射器，支持多个订阅者
      */
-    private final ConcurrentHashMap<String, ConcurrentHashMap<String, SseEmitter>> sessionEmitters;
+    private final ConcurrentHashMap<String, ConcurrentHashMap<String, Object>> sessionEmitters;
 
     /**
      * 执行事件历史（每个 session 保留最近的记录）
@@ -69,10 +69,10 @@ public class ExecutionTraceService {
      * 订阅指定 session 的执行事件
      *
      * @param sessionId 会话 ID
-     * @param emitter SSE 发射器
+     * @param emitter SSE 发射器或兼容对象。这里用 Object 保持 core runtime 不依赖 Spring MVC。
      * @return 订阅者 ID
      */
-    public String subscribe(String sessionId, SseEmitter emitter) {
+    public String subscribe(String sessionId, Object emitter) {
         String subscriberId = "sub-" + sessionId + "-" + subscriberIdCounter.incrementAndGet();
 
         sessionEmitters
@@ -82,21 +82,7 @@ public class ExecutionTraceService {
         // 确保历史队列存在
         eventHistory.computeIfAbsent(sessionId, k -> new ConcurrentLinkedQueue<>());
 
-        // 设置 emitter 回调
-        emitter.onCompletion(() -> {
-            logger.debug("SSE emitter completed for subscriber: {}", subscriberId);
-            unsubscribe(sessionId, subscriberId);
-        });
-
-        emitter.onTimeout(() -> {
-            logger.debug("SSE emitter timeout for subscriber: {}", subscriberId);
-            unsubscribe(sessionId, subscriberId);
-        });
-
-        emitter.onError(e -> {
-            logger.debug("SSE emitter error for subscriber {}: {}", subscriberId, e.getMessage());
-            unsubscribe(sessionId, subscriberId);
-        });
+        registerEmitterCallbacks(sessionId, subscriberId, emitter);
 
         logger.info("Subscriber {} subscribed to session {}", subscriberId, sessionId);
         return subscriberId;
@@ -109,7 +95,7 @@ public class ExecutionTraceService {
      * @param subscriberId 订阅者 ID
      */
     public void unsubscribe(String sessionId, String subscriberId) {
-        ConcurrentHashMap<String, SseEmitter> emitters = sessionEmitters.get(sessionId);
+        ConcurrentHashMap<String, Object> emitters = sessionEmitters.get(sessionId);
         if (emitters != null) {
             emitters.remove(subscriberId);
             if (emitters.isEmpty()) {
@@ -139,19 +125,17 @@ public class ExecutionTraceService {
         appendExecutionEvent(event);
 
         // 推送给所有订阅者
-        ConcurrentHashMap<String, SseEmitter> emitters = sessionEmitters.get(sessionId);
+        ConcurrentHashMap<String, Object> emitters = sessionEmitters.get(sessionId);
         if (emitters != null && !emitters.isEmpty()) {
             Map<String, Object> sseData = event.toSseData();
 
             emitters.forEach((subscriberId, emitter) -> {
                 try {
-                    emitter.send(SseEmitter.event()
-                            .name("execution-event")
-                            .data(sseData));
+                    sendEmitterEvent(emitter, sseData);
                 } catch (IOException e) {
                     logger.debug("Failed to send event to subscriber {}: {}", subscriberId, e.getMessage());
                     dropBrokenEmitter(sessionId, subscriberId);
-                } catch (IllegalStateException e) {
+                } catch (ReflectiveOperationException | IllegalStateException e) {
                     logger.debug("SSE emitter already closed for subscriber {}: {}", subscriberId, e.getMessage());
                     dropBrokenEmitter(sessionId, subscriberId);
                 }
@@ -218,9 +202,9 @@ public class ExecutionTraceService {
      * @param sessionId 会话 ID
      */
     public void clear(String sessionId) {
-        ConcurrentHashMap<String, SseEmitter> emitters = sessionEmitters.remove(sessionId);
+        ConcurrentHashMap<String, Object> emitters = sessionEmitters.remove(sessionId);
         if (emitters != null) {
-            emitters.forEach((id, emitter) -> emitter.complete());
+            emitters.forEach((id, emitter) -> completeEmitter(emitter));
         }
         eventHistory.remove(sessionId);
         logger.debug("Cleared trace data for session {}", sessionId);
@@ -230,8 +214,51 @@ public class ExecutionTraceService {
      * 获取订阅者数量
      */
     public int getSubscriberCount(String sessionId) {
-        ConcurrentHashMap<String, SseEmitter> emitters = sessionEmitters.get(sessionId);
+        ConcurrentHashMap<String, Object> emitters = sessionEmitters.get(sessionId);
         return emitters != null ? emitters.size() : 0;
+    }
+
+    private void registerEmitterCallbacks(String sessionId, String subscriberId, Object emitter) {
+        invokeIfPresent(emitter, "onCompletion", Runnable.class, (Runnable) () -> {
+            logger.debug("SSE emitter completed for subscriber: {}", subscriberId);
+            unsubscribe(sessionId, subscriberId);
+        });
+        invokeIfPresent(emitter, "onTimeout", Runnable.class, (Runnable) () -> {
+            logger.debug("SSE emitter timeout for subscriber: {}", subscriberId);
+            unsubscribe(sessionId, subscriberId);
+        });
+        try {
+            Method method = emitter.getClass().getMethod("onError", java.util.function.Consumer.class);
+            method.invoke(emitter, (java.util.function.Consumer<Throwable>) e -> {
+                logger.debug("SSE emitter error for subscriber {}: {}", subscriberId, e.getMessage());
+                unsubscribe(sessionId, subscriberId);
+            });
+        } catch (Exception ignored) {
+            // Non-SSE subscribers are allowed.
+        }
+    }
+
+    private void sendEmitterEvent(Object emitter, Map<String, Object> data) throws ReflectiveOperationException, IOException {
+        Method method = emitter.getClass().getMethod("send", Object.class);
+        method.invoke(emitter, data);
+    }
+
+    private void completeEmitter(Object emitter) {
+        try {
+            Method method = emitter.getClass().getMethod("complete");
+            method.invoke(emitter);
+        } catch (Exception ignored) {
+            // Non-SSE subscribers are allowed.
+        }
+    }
+
+    private <T> void invokeIfPresent(Object target, String methodName, Class<T> parameterType, T value) {
+        try {
+            Method method = target.getClass().getMethod(methodName, parameterType);
+            method.invoke(target, value);
+        } catch (Exception ignored) {
+            // Non-SSE subscribers are allowed.
+        }
     }
 
     private int normalizeLimit(int limit) {

@@ -17,7 +17,7 @@ import java.nio.file.Paths;
 public abstract class CliCommand {
 
     protected static final String LOGO = "\uD83E\uDD9E";  // Crab emoji
-    protected static final String VERSION = "0.1.0";
+    protected static final String VERSION = "1.0.0";
 
     /**
      * Get the command name

@@ -104,8 +104,8 @@ For long artifact-producing skills, the recommended pattern is:
 1. List the real input items with tools, not examples or placeholders.
 2. Create or reuse a manifest when the job has explicit multiple items.
 3. Let `mode: runner` skills use the managed runner for per-item work.
-4. Choose result sinks explicitly: raw item output is always safest as a `context_ref`; item files and aggregate files are optional skill choices.
-5. Generate final artifacts from intermediate refs/files with existing tools or scripts.
+4. Save one durable item artifact per item and one aggregate artifact for the batch.
+5. Generate final artifacts from intermediate files with existing tools or scripts.
 6. Include the final artifact path in the final response.
 
 A runner skill should define its own runtime contract, for example:
@@ -114,28 +114,13 @@ A runner skill should define its own runtime contract, for example:
 mode: runner
 parallelism: 1
 frameworkWrites: item-json,jsonl,manifest
-resultSink: both
-aggregateSink: jsonl
 itemResultPathTemplate: {{task.inputDir}}\results.items\{{item.safeId}}.json
 aggregatePathTemplate: {{artifactPath}}
 itemOutput: json_object
 allowedTools: read_pdf, read_word, read_file, context_ref
 ```
 
-Managed runtime fields:
-
-- `mode: runner`: enables framework-managed item execution only when the model also creates a managed manifest.
-- `parallelism`: number of managed item workers to run concurrently. Default is `1`; values above `8` are capped. Use `1` unless the skill's per-item tools and output sinks are safe to run in parallel.
-- `itemOutput`: model contract for one item. Supported values are `json_object`, `text`, `markdown`, and `file_path`.
-- `resultSink`: where the framework stores each item result. `context_ref` stores only the raw model output reference; `item_file` writes only the rendered item artifact; `both` does both. If omitted, JobClaw uses `both` when `itemResultPathTemplate` exists, otherwise `context_ref`.
-- `aggregateSink`: how the framework maintains a batch-level intermediate artifact. Supported values are `jsonl`, `json_array`, `markdown`, and `none`. If omitted, JobClaw uses `jsonl` when `aggregatePathTemplate` exists, otherwise `none`.
-- `itemResultPathTemplate`: required only when `resultSink` is `item_file` or `both`.
-- `aggregatePathTemplate`: required only when `aggregateSink` is not `none`.
-- `allowedTools`: local allowlist for the item loop.
-
 The `allowedTools` list is local to the item loop. It should be as small as practical so the model cannot restart the whole workflow from inside one item.
-
-Do not force every runner skill into the same shape. A document extraction skill may use `resultSink=both` and `aggregateSink=jsonl`; a literature-review notes skill may use `resultSink=context_ref` and `aggregateSink=markdown`; an inspection skill may use `aggregateSink=none` and rely only on manifest status plus item refs.
 
 Skills can still support resume behavior. If item artifacts already exist and are complete, the skill may reuse them and skip re-reading source files. If only part of the work exists, the skill should create a manifest only for missing items or use the existing manifest to continue.
 

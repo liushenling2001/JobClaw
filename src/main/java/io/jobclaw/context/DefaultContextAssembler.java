@@ -36,7 +36,7 @@ public class DefaultContextAssembler implements ContextAssembler {
 
     @Override
     public List<Message> assemble(String sessionId, String currentUserInput, ContextAssemblyOptions options) {
-        List<Message> history = new ArrayList<>(sessionManager.getHistory(sessionId));
+        List<Message> history = filterHistoricalMessages(sessionManager.getHistory(sessionId));
         int recentLimit = options != null && options.recentMessageLimit() > 0
                 ? options.recentMessageLimit()
                 : defaultRecentLimit;
@@ -177,8 +177,38 @@ public class DefaultContextAssembler implements ContextAssembler {
         };
     }
 
+    private List<Message> filterHistoricalMessages(List<Message> messages) {
+        if (messages == null || messages.isEmpty()) {
+            return new ArrayList<>();
+        }
+
+        List<Message> filtered = new ArrayList<>();
+        for (Message message : messages) {
+            if (message == null) {
+                continue;
+            }
+            if (isToolProtocolMessage(message)) {
+                continue;
+            }
+            filtered.add(message);
+        }
+        return filtered;
+    }
+
     private boolean isToolMessage(String role) {
         return "tool".equals(role);
+    }
+
+    private boolean isToolProtocolMessage(Message message) {
+        if (message == null) {
+            return false;
+        }
+        if (isToolMessage(message.getRole())) {
+            return true;
+        }
+        return "assistant".equals(message.getRole())
+                && message.getToolCalls() != null
+                && !message.getToolCalls().isEmpty();
     }
 
     private int adjustStartIndexForToolIntegrity(List<Message> history, int startIndex) {

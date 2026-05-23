@@ -1,0 +1,7 @@
+#!/usr/bin/env sh
+set -eu
+
+APP_HOME=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+JAR="$APP_HOME/target/jobclaw-cli.jar"
+
+exec java --sun-misc-unsafe-memory-access=allow --enable-native-access=ALL-UNNAMED -jar "$JAR" "$@"

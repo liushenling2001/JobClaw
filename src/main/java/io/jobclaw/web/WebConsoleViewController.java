@@ -1,9 +1,11 @@
 package io.jobclaw.web;
 
 import org.springframework.stereotype.Controller;
+import org.springframework.context.annotation.Profile;
 import org.springframework.web.bind.annotation.GetMapping;
 
 @Controller
+@Profile("!cli")
 public class WebConsoleViewController {
 
     @GetMapping("/")

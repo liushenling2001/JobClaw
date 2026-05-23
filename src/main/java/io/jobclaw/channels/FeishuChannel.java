@@ -14,6 +14,7 @@ import io.jobclaw.bus.OutboundMessage;
 import io.jobclaw.config.ChannelsConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 import java.util.HashMap;
@@ -45,6 +46,7 @@ import java.util.Map;
  * 5. 在"机器人"能力中启用机器人
  */
 @Component
+@Profile("!cli")
 public class FeishuChannel extends BaseChannel {
 
     private static final Logger logger = LoggerFactory.getLogger(FeishuChannel.class);

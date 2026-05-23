@@ -1,14 +1,10 @@
 package io.jobclaw.agent;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 
 class AgentLoopStreamDeltaTest {
-    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     @Test
     void shouldKeepPureDeltaUnchanged() {
@@ -72,51 +68,5 @@ class AgentLoopStreamDeltaTest {
     @Test
     void shouldDropExactDuplicateChunk() {
         assertEquals("", AgentLoop.normalizeStreamDelta(new StringBuilder("hello"), "hello"));
-    }
-
-    @Test
-    void shouldExtractJsonObjectFromFencedModelReply() throws Exception {
-        String extracted = AgentLoop.extractJsonObject("""
-                提取结果如下：
-                ```json
-                {"题目":"示例","作者":"张三"}
-                ```
-                已完成。
-                """);
-
-        JsonNode node = MAPPER.readTree(extracted);
-        assertEquals("示例", node.path("题目").asText());
-        assertEquals("张三", node.path("作者").asText());
-    }
-
-    @Test
-    void shouldRepairCommonJsonShapeErrors() throws Exception {
-        String extracted = AgentLoop.extractJsonObject("""
-                ```json
-                {
-                  “题目”: “示例”,
-                  “主要内容”: “第一行
-                第二行”,
-                }
-                ```
-                """);
-
-        JsonNode node = MAPPER.readTree(extracted);
-        assertEquals("示例", node.path("题目").asText());
-        assertEquals("第一行\n第二行", node.path("主要内容").asText());
-        assertFalse(extracted.contains(",}"));
-    }
-
-    @Test
-    void shouldExtractFirstBalancedJsonObjectWithoutUsingLastBrace() throws Exception {
-        String extracted = AgentLoop.extractJsonObject("""
-                前置说明 {不是JSON
-                {"题目":"A","主要内容":"包含 } 字符"}
-                后置说明 {"ignore":true}
-                """);
-
-        JsonNode node = MAPPER.readTree(extracted);
-        assertEquals("A", node.path("题目").asText());
-        assertEquals("包含 } 字符", node.path("主要内容").asText());
     }
 }

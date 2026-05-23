@@ -1,6 +1,7 @@
 package io.jobclaw.tools;
 
 import io.jobclaw.config.Config;
+import io.jobclaw.agent.AgentExecutionContext;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
@@ -92,9 +93,12 @@ public class RunCommandTool {
         }
 
         // Resolve working directory
-        String cwd = workingDir != null && !workingDir.isEmpty() 
-            ? workingDir 
-            : System.getProperty("user.dir");
+        String cwd = firstNonBlank(
+                workingDir,
+                AgentExecutionContext.getCurrentCwd(),
+                AgentExecutionContext.getCurrentProjectRoot(),
+                System.getProperty("user.dir")
+        );
 
         String safetyError = validateCommandSafety(command, cwd);
         if (safetyError != null) {

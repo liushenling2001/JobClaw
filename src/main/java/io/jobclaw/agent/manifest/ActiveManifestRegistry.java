@@ -53,7 +53,6 @@ public class ActiveManifestRegistry {
                 nullSafe(record.finalArtifactType()),
                 finalArtifactReady(record.finalArtifactPath()),
                 snapshot(firstItem(record, "running")),
-                snapshots(firstItems(record, "running", MAX_SCHEDULER_ITEMS)),
                 snapshot(firstItem(record, "pending")),
                 snapshots(firstItems(record, "pending", MAX_SCHEDULER_ITEMS)),
                 counts.total(),
@@ -303,7 +302,6 @@ public class ActiveManifestRegistry {
             String finalArtifactType,
             boolean finalArtifactReady,
             ActiveManifestItem runningItem,
-            List<ActiveManifestItem> runningQueue,
             ActiveManifestItem nextPendingItem,
             List<ActiveManifestItem> pendingQueue,
             int total,
@@ -325,8 +323,7 @@ public class ActiveManifestRegistry {
                     finalArtifactPath,
                     finalArtifactType,
                     finalArtifactReady,
-                    null,
-                    runningQueue,
+                    runningItem,
                     item,
                     pendingQueue,
                     total,
@@ -336,35 +333,6 @@ public class ActiveManifestRegistry {
                     failed,
                     updatedAt
             );
-        }
-
-        public ActiveManifestState withRunningItem(ActiveManifestItem item) {
-            return new ActiveManifestState(
-                    sessionKey,
-                    runId,
-                    manifestId,
-                    taskKey,
-                    schema,
-                    executionMode,
-                    artifactPath,
-                    finalArtifactPath,
-                    finalArtifactType,
-                    finalArtifactReady,
-                    item,
-                    runningQueue,
-                    null,
-                    pendingQueue,
-                    total,
-                    pending,
-                    running,
-                    done,
-                    failed,
-                    updatedAt
-            );
-        }
-
-        public List<ActiveManifestItem> runningQueue() {
-            return runningQueue != null ? runningQueue : List.of();
         }
 
         public List<ActiveManifestItem> pendingQueue() {

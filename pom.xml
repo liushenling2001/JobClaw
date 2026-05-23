@@ -38,12 +38,12 @@
         <mockito.version>5.14.2</mockito.version>
         <byte-buddy.version>1.17.8</byte-buddy.version>
         <poi.version>5.2.5</poi.version>
-        <commons-io.version>2.15.1</commons-io.version>
         <tika.version>2.9.2</tika.version>
         <frontend-maven-plugin.version>1.15.1</frontend-maven-plugin.version>
         <node.version>v20.19.0</node.version>
         <npm.version>10.8.2</npm.version>
         <skip.frontend>true</skip.frontend>
+        <skip.static.resources>false</skip.static.resources>
     </properties>
 
     <dependencies>
@@ -56,11 +56,6 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
-        </dependency>
-
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-webflux</artifactId>
         </dependency>
 
         <dependency>
@@ -87,12 +82,6 @@
             <artifactId>okhttp</artifactId>
             <version>${okhttp.version}</version>
         </dependency>
-        <dependency>
-            <groupId>com.squareup.okhttp3</groupId>
-            <artifactId>okhttp-sse</artifactId>
-            <version>${okhttp.version}</version>
-        </dependency>
-
         <!-- Cron Expression -->
         <dependency>
             <groupId>com.cronutils</groupId>
@@ -124,25 +113,20 @@
             <version>${jline.version}</version>
         </dependency>
 
-        <!-- Telegram -->
-        <dependency>
-            <groupId>org.telegram</groupId>
-            <artifactId>telegrambots</artifactId>
-            <version>6.8.0</version>
-        </dependency>
-
-        <!-- Discord JDA -->
-        <dependency>
-            <groupId>net.dv8tion</groupId>
-            <artifactId>JDA</artifactId>
-            <version>5.0.0-beta.20</version>
-        </dependency>
-
-        <!-- Spring AI - OpenAI Compatible (works with DashScope Coding Plan) -->
+        <!-- Spring AI model/client classes used by AgentLoop. Avoid the starter to skip OpenAI autoconfiguration. -->
         <dependency>
             <groupId>org.springframework.ai</groupId>
-            <artifactId>spring-ai-starter-model-openai</artifactId>
+            <artifactId>spring-ai-openai</artifactId>
             <version>${spring-ai.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-client-chat</artifactId>
+            <version>${spring-ai.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-webflux</artifactId>
         </dependency>
 
         <!-- Apache POI - Office Document Support (Word, Excel) -->
@@ -150,17 +134,20 @@
             <groupId>org.apache.poi</groupId>
             <artifactId>poi</artifactId>
             <version>${poi.version}</version>
+            <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.apache.poi</groupId>
             <artifactId>poi-ooxml</artifactId>
             <version>${poi.version}</version>
+            <scope>test</scope>
         </dependency>
         <!-- POI Scratchpad - Support for old Office formats (.doc, .xls) -->
         <dependency>
             <groupId>org.apache.poi</groupId>
             <artifactId>poi-scratchpad</artifactId>
             <version>${poi.version}</version>
+            <scope>test</scope>
         </dependency>
 
         <!-- Feishu/Lark Open Platform SDK -->
@@ -170,22 +157,24 @@
             <version>2.5.3</version>
         </dependency>
 
-        <!-- Apache Commons IO (required for POI 5.x) -->
-        <dependency>
-            <groupId>commons-io</groupId>
-            <artifactId>commons-io</artifactId>
-            <version>${commons-io.version}</version>
-        </dependency>
-
         <dependency>
             <groupId>org.apache.tika</groupId>
             <artifactId>tika-core</artifactId>
             <version>${tika.version}</version>
+            <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.apache.tika</groupId>
             <artifactId>tika-parsers-standard-package</artifactId>
             <version>${tika.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.apache.pdfbox</groupId>
+            <artifactId>pdfbox</artifactId>
+            <version>2.0.31</version>
+            <scope>test</scope>
         </dependency>
 
         <dependency>
@@ -310,9 +299,10 @@
                         <goals>
                             <goal>run</goal>
                         </goals>
-                        <configuration>
-                            <target>
-                                <delete dir="${project.build.outputDirectory}/static"/>
+                <configuration>
+                    <skip>${skip.static.resources}</skip>
+                    <target>
+                        <delete dir="${project.build.outputDirectory}/static"/>
                                 <copy todir="${project.build.outputDirectory}/static">
                                     <fileset dir="${project.basedir}/src/main/resources/static"/>
                                 </copy>
@@ -323,4 +313,133 @@
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <profile>
+            <id>cli</id>
+            <properties>
+                <skip.frontend>true</skip.frontend>
+                <skip.static.resources>true</skip.static.resources>
+            </properties>
+            <build>
+                <finalName>jobclaw-cli</finalName>
+                <resources>
+                    <resource>
+                        <directory>src/main/resources</directory>
+                        <excludes>
+                            <exclude>static/**</exclude>
+                        </excludes>
+                    </resource>
+                </resources>
+                <plugins>
+                    <plugin>
+                        <groupId>org.springframework.boot</groupId>
+                        <artifactId>spring-boot-maven-plugin</artifactId>
+                        <configuration>
+                            <mainClass>io.jobclaw.JobClawApplication</mainClass>
+                            <excludeGroupIds>com.larksuite.oapi,com.google.guava,io.netty,io.projectreactor.netty,org.apache.tika,org.apache.pdfbox,org.apache.poi,org.apache.xmlbeans,org.telegram,net.dv8tion,org.glassfish.jersey,org.glassfish.hk2,org.glassfish.grizzly,club.minnced,com.neovisionaries</excludeGroupIds>
+                            <excludes>
+                                <exclude>
+                                    <groupId>org.springframework.boot</groupId>
+                                    <artifactId>spring-boot-starter-web</artifactId>
+                                </exclude>
+                                <exclude>
+                                    <groupId>org.springframework.boot</groupId>
+                                    <artifactId>spring-boot-starter-tomcat</artifactId>
+                                </exclude>
+                                <exclude>
+                                    <groupId>org.apache.tomcat.embed</groupId>
+                                    <artifactId>tomcat-embed-core</artifactId>
+                                </exclude>
+                                <exclude>
+                                    <groupId>org.apache.tomcat.embed</groupId>
+                                    <artifactId>tomcat-embed-el</artifactId>
+                                </exclude>
+                                <exclude>
+                                    <groupId>org.apache.tomcat.embed</groupId>
+                                    <artifactId>tomcat-embed-websocket</artifactId>
+                                </exclude>
+                                <exclude>
+                                    <groupId>org.springframework</groupId>
+                                    <artifactId>spring-webmvc</artifactId>
+                                </exclude>
+                                <exclude>
+                                    <groupId>org.springframework.boot</groupId>
+                                    <artifactId>spring-boot-starter-webflux</artifactId>
+                                </exclude>
+                                <exclude>
+                                    <groupId>org.springframework.boot</groupId>
+                                    <artifactId>spring-boot-starter-reactor-netty</artifactId>
+                                </exclude>
+                                <exclude>
+                                    <groupId>io.projectreactor.netty</groupId>
+                                    <artifactId>reactor-netty-http</artifactId>
+                                </exclude>
+                                <exclude>
+                                    <groupId>io.projectreactor.netty</groupId>
+                                    <artifactId>reactor-netty-core</artifactId>
+                                </exclude>
+                                <exclude>
+                                    <groupId>io.netty</groupId>
+                                    <artifactId>*</artifactId>
+                                </exclude>
+                                <exclude>
+                                    <groupId>org.telegram</groupId>
+                                    <artifactId>telegrambots</artifactId>
+                                </exclude>
+                                <exclude>
+                                    <groupId>org.telegram</groupId>
+                                    <artifactId>telegrambots-meta</artifactId>
+                                </exclude>
+                                <exclude>
+                                    <groupId>net.dv8tion</groupId>
+                                    <artifactId>JDA</artifactId>
+                                </exclude>
+                                <exclude>
+                                    <groupId>com.larksuite.oapi</groupId>
+                                    <artifactId>oapi-sdk</artifactId>
+                                </exclude>
+                                <exclude>
+                                    <groupId>org.apache.poi</groupId>
+                                    <artifactId>poi</artifactId>
+                                </exclude>
+                                <exclude>
+                                    <groupId>org.apache.poi</groupId>
+                                    <artifactId>poi-ooxml</artifactId>
+                                </exclude>
+                                <exclude>
+                                    <groupId>org.apache.poi</groupId>
+                                    <artifactId>poi-ooxml-lite</artifactId>
+                                </exclude>
+                                <exclude>
+                                    <groupId>org.apache.poi</groupId>
+                                    <artifactId>poi-scratchpad</artifactId>
+                                </exclude>
+                                <exclude>
+                                    <groupId>org.apache.tika</groupId>
+                                    <artifactId>tika-core</artifactId>
+                                </exclude>
+                                <exclude>
+                                    <groupId>org.apache.tika</groupId>
+                                    <artifactId>*</artifactId>
+                                </exclude>
+                                <exclude>
+                                    <groupId>org.apache.pdfbox</groupId>
+                                    <artifactId>*</artifactId>
+                                </exclude>
+                                <exclude>
+                                    <groupId>org.apache.xmlbeans</groupId>
+                                    <artifactId>xmlbeans</artifactId>
+                                </exclude>
+                                <exclude>
+                                    <groupId>org.apache.commons</groupId>
+                                    <artifactId>commons-compress</artifactId>
+                                </exclude>
+                            </excludes>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>

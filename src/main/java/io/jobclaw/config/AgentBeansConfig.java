@@ -30,6 +30,8 @@ import io.jobclaw.providers.HTTPProvider;
 import io.jobclaw.providers.LLMProvider;
 import io.jobclaw.retrieval.RetrievalService;
 import io.jobclaw.retrieval.SqliteRetrievalService;
+import io.jobclaw.run.FileRunStore;
+import io.jobclaw.run.RunStore;
 import io.jobclaw.session.SessionManager;
 import io.jobclaw.skills.SkillsLoader;
 import io.jobclaw.skills.SkillsService;
@@ -40,10 +42,13 @@ import io.jobclaw.tools.*;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.Environment;
 
 import java.io.IOException;
+import java.util.Arrays;
 import java.nio.file.Paths;
 
 /**
@@ -172,6 +177,12 @@ public class AgentBeansConfig {
 
     @Bean
     @ConditionalOnMissingBean
+    public RunStore runStore(Config config) {
+        return new FileRunStore(Paths.get(config.getWorkspacePath()));
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
     public ContextAssembler contextAssembler(Config config,
                                              SessionManager sessionManager,
                                              RetrievalService retrievalService) {
@@ -255,10 +266,11 @@ public class AgentBeansConfig {
 
     @Bean
     public ToolCallback[] allToolCallbacks(
+            Environment environment,
             FileTools fileTools,
             RunCommandTool runCommandTool,
             SkillsTools skillsTools,
-            MessageTool messageTool,
+            ObjectProvider<MessageTool> messageToolProvider,
             CronTool cronTool,
             MCPTool mcpTool,
             TokenUsageTool tokenUsageTool,
@@ -275,12 +287,51 @@ public class AgentBeansConfig {
             CollaborateTool collaborateTool) {
 
         // SpawnTool, CollaborateTool 使用 @Lazy 注入 AgentOrchestrator，避免循环依赖
+        boolean cliProfile = Arrays.asList(environment.getActiveProfiles()).contains("cli");
+
+        Object[] toolObjects = cliProfile
+                ? new Object[]{
+                        fileTools,
+                        runCommandTool,
+                        skillsTools,
+                        cronTool,
+                        mcpTool,
+                        tokenUsageTool,
+                        webSearchTool,
+                        webFetchTool,
+                        execTool,
+                        sharedBoardTool,
+                        agentCatalogTool,
+                        memoryTool,
+                        contextRefTool,
+                        manifestTool,
+                        completionTool,
+                        spawnTool,
+                        collaborateTool
+                }
+                : new Object[]{
+                        fileTools,
+                        runCommandTool,
+                        skillsTools,
+                        messageToolProvider.getObject(),
+                        cronTool,
+                        mcpTool,
+                        tokenUsageTool,
+                        webSearchTool,
+                        webFetchTool,
+                        execTool,
+                        sharedBoardTool,
+                        agentCatalogTool,
+                        memoryTool,
+                        contextRefTool,
+                        manifestTool,
+                        completionTool,
+                        spawnTool,
+                        collaborateTool
+                };
 
         return MethodToolCallbackProvider.builder()
-                .toolObjects(fileTools, runCommandTool, skillsTools, messageTool, cronTool,
-                            mcpTool, tokenUsageTool, webSearchTool, webFetchTool, execTool,
-                            sharedBoardTool,
-                            agentCatalogTool, memoryTool, contextRefTool, manifestTool, completionTool, spawnTool, collaborateTool)
+                .toolObjects(toolObjects)
                 .build()
                 .getToolCallbacks();
     }

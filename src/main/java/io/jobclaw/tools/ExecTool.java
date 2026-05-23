@@ -1,5 +1,6 @@
 package io.jobclaw.tools;
 
+import io.jobclaw.agent.AgentExecutionContext;
 import io.jobclaw.config.Config;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
@@ -51,9 +52,12 @@ public class ExecTool {
         }
 
         // Resolve working directory
-        String cwd = workingDir != null && !workingDir.isEmpty() 
-            ? workingDir 
-            : System.getProperty("user.dir");
+        String cwd = firstNonBlank(
+                workingDir,
+                AgentExecutionContext.getCurrentCwd(),
+                AgentExecutionContext.getCurrentProjectRoot(),
+                System.getProperty("user.dir")
+        );
 
         // Security warning
         System.out.println("[ExecTool] WARNING: Executing command without SecurityGuard: " + command);
@@ -209,6 +213,15 @@ public class ExecTool {
                     + "\n... (truncated, " + remaining + " more characters)";
         }
         return result;
+    }
+
+    private String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return null;
     }
 
     /**

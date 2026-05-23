@@ -156,44 +156,4 @@ class ActiveManifestRegistryTest {
                 .contains("currentRunningItem: b | running | B"));
     }
 
-    @Test
-    void shouldExposeMultipleRunningAndPendingItemsForManagedRunnerSelection() {
-        AgentExecutionContext.setCurrentContext(new AgentExecutionContext.ExecutionScope(
-                "session-queue", event -> {}, "run-queue", null, null, null, null));
-        ActiveManifestRegistry registry = new ActiveManifestRegistry();
-        LinkedHashMap<String, ManifestTool.ManifestItem> items = new LinkedHashMap<>();
-        items.put("a", new ManifestTool.ManifestItem(
-                "a", "A", "running", null, null, null, null, Instant.now(), Instant.now()));
-        items.put("b", new ManifestTool.ManifestItem(
-                "b", "B", "running", null, null, null, null, Instant.now(), Instant.now()));
-        items.put("c", new ManifestTool.ManifestItem(
-                "c", "C", "pending", null, null, null, null, Instant.now(), Instant.now()));
-        items.put("d", new ManifestTool.ManifestItem(
-                "d", "D", "pending", null, null, null, null, Instant.now(), Instant.now()));
-        ManifestTool.ManifestRecord record = new ManifestTool.ManifestRecord(
-                "mf-queue",
-                "session-queue",
-                "run-queue",
-                "task",
-                "fingerprint",
-                null,
-                null,
-                "managed",
-                null,
-                null,
-                items,
-                Instant.now(),
-                Instant.now()
-        );
-
-        registry.update(record);
-
-        ActiveManifestRegistry.ActiveManifestState state =
-                registry.findManagedBlockingState("session-queue", "run-queue").orElseThrow();
-        assertEquals(2, state.runningQueue().size());
-        assertEquals(2, state.pendingQueue().size());
-        assertEquals("a", state.runningQueue().get(0).id());
-        assertEquals("c", state.pendingQueue().get(0).id());
-    }
-
 }

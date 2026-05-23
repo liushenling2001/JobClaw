@@ -1,11 +1,11 @@
 package io.jobclaw.cli;
 
-import io.jobclaw.SpringContext;
+import org.springframework.beans.factory.ObjectProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -17,29 +17,43 @@ public class CliCommandRegistry {
 
     private static final Logger logger = LoggerFactory.getLogger(CliCommandRegistry.class);
 
-    private final Map<String, CliCommand> commands = new HashMap<>();
+    private final Map<String, ObjectProvider<? extends CliCommand>> commands = new LinkedHashMap<>();
 
     /**
      * 构造函数，注入所有 CLI 命令 Bean 并注册。
      */
     public CliCommandRegistry(
-            OnboardCommand onboardCommand,
-            StatusCommand statusCommand,
-            AgentCommand agentCommand,
-            GatewayCommand gatewayCommand,
-            SkillsCommand skillsCommand,
-            McpCommand mcpCommand,
-            DemoCommand demoCommand,
-            VersionCommand versionCommand) {
+            ObjectProvider<OnboardCommand> onboardCommand,
+            ObjectProvider<StatusCommand> statusCommand,
+            ObjectProvider<AgentCommand> agentCommand,
+            ObjectProvider<GatewayCommand> gatewayCommand,
+            ObjectProvider<SkillsCommand> skillsCommand,
+            ObjectProvider<McpCommand> mcpCommand,
+            ObjectProvider<DemoCommand> demoCommand,
+            ObjectProvider<VersionCommand> versionCommand,
+            ObjectProvider<AgenticCliCommand> agenticCliCommand,
+            ObjectProvider<RunCommand> runCommand,
+            ObjectProvider<RunsCommand> runsCommand,
+            ObjectProvider<LogsCommand> logsCommand,
+            ObjectProvider<AttachCommand> attachCommand,
+            ObjectProvider<ArtifactsCommand> artifactsCommand,
+            ObjectProvider<ResumeCommand> resumeCommand) {
 
-        register(onboardCommand);
-        register(statusCommand);
-        register(agentCommand);
-        register(gatewayCommand);
-        register(skillsCommand);
-        register(mcpCommand);
-        register(demoCommand);
-        register(versionCommand);
+        register("shell", agenticCliCommand);
+        register("run", runCommand);
+        register("runs", runsCommand);
+        register("logs", logsCommand);
+        register("attach", attachCommand);
+        register("artifacts", artifactsCommand);
+        register("resume", resumeCommand);
+        register("onboard", onboardCommand);
+        register("status", statusCommand);
+        register("agent", agentCommand);
+        register("gateway", gatewayCommand);
+        register("skills", skillsCommand);
+        register("mcp", mcpCommand);
+        register("demo", demoCommand);
+        register("version", versionCommand);
 
         logger.info("CLI 命令注册完成，共 {} 个命令", commands.size());
     }
@@ -47,16 +61,17 @@ public class CliCommandRegistry {
     /**
      * 注册单个命令。
      */
-    private void register(CliCommand command) {
-        commands.put(command.name(), command);
-        logger.debug("注册 CLI 命令：{}", command.name());
+    private void register(String name, ObjectProvider<? extends CliCommand> command) {
+        commands.put(name, command);
+        logger.debug("注册 CLI 命令：{}", name);
     }
 
     /**
      * 根据名称获取命令。
      */
     public CliCommand getCommand(String name) {
-        return commands.get(name);
+        ObjectProvider<? extends CliCommand> command = commands.get(name);
+        return command == null ? null : command.getObject();
     }
 
     /**
@@ -76,9 +91,17 @@ public class CliCommandRegistry {
         System.out.println("========================================");
         System.out.println();
         System.out.println("Usage:");
+        System.out.println("  jobclaw                         # interactive agentic CLI");
+        System.out.println("  jobclaw \"task\"                  # run a task in current project");
         System.out.println("  java -jar jobclaw.jar [command] [options]");
         System.out.println();
         System.out.println("Commands:");
+        System.out.println("  run       - Run an agentic task");
+        System.out.println("  runs      - List recent task runs");
+        System.out.println("  logs      - Show run event logs");
+        System.out.println("  attach    - Replay a run's events");
+        System.out.println("  artifacts - List run artifacts");
+        System.out.println("  resume    - Resume a previous run");
         System.out.println("  onboard   - Initialize configuration and workspace");
         System.out.println("  agent     - Interact with Agent (CLI mode)");
         System.out.println("  gateway   - Start gateway service (all channels)");

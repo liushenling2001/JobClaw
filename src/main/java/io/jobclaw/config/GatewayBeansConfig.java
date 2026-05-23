@@ -7,6 +7,7 @@ import io.jobclaw.channels.ChannelManager;
 import io.jobclaw.gateway.GatewayService;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Profile;
 
 import java.util.List;
 
@@ -32,6 +33,7 @@ public class GatewayBeansConfig {
      * 所有依赖通过 Spring 注入
      */
     @Bean
+    @Profile("!cli")
     public GatewayService gatewayService(Config config,
                                          MessageBus messageBus,
                                          io.jobclaw.cron.CronService cronService,

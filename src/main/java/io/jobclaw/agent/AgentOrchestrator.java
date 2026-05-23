@@ -40,6 +40,15 @@ public class AgentOrchestrator {
     public String processWithRole(String sessionKey,
                                   String userContent,
                                   AgentRole role,
+                                  AgentExecutionOptions executionOptions,
+                                  Consumer<ExecutionEvent> eventCallback) {
+        AgentLoop agent = agentRegistry.getOrCreateAgent(role, sessionKey);
+        return agent.process(sessionKey, userContent, role, executionOptions, eventCallback);
+    }
+
+    public String processWithRole(String sessionKey,
+                                  String userContent,
+                                  AgentRole role,
                                   Consumer<ExecutionEvent> eventCallback) {
         AgentLoop agent = agentRegistry.getOrCreateAgent(role, sessionKey);
         return eventCallback != null
@@ -50,7 +59,16 @@ public class AgentOrchestrator {
     public String processWithDefinition(String sessionKey,
                                         String userContent,
                                         AgentDefinition definition) {
-        return processWithDefinition(sessionKey, userContent, definition, null);
+        return processWithDefinition(sessionKey, userContent, definition, (Consumer<ExecutionEvent>) null);
+    }
+
+    public String processWithDefinition(String sessionKey,
+                                        String userContent,
+                                        AgentDefinition definition,
+                                        AgentExecutionOptions executionOptions,
+                                        Consumer<ExecutionEvent> eventCallback) {
+        AgentLoop agent = agentRegistry.getOrCreateAgent(definition, sessionKey);
+        return agent.processWithDefinition(sessionKey, userContent, definition, executionOptions, eventCallback);
     }
 
     public String processWithDefinition(String sessionKey,
@@ -64,7 +82,19 @@ public class AgentOrchestrator {
     }
 
     public String process(String sessionKey, String userContent) {
-        return process(sessionKey, userContent, null);
+        return process(sessionKey, userContent, (Consumer<ExecutionEvent>) null);
+    }
+
+    public String process(String sessionKey,
+                          String userContent,
+                          AgentExecutionOptions executionOptions,
+                          Consumer<ExecutionEvent> eventCallback) {
+        AgentRole specifiedRole = extractSpecifiedRole(userContent);
+        if (specifiedRole != null) {
+            return processWithRole(sessionKey, userContent, specifiedRole, executionOptions, eventCallback);
+        }
+        AgentLoop agent = agentRegistry.getOrCreateAgent(AgentRole.ASSISTANT, sessionKey);
+        return agent.process(sessionKey, userContent, executionOptions, eventCallback);
     }
 
     public String process(String sessionKey, String userContent, Consumer<ExecutionEvent> eventCallback) {
