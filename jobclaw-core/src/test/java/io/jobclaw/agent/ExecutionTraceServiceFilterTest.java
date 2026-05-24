@@ -1,7 +1,6 @@
 package io.jobclaw.agent;
 
 import org.junit.jupiter.api.Test;
-import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
 import java.util.Map;
@@ -66,15 +65,13 @@ class ExecutionTraceServiceFilterTest {
         assertEquals(0, emitter.completeWithErrorCalls);
     }
 
-    private static class BrokenEmitter extends SseEmitter {
+    public static class BrokenEmitter {
         private int completeWithErrorCalls;
 
-        @Override
-        public void send(SseEventBuilder builder) throws IOException {
+        public void send(Object data) throws IOException {
             throw new IOException("client disconnected");
         }
 
-        @Override
         public void completeWithError(Throwable ex) {
             completeWithErrorCalls++;
         }

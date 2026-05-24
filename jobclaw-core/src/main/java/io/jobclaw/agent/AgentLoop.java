@@ -1686,46 +1686,6 @@ public class AgentLoop {
         int fullResponseStartLength = fullResponse != null ? fullResponse.length() : 0;
         AtomicInteger lastDraftCheckpoint = new AtomicInteger(fullResponse != null ? fullResponse.length() : 0);
 
-        if (shouldDisableDeepSeekThinking(executionClientBundle.providerName(), executionClientBundle.model())) {
-            try {
-                String content = executionClientBundle.chatClient().prompt()
-                        .messages(promptMessages)
-                        .toolCallbacks(tools)
-                        .options(options)
-                        .call()
-                        .content();
-                String delta = reasoningContentFilter.sanitizeFinal(content != null ? content : "");
-                if (!delta.isEmpty()) {
-                    attemptResponse.append(delta);
-                    fullResponse.append(delta);
-                    if (checkpointAssistantDraft) {
-                        sessionManager.saveAssistantDraft(sessionKey, fullResponse.toString());
-                    }
-                    if (eventCallback != null) {
-                        eventCallback.accept(new ExecutionEvent(
-                                sessionKey,
-                                ExecutionEvent.EventType.THINK_STREAM,
-                                delta
-                        ));
-                    }
-                }
-                return attemptResponse.toString();
-            } catch (RuntimeException e) {
-                if (containsManagedManifestTakeoverSignal(e)) {
-                    logger.info("managed manifest takeover session={} attemptChars={}", sessionKey, attemptResponse.length());
-                    return attemptResponse.toString();
-                }
-                WebClientResponseException responseException = findWebClientResponseException(e);
-                if (responseException != null) {
-                    logger.warn("LLM HTTP error session={} status={} body={}",
-                            sessionKey,
-                            responseException.getStatusCode(),
-                            responseException.getResponseBodyAsString());
-                }
-                throw e;
-            }
-        }
-
         Flux<String> contentStream = executionClientBundle.chatClient().prompt()
                 .messages(promptMessages)
                 .toolCallbacks(tools)

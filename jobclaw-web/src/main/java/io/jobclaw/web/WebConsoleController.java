@@ -305,7 +305,7 @@ public class WebConsoleController {
             }
         });
 
-        return ResponseEntity.ok(emitter);
+        return streamingResponse(emitter);
     }
 
     /**
@@ -344,7 +344,15 @@ public class WebConsoleController {
             }
         });
 
-        return ResponseEntity.ok(emitter);
+        return streamingResponse(emitter);
+    }
+
+    private ResponseEntity<SseEmitter> streamingResponse(SseEmitter emitter) {
+        return ResponseEntity.ok()
+                .header("Cache-Control", "no-cache, no-transform")
+                .header("Connection", "keep-alive")
+                .header("X-Accel-Buffering", "no")
+                .body(emitter);
     }
 
     private boolean safeSend(SseEmitter emitter,

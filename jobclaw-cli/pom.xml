@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.leavesfly</groupId>
+        <artifactId>jobclaw-parent</artifactId>
+        <version>1.0.0</version>
+    </parent>
+
+    <artifactId>jobclaw-cli</artifactId>
+    <name>JobClaw CLI</name>
+
+    <dependencies>
+        <dependency>
+            <groupId>io.leavesfly</groupId>
+            <artifactId>jobclaw-core</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.jline</groupId>
+            <artifactId>jline</artifactId>
+            <version>${jline.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.jline</groupId>
+            <artifactId>jline-terminal</artifactId>
+            <version>${jline.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.jline</groupId>
+            <artifactId>jline-reader</artifactId>
+            <version>${jline.version}</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <finalName>jobclaw-cli</finalName>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <mainClass>io.jobclaw.JobClawApplication</mainClass>
+                    <excludeGroupIds>com.larksuite.oapi,com.google.guava,io.netty,io.projectreactor.netty,org.apache.tika,org.apache.pdfbox,org.apache.poi,org.apache.xmlbeans,org.telegram,net.dv8tion,org.glassfish.jersey,org.glassfish.hk2,org.glassfish.grizzly,club.minnced,com.neovisionaries</excludeGroupIds>
+                    <excludes>
+                        <exclude>
+                            <groupId>org.springframework.boot</groupId>
+                            <artifactId>spring-boot-starter-web</artifactId>
+                        </exclude>
+                        <exclude>
+                            <groupId>org.springframework.boot</groupId>
+                            <artifactId>spring-boot-starter-tomcat</artifactId>
+                        </exclude>
+                        <exclude>
+                            <groupId>org.apache.tomcat.embed</groupId>
+                            <artifactId>tomcat-embed-core</artifactId>
+                        </exclude>
+                        <exclude>
+                            <groupId>org.apache.tomcat.embed</groupId>
+                            <artifactId>tomcat-embed-el</artifactId>
+                        </exclude>
+                        <exclude>
+                            <groupId>org.apache.tomcat.embed</groupId>
+                            <artifactId>tomcat-embed-websocket</artifactId>
+                        </exclude>
+                        <exclude>
+                            <groupId>org.springframework</groupId>
+                            <artifactId>spring-webmvc</artifactId>
+                        </exclude>
+                        <exclude>
+                            <groupId>org.springframework.boot</groupId>
+                            <artifactId>spring-boot-starter-webflux</artifactId>
+                        </exclude>
+                        <exclude>
+                            <groupId>org.springframework.boot</groupId>
+                            <artifactId>spring-boot-starter-reactor-netty</artifactId>
+                        </exclude>
+                        <exclude>
+                            <groupId>io.projectreactor.netty</groupId>
+                            <artifactId>reactor-netty-http</artifactId>
+                        </exclude>
+                        <exclude>
+                            <groupId>io.projectreactor.netty</groupId>
+                            <artifactId>reactor-netty-core</artifactId>
+                        </exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

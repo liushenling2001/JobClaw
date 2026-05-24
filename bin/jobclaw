@@ -2,7 +2,7 @@
 set -eu
 
 APP_HOME=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-JAR="$APP_HOME/target/jobclaw-cli.jar"
+JAR="$APP_HOME/jobclaw-cli/target/jobclaw-cli.jar"
 
 case "$JAR" in
   /mnt/*)

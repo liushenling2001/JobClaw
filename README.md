@@ -191,7 +191,10 @@ If the runtime or models are missing, the frontend disables voice controls and r
 
 ```bash
 mvn clean test
-mvn -DskipTests package
+mvn -pl jobclaw-cli -am -DskipTests package
+mvn -pl jobclaw-web -am -DskipTests package
 ```
+
+The Maven build is split into `jobclaw-core`, `jobclaw-cli`, and `jobclaw-web`. The CLI artifact is written to `jobclaw-cli/target/jobclaw-cli.jar`; the web console artifact is written to `jobclaw-web/target/jobclaw-web.jar`.
 
 The test setup pins ByteBuddy and runs Mockito as an explicit test javaagent so tests work on newer JDKs.
