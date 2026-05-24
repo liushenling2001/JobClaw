@@ -4,4 +4,16 @@ set -eu
 APP_HOME=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 JAR="$APP_HOME/target/jobclaw-cli.jar"
 
+case "$JAR" in
+  /mnt/*)
+    CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/jobclaw"
+    mkdir -p "$CACHE_DIR"
+    CACHED_JAR="$CACHE_DIR/jobclaw-cli.jar"
+    if [ ! -f "$CACHED_JAR" ] || [ "$JAR" -nt "$CACHED_JAR" ]; then
+      cp "$JAR" "$CACHED_JAR"
+    fi
+    JAR="$CACHED_JAR"
+    ;;
+esac
+
 exec java --sun-misc-unsafe-memory-access=allow --enable-native-access=ALL-UNNAMED -jar "$JAR" "$@"

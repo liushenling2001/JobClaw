@@ -7,31 +7,42 @@ public class TerminalEventRenderer {
     private static final String DIM = "\033[2m";
     private static final String USER_BG = "\033[48;5;238m";
     private final boolean ansi;
+    private final boolean workingInputBox;
     private boolean statusActive;
+    private boolean boxActive;
+    private int toolCount;
 
     public TerminalEventRenderer() {
-        this(System.console() != null);
+        this(System.console() != null, false);
     }
 
     public TerminalEventRenderer(boolean ansi) {
+        this(ansi, false);
+    }
+
+    public TerminalEventRenderer(boolean ansi, boolean workingInputBox) {
         this.ansi = ansi;
+        this.workingInputBox = workingInputBox;
     }
 
     public void renderUser(String task) {
-        clearStatus();
+        clearWorkingArea();
         String line = "> " + (task == null ? "" : task.trim());
         System.out.println();
         System.out.println(color(USER_BG, padRight(line, terminalWidth())));
+        if (workingInputBox) {
+            renderWorkingInputBox("");
+        }
     }
 
     public void renderRunSummary(String status, String runId) {
-        clearStatus();
+        clearWorkingArea();
         System.out.println();
         System.out.println(dim("run " + runId + " " + status));
     }
 
     public void renderArtifacts(Iterable<String> paths) {
-        clearStatus();
+        clearWorkingArea();
         System.out.println();
         System.out.println(dim("artifacts"));
         for (String path : paths) {
@@ -51,16 +62,18 @@ public class TerminalEventRenderer {
                 // Stream chunks are persisted to run events; the terminal prints the final response once.
             }
             case THINK_END -> {
-                clearStatus();
+                status("");
             }
             case TOOL_START -> {
                 status(toolName(event) + " running");
             }
             case TOOL_END -> {
-                status(toolName(event) + " done" + durationSuffix(event));
+                toolCount++;
+                status("tool #" + toolCount + " " + toolName(event) + " done" + durationSuffix(event)
+                        + "  (/tool last " + toolCount + " to expand)");
             }
             case TOOL_ERROR, ERROR -> {
-                clearStatus();
+                clearWorkingArea();
                 System.out.println();
                 System.out.println("! " + compact(event.getContent()));
             }
@@ -68,7 +81,7 @@ public class TerminalEventRenderer {
                 // Keep command output discoverable through `jobclaw logs`; avoid flooding the live CLI.
             }
             case FINAL_RESPONSE -> {
-                clearStatus();
+                clearWorkingArea();
                 if (!event.getContent().isBlank()) {
                     renderAssistant(event.getContent());
                 }
@@ -98,6 +111,12 @@ public class TerminalEventRenderer {
 
     private void status(String text) {
         String value = dim("  " + text);
+        if (workingInputBox && boxActive && ansi) {
+            System.out.print("\033[4A\r\033[2K" + value + "\033[4B\r");
+            System.out.flush();
+            statusActive = true;
+            return;
+        }
         if (ansi) {
             System.out.print("\r\033[2K" + value);
             System.out.flush();
@@ -107,12 +126,35 @@ public class TerminalEventRenderer {
         System.out.println(value);
     }
 
-    private void clearStatus() {
+    private void clearWorkingArea() {
+        if (workingInputBox && boxActive && ansi) {
+            System.out.print("\033[4A");
+            for (int i = 0; i < 4; i++) {
+                System.out.print("\r\033[2K");
+                if (i < 3) {
+                    System.out.print("\033[1B");
+                }
+            }
+            System.out.print("\r");
+            System.out.flush();
+            boxActive = false;
+            statusActive = false;
+            return;
+        }
         if (ansi && statusActive) {
             System.out.print("\r\033[2K");
             System.out.flush();
             statusActive = false;
         }
+    }
+
+    private void renderWorkingInputBox(String status) {
+        int width = terminalWidth();
+        System.out.println(dim(status == null ? "" : status));
+        System.out.println("─".repeat(width));
+        System.out.println("> ");
+        System.out.println("─".repeat(width));
+        boxActive = ansi;
     }
 
     private String toolName(ExecutionEvent event) {

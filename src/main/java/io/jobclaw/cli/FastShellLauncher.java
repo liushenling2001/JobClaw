@@ -1,6 +1,7 @@
 package io.jobclaw.cli;
 
 import io.jobclaw.JobClawApplication;
+import io.jobclaw.agent.ExecutionEvent;
 import io.jobclaw.config.Config;
 import io.jobclaw.config.ConfigLoader;
 import io.jobclaw.run.RunRecord;
@@ -21,6 +22,8 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
@@ -59,7 +62,8 @@ public final class FastShellLauncher {
                     .terminal(terminal)
                     .appName("jobclaw")
                     .completer(new StringsCompleter(List.of(
-                            "/status", "/runs", "/attach", "/logs", "/artifacts", "/resume", "/help", "/exit", "/quit"
+                            "/status", "/runs", "/attach", "/logs", "/artifacts", "/tools", "/tool",
+                            "/resume", "/help", "/exit", "/quit"
                     )))
                     .variable(LineReader.HISTORY_FILE, historyFile())
                     .build();
@@ -152,7 +156,8 @@ public final class FastShellLauncher {
                 continue;
             }
 
-            runCommand.executeTask(input, false, true, session.sessionKey());
+            RunRecord record = runCommand.runTask(input, false, true, session.sessionKey());
+            session.setLastRunId(record.getRunId());
             terminal.writer().println();
             terminal.flush();
         }
@@ -175,6 +180,8 @@ public final class FastShellLauncher {
                 terminal.writer().println("/status       show recent runs");
                 terminal.writer().println("/runs         show more recent runs");
                 terminal.writer().println("/logs <id>    show persisted run events");
+                terminal.writer().println("/tools [id]   list collapsed tool calls");
+                terminal.writer().println("/tool [id] <n> expand a tool result");
                 terminal.writer().println("/attach <id>  replay a run");
                 terminal.writer().println("/resume       choose a recent conversation");
                 terminal.writer().println("/resume <id>  attach to a previous conversation");
@@ -204,6 +211,14 @@ public final class FastShellLauncher {
                             terminal.writer().println(event.getTimestamp() + " " + event.getType() + " " + summarize(event.getContent())));
                 }
                 terminal.flush();
+                return false;
+            }
+            case "/tools" -> {
+                listTools(rest, terminal, runService, session);
+                return false;
+            }
+            case "/tool" -> {
+                showTool(rest, terminal, runService, session);
                 return false;
             }
             case "/artifacts" -> {
@@ -284,6 +299,7 @@ public final class FastShellLauncher {
         }
 
         session.setSessionKey(selected.getSessionKey());
+        session.setLastRunId(selected.getRunId());
         printSection(terminal, "conversation");
         terminal.writer().println("attached " + selected.getRunId() + "  " + selected.getStatus());
         terminal.writer().println("session  " + selected.getSessionKey());
@@ -293,6 +309,123 @@ public final class FastShellLauncher {
             terminal.writer().println("• " + summarize(selected.getFinalResponse()));
         }
         terminal.flush();
+    }
+
+    private static void listTools(String runId,
+                                  Terminal terminal,
+                                  RunService runService,
+                                  ShellSession session) throws Exception {
+        String targetRunId = firstNonBlank(runId, session.lastRunId());
+        printSection(terminal, "tools");
+        if (targetRunId == null || targetRunId.isBlank()) {
+            terminal.writer().println("usage: /tools <runId>");
+            terminal.flush();
+            return;
+        }
+        List<ToolCallView> tools = toolCalls(runService, targetRunId);
+        if (tools.isEmpty()) {
+            terminal.writer().println("(no tool calls)");
+        } else {
+            for (ToolCallView tool : tools) {
+                terminal.writer().println("%2d. %-18s %-7s %s".formatted(
+                        tool.index(),
+                        tool.name(),
+                        tool.status(),
+                        summarize(tool.output())
+                ));
+            }
+            terminal.writer().println();
+            terminal.writer().println("Use /tool " + targetRunId + " <n> to expand, or /tool <n> for the last run.");
+        }
+        terminal.flush();
+    }
+
+    private static void showTool(String args,
+                                 Terminal terminal,
+                                 RunService runService,
+                                 ShellSession session) throws Exception {
+        String[] parts = args == null || args.isBlank() ? new String[0] : args.split("\\s+");
+        String runId;
+        String indexText;
+        if (parts.length == 1) {
+            runId = session.lastRunId();
+            indexText = parts[0];
+        } else if (parts.length >= 2) {
+            runId = parts[0];
+            indexText = parts[1];
+        } else {
+            runId = null;
+            indexText = null;
+        }
+        printSection(terminal, "tool result");
+        if (runId == null || runId.isBlank() || indexText == null || indexText.isBlank()) {
+            terminal.writer().println("usage: /tool [runId] <n>");
+            terminal.flush();
+            return;
+        }
+        int index;
+        try {
+            index = Integer.parseInt(indexText);
+        } catch (NumberFormatException e) {
+            terminal.writer().println("invalid tool index: " + indexText);
+            terminal.flush();
+            return;
+        }
+        List<ToolCallView> tools = toolCalls(runService, runId);
+        if (index < 1 || index > tools.size()) {
+            terminal.writer().println("tool index out of range: " + index);
+            terminal.flush();
+            return;
+        }
+        ToolCallView tool = tools.get(index - 1);
+        terminal.writer().println(tool.name() + "  " + tool.status());
+        if (tool.request() != null && !tool.request().isBlank()) {
+            terminal.writer().println();
+            terminal.writer().println("request:");
+            terminal.writer().println(tool.request());
+        }
+        if (tool.output() != null && !tool.output().isBlank()) {
+            terminal.writer().println();
+            terminal.writer().println("result:");
+            terminal.writer().println(tool.output());
+        }
+        terminal.flush();
+    }
+
+    private static List<ToolCallView> toolCalls(RunService runService, String runId) throws Exception {
+        List<ExecutionEvent> events = runService.readEvents(runId, 0);
+        LinkedHashMap<String, MutableToolCall> calls = new LinkedHashMap<>();
+        for (ExecutionEvent event : events) {
+            if (event.getType() != ExecutionEvent.EventType.TOOL_START
+                    && event.getType() != ExecutionEvent.EventType.TOOL_END
+                    && event.getType() != ExecutionEvent.EventType.TOOL_OUTPUT
+                    && event.getType() != ExecutionEvent.EventType.TOOL_ERROR) {
+                continue;
+            }
+            String toolId = stringValue(event.getMetadata().get("toolId"));
+            if (toolId == null || toolId.isBlank()) {
+                toolId = firstNonBlank(stringValue(event.getMetadata().get("toolName")), "tool") + "-" + calls.size();
+            }
+            MutableToolCall call = calls.computeIfAbsent(toolId, id -> new MutableToolCall());
+            call.name = firstNonBlank(stringValue(event.getMetadata().get("toolName")), call.name, "tool");
+            call.request = firstNonBlank(stringValue(event.getMetadata().get("request")), call.request, "");
+            if (event.getType() == ExecutionEvent.EventType.TOOL_ERROR) {
+                call.status = "ERROR";
+                call.output = event.getContent();
+            } else if (event.getType() == ExecutionEvent.EventType.TOOL_OUTPUT) {
+                call.output = event.getContent();
+            } else if (event.getType() == ExecutionEvent.EventType.TOOL_END) {
+                call.status = "DONE";
+            } else if (call.status == null) {
+                call.status = "RUNNING";
+            }
+        }
+        List<ToolCallView> views = new ArrayList<>();
+        int index = 1;
+        for (MutableToolCall call : calls.values()) {
+            views.add(new ToolCallView(index++, call.name, firstNonBlank(call.status, "DONE"), call.request, call.output));
+        }
+        return views;
     }
 
     private static ShellState initialState() {
@@ -489,6 +622,19 @@ public final class FastShellLauncher {
         return compact.length() > 100 ? compact.substring(0, 100) + "..." : compact;
     }
 
+    private static String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private static String stringValue(Object value) {
+        return value != null ? String.valueOf(value) : null;
+    }
+
     private static String formatRecentRun(String jsonLine) {
         String runId = jsonField(jsonLine, "runId");
         String status = jsonField(jsonLine, "status");
@@ -541,6 +687,7 @@ public final class FastShellLauncher {
 
     private static final class ShellSession {
         private String sessionKey;
+        private String lastRunId;
 
         private ShellSession(String sessionKey) {
             this.sessionKey = sessionKey;
@@ -553,5 +700,23 @@ public final class FastShellLauncher {
         private void setSessionKey(String sessionKey) {
             this.sessionKey = sessionKey;
         }
+
+        private String lastRunId() {
+            return lastRunId;
+        }
+
+        private void setLastRunId(String lastRunId) {
+            this.lastRunId = lastRunId;
+        }
+    }
+
+    private static final class MutableToolCall {
+        private String name;
+        private String status;
+        private String request;
+        private String output;
+    }
+
+    private record ToolCallView(int index, String name, String status, String request, String output) {
     }
 }

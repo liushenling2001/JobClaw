@@ -43,7 +43,12 @@ public class RunCommand extends CliCommand {
     }
 
     public int executeTask(String task, boolean printSummary, boolean renderUser, String session) throws Exception {
-        return execute(new String[]{task}, printSummary, renderUser, session);
+        RunRecord record = runTask(task, printSummary, renderUser, session);
+        return record.getExitCode() != null ? record.getExitCode() : 0;
+    }
+
+    public RunRecord runTask(String task, boolean printSummary, boolean renderUser, String session) throws Exception {
+        return executeRecord(new String[]{task}, printSummary, renderUser, session, true);
     }
 
     private int execute(String[] args, boolean printSummary) throws Exception {
@@ -51,15 +56,24 @@ public class RunCommand extends CliCommand {
     }
 
     private int execute(String[] args, boolean printSummary, boolean renderUser, String sessionOverride) throws Exception {
+        RunRecord record = executeRecord(args, printSummary, renderUser, sessionOverride, false);
+        return record.getExitCode() != null ? record.getExitCode() : 0;
+    }
+
+    private RunRecord executeRecord(String[] args,
+                                    boolean printSummary,
+                                    boolean renderUser,
+                                    String sessionOverride,
+                                    boolean workingInputBox) throws Exception {
         ParsedArgs parsed = parse(args);
         if (parsed.task == null || parsed.task.isBlank()) {
             printHelp();
-            return 1;
+            throw new IllegalArgumentException("task is required");
         }
         if (sessionOverride != null && !sessionOverride.isBlank()) {
             parsed.session = sessionOverride;
         }
-        TerminalEventRenderer renderer = new TerminalEventRenderer();
+        TerminalEventRenderer renderer = new TerminalEventRenderer(System.console() != null, workingInputBox);
         if (renderUser) {
             renderer.renderUser(parsed.task);
         }
@@ -79,7 +93,7 @@ public class RunCommand extends CliCommand {
                 renderer.renderArtifacts(record.getArtifactPaths());
             }
         }
-        return record.getExitCode() != null ? record.getExitCode() : 0;
+        return record;
     }
 
     private String statusPrefix(RunRecord record) {
