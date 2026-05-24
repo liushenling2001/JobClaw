@@ -6,6 +6,9 @@ import io.jobclaw.agent.ExecutionTraceService;
 import io.jobclaw.agent.catalog.AgentCatalogService;
 import io.jobclaw.agent.catalog.FileAgentCatalogStore;
 import io.jobclaw.agent.experience.ExperienceMemoryService;
+import io.jobclaw.agent.experience.ExperienceMemory;
+import io.jobclaw.agent.experience.ExperienceMemoryStatus;
+import io.jobclaw.agent.experience.ExperienceMemoryUserState;
 import io.jobclaw.agent.experience.FileExperienceMemoryStore;
 import io.jobclaw.agent.learning.FileLearningCandidateStore;
 import io.jobclaw.agent.learning.LearningCandidate;
@@ -61,7 +64,7 @@ class WebConsoleControllerLearningCandidateApiTest {
         LearningCandidate accepted = (LearningCandidate) acceptResponse.getBody();
         assertNotNull(accepted);
         assertEquals(LearningCandidateStatus.ACCEPTED, accepted.getStatus());
-        ResponseEntity<?> memoriesResponse = controller.listExperienceMemories();
+        ResponseEntity<?> memoriesResponse = controller.listExperienceMemories(false);
         assertEquals(200, memoriesResponse.getStatusCode().value());
         assertTrue(((List<?>) memoriesResponse.getBody()).size() >= 1);
 
@@ -112,6 +115,40 @@ class WebConsoleControllerLearningCandidateApiTest {
         assertNotNull(body);
         assertEquals(true, body.get("exists"));
         assertTrue(body.get("content").toString().contains("Latest Review"));
+    }
+
+    @Test
+    void shouldPinAndForgetExperienceMemoryViaApi() throws Exception {
+        Path tempDir = Files.createTempDirectory("web-experience-memory-api");
+        LearningCandidateService learningService = new LearningCandidateService(
+                new FileLearningCandidateStore(tempDir.resolve(".jobclaw").resolve("learning").toString()),
+                new ExperienceMemoryService(new FileExperienceMemoryStore(tempDir.resolve(".jobclaw").resolve("experience").toString()))
+        );
+        LearningCandidate candidate = candidate("candidate-exp");
+        new FileLearningCandidateStore(tempDir.resolve(".jobclaw").resolve("learning").toString())
+                .saveAll(List.of(candidate));
+        WebConsoleController controller = controller(tempDir, learningService);
+        controller.acceptLearningCandidate("candidate-exp");
+
+        List<?> memories = (List<?>) controller.listExperienceMemories(false).getBody();
+        assertNotNull(memories);
+        ExperienceMemory memory = (ExperienceMemory) memories.get(0);
+
+        ResponseEntity<?> pinResponse = controller.pinExperienceMemory(memory.getId());
+        assertEquals(200, pinResponse.getStatusCode().value());
+        assertEquals(ExperienceMemoryUserState.PINNED, ((ExperienceMemory) pinResponse.getBody()).getUserState());
+
+        ResponseEntity<?> unpinResponse = controller.unpinExperienceMemory(memory.getId());
+        assertEquals(200, unpinResponse.getStatusCode().value());
+        assertEquals(ExperienceMemoryUserState.AUTO, ((ExperienceMemory) unpinResponse.getBody()).getUserState());
+
+        ResponseEntity<?> forgetResponse = controller.forgetExperienceMemory(memory.getId());
+        assertEquals(200, forgetResponse.getStatusCode().value());
+        ExperienceMemory forgotten = (ExperienceMemory) forgetResponse.getBody();
+        assertEquals(ExperienceMemoryUserState.FORGOTTEN, forgotten.getUserState());
+        assertEquals(ExperienceMemoryStatus.DISABLED, forgotten.getStatus());
+        assertTrue(((List<?>) controller.listExperienceMemories(false).getBody()).isEmpty());
+        assertEquals(1, ((List<?>) controller.listExperienceMemories(true).getBody()).size());
     }
 
     @Test

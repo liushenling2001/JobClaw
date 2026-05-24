@@ -8,6 +8,7 @@ import io.jobclaw.agent.catalog.AgentCatalogService;
 import io.jobclaw.agent.catalog.AgentCatalogStore;
 import io.jobclaw.agent.catalog.FileAgentCatalogStore;
 import io.jobclaw.agent.experience.ExperienceMemoryStore;
+import io.jobclaw.agent.experience.ExperienceMemoryRetriever;
 import io.jobclaw.agent.experience.FileExperienceMemoryStore;
 import io.jobclaw.agent.learning.FileLearningCandidateStore;
 import io.jobclaw.agent.learning.LearningCandidateStore;
@@ -175,11 +176,13 @@ public class AgentBeansConfig {
     @ConditionalOnMissingBean
     public ContextAssembler contextAssembler(Config config,
                                              SessionManager sessionManager,
-                                             RetrievalService retrievalService) {
+                                             RetrievalService retrievalService,
+                                             ExperienceMemoryRetriever experienceMemoryRetriever) {
         return new DefaultContextAssembler(
                 sessionManager,
                 config.getAgent().getRecentMessagesToKeep(),
-                retrievalService
+                retrievalService,
+                experienceMemoryRetriever
         );
     }
 

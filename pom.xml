@@ -33,7 +33,7 @@
         <cron-utils.version>9.2.1</cron-utils.version>
         <dotenv.version>3.0.0</dotenv.version>
         <jline.version>3.25.0</jline.version>
-        <spring-ai.version>2.0.0-M6</spring-ai.version>
+        <spring-ai.version>2.0.0-M7</spring-ai.version>
         <mockito.version>5.18.0</mockito.version>
         <byte-buddy.version>1.17.8</byte-buddy.version>
         <poi.version>5.4.1</poi.version>

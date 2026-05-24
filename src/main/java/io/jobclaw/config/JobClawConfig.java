@@ -1,6 +1,9 @@
 package io.jobclaw.config;
 
 import io.jobclaw.agent.ContextBuilder;
+import io.jobclaw.agent.experience.ExperienceMemoryRetriever;
+import io.jobclaw.agent.experience.ExperienceMemoryStore;
+import io.jobclaw.agent.experience.FileExperienceMemoryStore;
 import io.jobclaw.bus.MessageBus;
 import io.jobclaw.conversation.ConversationStore;
 import io.jobclaw.conversation.file.FileConversationStore;
@@ -104,11 +107,21 @@ public class JobClawConfig {
     @ConditionalOnMissingBean
     public ContextAssembler contextAssembler(Config config,
                                              SessionManager sessionManager,
-                                             RetrievalService retrievalService) {
+                                             RetrievalService retrievalService,
+                                             ExperienceMemoryRetriever experienceMemoryRetriever) {
         return new DefaultContextAssembler(
                 sessionManager,
                 config.getAgent().getRecentMessagesToKeep(),
-                retrievalService
+                retrievalService,
+                experienceMemoryRetriever
+        );
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public ExperienceMemoryStore experienceMemoryStore(Config config) {
+        return new FileExperienceMemoryStore(
+                Paths.get(config.getWorkspacePath(), ".jobclaw", "experience").toString()
         );
     }
 

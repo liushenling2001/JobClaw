@@ -1,6 +1,12 @@
 package io.jobclaw.context;
 
+import io.jobclaw.agent.experience.ExperienceMemory;
+import io.jobclaw.agent.experience.ExperienceMemoryRetriever;
+import io.jobclaw.agent.experience.ExperienceMemoryService;
+import io.jobclaw.agent.experience.ExperienceMemoryStore;
+import io.jobclaw.agent.experience.ExperienceMemoryType;
 import io.jobclaw.conversation.StoredMessage;
+import io.jobclaw.config.ExperienceConfig;
 import io.jobclaw.providers.Message;
 import io.jobclaw.providers.ToolCall;
 import io.jobclaw.retrieval.RetrievalBundle;
@@ -173,6 +179,93 @@ class DefaultContextAssemblerTest {
         assertTrue(assembled.contains("Historical session summary omitted"));
     }
 
+    @Test
+    void shouldInjectSanitizedOperatingExperienceWithoutHistoricalTargets() {
+        SessionManager sessionManager = new SessionManager();
+        String sessionId = "ctx-experience";
+        sessionManager.deleteSession(sessionId);
+        sessionManager.addMessage(sessionId, "user", "清理这个文件夹 D:\\new\\target");
+
+        ExperienceMemory memory = new ExperienceMemory();
+        memory.setId("exp-1");
+        memory.setType(ExperienceMemoryType.WORKFLOW_EXPERIENCE);
+        memory.setTitle("folder cleanup");
+        memory.setApplicability("清理文件夹");
+        memory.setMethodGuidance("先确认当前目标路径，再 dry-run 列出待删除项，不要复用 D:\\old\\folder 或 manifestId=old-mf");
+        memory.setConfidence(0.9);
+
+        ExperienceMemoryStore store = new InMemoryExperienceMemoryStore(List.of(memory));
+        ExperienceConfig experienceConfig = new ExperienceConfig();
+        ExperienceMemoryRetriever retriever = new ExperienceMemoryRetriever(
+                new ExperienceMemoryService(store),
+                experienceConfig
+        );
+        DefaultContextAssembler assembler = new DefaultContextAssembler(
+                sessionManager,
+                10,
+                new StubRetrievalService(),
+                retriever
+        );
+
+        List<Message> messages = assembler.assemble(
+                sessionId,
+                "清理这个文件夹 D:\\new\\target",
+                new ContextAssemblyOptions(10, 4, 3, 4, 4096)
+        );
+
+        String assembled = messages.stream()
+                .map(Message::getContent)
+                .filter(content -> content != null)
+                .reduce("", (left, right) -> left + "\n" + right);
+
+        assertTrue(assembled.contains("Relevant operating experience"));
+        assertTrue(assembled.contains("Use experience only as process guidance"));
+        assertFalse(assembled.contains("D:\\old\\folder"));
+        assertFalse(assembled.contains("old-mf"));
+    }
+
+    @Test
+    void shouldNotInjectExperienceWhenTaskPatternDoesNotMatch() {
+        SessionManager sessionManager = new SessionManager();
+        String sessionId = "ctx-experience-mismatch";
+        sessionManager.deleteSession(sessionId);
+        sessionManager.addMessage(sessionId, "user", "清理这个文件夹");
+
+        ExperienceMemory memory = new ExperienceMemory();
+        memory.setId("exp-github");
+        memory.setType(ExperienceMemoryType.WORKFLOW_EXPERIENCE);
+        memory.setTitle("github issue cleanup");
+        memory.setTaskPattern("github");
+        memory.getMetadata().put("objectType", "issue");
+        memory.setMethodGuidance("整理 GitHub issue 时先按 label 分组。");
+        memory.setConfidence(0.95);
+
+        ExperienceMemoryRetriever retriever = new ExperienceMemoryRetriever(
+                new ExperienceMemoryService(new InMemoryExperienceMemoryStore(List.of(memory))),
+                new ExperienceConfig()
+        );
+        DefaultContextAssembler assembler = new DefaultContextAssembler(
+                sessionManager,
+                10,
+                new StubRetrievalService(),
+                retriever
+        );
+
+        List<Message> messages = assembler.assemble(
+                sessionId,
+                "清理这个文件夹",
+                new ContextAssemblyOptions(10, 4, 3, 4, 4096)
+        );
+
+        String assembled = messages.stream()
+                .map(Message::getContent)
+                .filter(content -> content != null)
+                .reduce("", (left, right) -> left + "\n" + right);
+
+        assertFalse(assembled.contains("Relevant operating experience"));
+        assertFalse(assembled.contains("GitHub issue"));
+    }
+
     private static String repeat(String seed, int times) {
         return seed.repeat(Math.max(1, times));
     }
@@ -221,6 +314,24 @@ class DefaultContextAssemblerTest {
                     searchMemory(null),
                     getSessionSummary(sessionId)
             );
+        }
+    }
+
+    private static class InMemoryExperienceMemoryStore implements ExperienceMemoryStore {
+        private List<ExperienceMemory> memories;
+
+        private InMemoryExperienceMemoryStore(List<ExperienceMemory> memories) {
+            this.memories = memories;
+        }
+
+        @Override
+        public List<ExperienceMemory> list() {
+            return memories;
+        }
+
+        @Override
+        public void saveAll(List<ExperienceMemory> memories) {
+            this.memories = memories;
         }
     }
 }

@@ -1,5 +1,10 @@
 package io.jobclaw.context;
 
+import io.jobclaw.agent.AgentExecutionContext;
+import io.jobclaw.agent.ExecutionEvent;
+import io.jobclaw.agent.experience.ExperienceMemory;
+import io.jobclaw.agent.experience.ExperienceMemoryMatch;
+import io.jobclaw.agent.experience.ExperienceMemoryRetriever;
 import io.jobclaw.conversation.StoredMessage;
 import io.jobclaw.providers.Message;
 import io.jobclaw.retrieval.RetrievalService;
@@ -11,6 +16,7 @@ import io.jobclaw.summary.SessionSummaryRecord;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.regex.Pattern;
 
@@ -27,11 +33,20 @@ public class DefaultContextAssembler implements ContextAssembler {
     private final SessionManager sessionManager;
     private final int defaultRecentLimit;
     private final RetrievalService retrievalService;
+    private final ExperienceMemoryRetriever experienceMemoryRetriever;
 
     public DefaultContextAssembler(SessionManager sessionManager, int defaultRecentLimit, RetrievalService retrievalService) {
+        this(sessionManager, defaultRecentLimit, retrievalService, null);
+    }
+
+    public DefaultContextAssembler(SessionManager sessionManager,
+                                   int defaultRecentLimit,
+                                   RetrievalService retrievalService,
+                                   ExperienceMemoryRetriever experienceMemoryRetriever) {
         this.sessionManager = sessionManager;
         this.defaultRecentLimit = defaultRecentLimit;
         this.retrievalService = retrievalService;
+        this.experienceMemoryRetriever = experienceMemoryRetriever;
     }
 
     @Override
@@ -103,6 +118,8 @@ public class DefaultContextAssembler implements ContextAssembler {
             assembled.add(Message.system(buildMemoryFactContext(memoryFacts, memoryBudget)));
         }
 
+        appendExperienceMemoryContext(assembled, sessionId, currentUserInput);
+
         appendRetrievedHistory(assembled, retrievedHistory, history, historyBudget / 3);
 
         history = trimRecentHistoryToBudget(history, Math.max(256, historyBudget - estimateMessagesTokens(assembled)));
@@ -118,6 +135,29 @@ public class DefaultContextAssembler implements ContextAssembler {
                     + "Do not reuse old paths, manifests, schemas, or artifacts unless the user explicitly asks to continue that exact task.";
         }
         return "Session summary:\n" + truncateToBudget(summaryText, summaryBudget);
+    }
+
+    private void appendExperienceMemoryContext(List<Message> assembled, String sessionId, String currentUserInput) {
+        if (experienceMemoryRetriever == null) {
+            return;
+        }
+        List<ExperienceMemoryMatch> matches = experienceMemoryRetriever.retrieve(sessionId, currentUserInput);
+        String section = experienceMemoryRetriever.buildPromptSection(matches);
+        if (section != null && !section.isBlank()) {
+            assembled.add(Message.system(section));
+            List<ExperienceMemory> recorded = experienceMemoryRetriever.recordInjected(sessionId, matches);
+            AgentExecutionContext.publishEvent(new ExecutionEvent(
+                    sessionId,
+                    ExecutionEvent.EventType.CUSTOM,
+                    "Experience memory injected",
+                    Map.of(
+                            "event", "experience_memory_injected",
+                            "experienceIds", matches.stream().map(ExperienceMemoryMatch::id).toList(),
+                            "sanitized", matches.stream().anyMatch(ExperienceMemoryMatch::sanitized),
+                            "recorded", recorded.size()
+                    )
+            ));
+        }
     }
 
     private boolean containsHistoricalExecutionState(String text) {

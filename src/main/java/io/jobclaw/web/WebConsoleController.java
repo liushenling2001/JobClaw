@@ -1492,8 +1492,29 @@ public class WebConsoleController {
     // ==================== Experience API ====================
 
     @GetMapping("/experience/memories")
-    public ResponseEntity<?> listExperienceMemories() {
-        return ResponseEntity.ok(experienceMemoryService.listActive());
+    public ResponseEntity<?> listExperienceMemories(@RequestParam(required = false, defaultValue = "false") boolean all) {
+        return ResponseEntity.ok(all ? experienceMemoryService.listAll() : experienceMemoryService.listActive());
+    }
+
+    @PostMapping("/experience/memories/{id}/pin")
+    public ResponseEntity<?> pinExperienceMemory(@PathVariable String id) {
+        return experienceMemoryService.pin(id)
+                .<ResponseEntity<?>>map(ResponseEntity::ok)
+                .orElse(ResponseEntity.status(404).body(Map.of("error", "Experience memory not found: " + id)));
+    }
+
+    @PostMapping("/experience/memories/{id}/unpin")
+    public ResponseEntity<?> unpinExperienceMemory(@PathVariable String id) {
+        return experienceMemoryService.unpin(id)
+                .<ResponseEntity<?>>map(ResponseEntity::ok)
+                .orElse(ResponseEntity.status(404).body(Map.of("error", "Experience memory not found: " + id)));
+    }
+
+    @PostMapping("/experience/memories/{id}/forget")
+    public ResponseEntity<?> forgetExperienceMemory(@PathVariable String id) {
+        return experienceMemoryService.forget(id)
+                .<ResponseEntity<?>>map(ResponseEntity::ok)
+                .orElse(ResponseEntity.status(404).body(Map.of("error", "Experience memory not found: " + id)));
     }
 
     @GetMapping("/experience/review/latest")
