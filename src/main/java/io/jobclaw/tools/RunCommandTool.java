@@ -2,6 +2,8 @@ package io.jobclaw.tools;
 
 import io.jobclaw.config.Config;
 import io.jobclaw.agent.AgentExecutionContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
@@ -36,6 +38,7 @@ import java.util.concurrent.TimeUnit;
  */
 @Component
 public class RunCommandTool {
+    private static final Logger logger = LoggerFactory.getLogger(RunCommandTool.class);
 
     private static final int MAX_OUTPUT_LENGTH = 10000;         // 输出最大长度
     private static final long THREAD_JOIN_TIMEOUT_MS = 1000;    // 线程等待超时（毫秒）
@@ -105,8 +108,7 @@ public class RunCommandTool {
             return safetyError;
         }
 
-        // Security warning
-        System.out.println("[RunCommandTool] WARNING: Executing command without SecurityGuard: " + command);
+        logger.debug("Executing command without SecurityGuard: {}", command);
 
         try {
             return executeCommand(command, cwd, timeout != null ? timeout : defaultTimeoutSeconds());
@@ -363,7 +365,7 @@ public class RunCommandTool {
                     }
                 }
             } catch (Exception e) {
-                System.out.println("[RunCommandTool] Output reader exception: " + e.getMessage());
+                logger.debug("Output reader exception: {}", e.getMessage());
             }
         }, threadName);
     }
