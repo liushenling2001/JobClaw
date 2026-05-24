@@ -130,12 +130,13 @@ public final class FastShellLauncher {
             try {
                 printInputTop(terminal);
                 input = reader.readLine("│ > ").trim();
-                printInputBottom(terminal);
+                clearSubmittedInputBox(terminal);
             } catch (UserInterruptException e) {
-                terminal.writer().println();
-                terminal.writer().println(dim("Interrupted"));
-                terminal.flush();
-                return 130;
+                clearSubmittedInputBox(terminal);
+                if (confirmExit(reader, terminal)) {
+                    return 130;
+                }
+                continue;
             } catch (EndOfFileException e) {
                 terminal.writer().println();
                 return 0;
@@ -151,7 +152,7 @@ public final class FastShellLauncher {
                 continue;
             }
 
-            runCommand.executeTask(input, false, false, session.sessionKey());
+            runCommand.executeTask(input, false, true, session.sessionKey());
             terminal.writer().println();
             terminal.flush();
         }
@@ -431,11 +432,26 @@ public final class FastShellLauncher {
         terminal.flush();
     }
 
-    private static void printInputBottom(Terminal terminal) {
-        int width = Math.max(40, Math.min(terminal.getWidth(), 160));
-        terminal.writer().println();
-        terminal.writer().println("╘" + "═".repeat(width - 2) + "╛");
+    private static void clearSubmittedInputBox(Terminal terminal) {
+        if (System.console() != null) {
+            terminal.writer().print("\r\033[2K\033[1A\033[2K\033[1A\033[2K\r");
+        } else {
+            int width = Math.max(40, Math.min(terminal.getWidth(), 160));
+            terminal.writer().println();
+            terminal.writer().println("╘" + "═".repeat(width - 2) + "╛");
+        }
         terminal.flush();
+    }
+
+    private static boolean confirmExit(LineReader reader, Terminal terminal) {
+        try {
+            String answer = reader.readLine("Exit JobClaw? [y/N] ").trim();
+            return "y".equalsIgnoreCase(answer) || "yes".equalsIgnoreCase(answer);
+        } catch (UserInterruptException ignored) {
+            return false;
+        } catch (EndOfFileException ignored) {
+            return true;
+        }
     }
 
     private static void printSection(Terminal terminal, String name) {
