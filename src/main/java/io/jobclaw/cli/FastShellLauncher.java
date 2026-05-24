@@ -19,6 +19,8 @@ import java.io.PrintStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
@@ -30,6 +32,8 @@ public final class FastShellLauncher {
     private static final String ORANGE = "\033[38;5;209m";
     private static final String DIM = "\033[2m";
     private static final String RESET = "\033[0m";
+    private static final DateTimeFormatter RUN_TIME_FORMAT =
+            DateTimeFormatter.ofPattern("MM-dd HH:mm").withZone(ZoneId.systemDefault());
 
     private FastShellLauncher() {
     }
@@ -119,14 +123,19 @@ public final class FastShellLauncher {
     private static int inputLoop(LineReader reader, Terminal terminal, ConfigurableApplicationContext context) throws Exception {
         RunCommand runCommand = context.getBean(RunCommand.class);
         RunService runService = context.getBean(RunService.class);
+        ShellSession session = new ShellSession(null);
 
         while (true) {
             String input;
             try {
-                input = reader.readLine("> ").trim();
+                printInputTop(terminal);
+                input = reader.readLine("│ > ").trim();
+                printInputBottom(terminal);
             } catch (UserInterruptException e) {
                 terminal.writer().println();
-                continue;
+                terminal.writer().println(dim("Interrupted"));
+                terminal.flush();
+                return 130;
             } catch (EndOfFileException e) {
                 terminal.writer().println();
                 return 0;
@@ -136,19 +145,23 @@ public final class FastShellLauncher {
                 continue;
             }
             if (input.startsWith("/")) {
-                if (handleSlash(input, terminal, runService)) {
+                if (handleSlash(input, reader, terminal, runService, session)) {
                     return 0;
                 }
                 continue;
             }
 
-            runCommand.executeTask(input, false);
+            runCommand.executeTask(input, false, false, session.sessionKey());
             terminal.writer().println();
             terminal.flush();
         }
     }
 
-    private static boolean handleSlash(String input, Terminal terminal, RunService runService) throws Exception {
+    private static boolean handleSlash(String input,
+                                       LineReader reader,
+                                       Terminal terminal,
+                                       RunService runService,
+                                       ShellSession session) throws Exception {
         String[] parts = input.split("\\s+", 2);
         String command = parts[0];
         String rest = parts.length > 1 ? parts[1].trim() : "";
@@ -162,7 +175,8 @@ public final class FastShellLauncher {
                 terminal.writer().println("/runs         show more recent runs");
                 terminal.writer().println("/logs <id>    show persisted run events");
                 terminal.writer().println("/attach <id>  replay a run");
-                terminal.writer().println("/resume <id>  resume a run");
+                terminal.writer().println("/resume       choose a recent conversation");
+                terminal.writer().println("/resume <id>  attach to a previous conversation");
                 terminal.writer().println("/exit         leave");
                 terminal.flush();
                 return false;
@@ -217,13 +231,7 @@ public final class FastShellLauncher {
                 return false;
             }
             case "/resume" -> {
-                printSection(terminal, "resume");
-                if (rest.isBlank()) {
-                    terminal.writer().println("usage: /resume <runId>");
-                } else {
-                    new ResumeCommand(runService).execute(new String[]{rest});
-                }
-                terminal.flush();
+                resumeConversation(rest, reader, terminal, runService, session);
                 return false;
             }
             default -> {
@@ -232,6 +240,58 @@ public final class FastShellLauncher {
                 return false;
             }
         }
+    }
+
+    private static void resumeConversation(String runId,
+                                           LineReader reader,
+                                           Terminal terminal,
+                                           RunService runService,
+                                           ShellSession session) throws Exception {
+        RunRecord selected;
+        if (runId != null && !runId.isBlank()) {
+            selected = runService.getRequired(runId);
+        } else {
+            List<RunRecord> runs = runService.listRuns(20);
+            printSection(terminal, "resume");
+            if (runs.isEmpty()) {
+                terminal.writer().println("No recent conversations");
+                terminal.flush();
+                return;
+            }
+            for (int i = 0; i < runs.size(); i++) {
+                terminal.writer().println(formatRunChoice(i + 1, runs.get(i)));
+            }
+            terminal.flush();
+            String choice = reader.readLine("Select conversation > ").trim();
+            if (choice.isBlank()) {
+                return;
+            }
+            int index;
+            try {
+                index = Integer.parseInt(choice);
+            } catch (NumberFormatException e) {
+                terminal.writer().println("Invalid selection: " + choice);
+                terminal.flush();
+                return;
+            }
+            if (index < 1 || index > runs.size()) {
+                terminal.writer().println("Invalid selection: " + choice);
+                terminal.flush();
+                return;
+            }
+            selected = runs.get(index - 1);
+        }
+
+        session.setSessionKey(selected.getSessionKey());
+        printSection(terminal, "conversation");
+        terminal.writer().println("attached " + selected.getRunId() + "  " + selected.getStatus());
+        terminal.writer().println("session  " + selected.getSessionKey());
+        terminal.writer().println("task     " + summarize(selected.getTask()));
+        if (selected.getFinalResponse() != null && !selected.getFinalResponse().isBlank()) {
+            terminal.writer().println();
+            terminal.writer().println("• " + summarize(selected.getFinalResponse()));
+        }
+        terminal.flush();
     }
 
     private static ShellState initialState() {
@@ -365,6 +425,19 @@ public final class FastShellLauncher {
         return value.repeat(Math.max(0, count));
     }
 
+    private static void printInputTop(Terminal terminal) {
+        int width = Math.max(40, Math.min(terminal.getWidth(), 160));
+        terminal.writer().println("╞" + "═".repeat(width - 2) + "╡");
+        terminal.flush();
+    }
+
+    private static void printInputBottom(Terminal terminal) {
+        int width = Math.max(40, Math.min(terminal.getWidth(), 160));
+        terminal.writer().println();
+        terminal.writer().println("╘" + "═".repeat(width - 2) + "╛");
+        terminal.flush();
+    }
+
     private static void printSection(Terminal terminal, String name) {
         terminal.writer().println();
         terminal.writer().println("----- " + name + " " + "-".repeat(Math.max(1, 62 - name.length())));
@@ -410,6 +483,11 @@ public final class FastShellLauncher {
         return value.length() > 70 ? value.substring(0, 67) + "..." : value;
     }
 
+    private static String formatRunChoice(int index, RunRecord run) {
+        String time = run.getUpdatedAt() != null ? RUN_TIME_FORMAT.format(run.getUpdatedAt()) : "--";
+        return "%2d. %s  %-9s  %s".formatted(index, time, run.getStatus(), summarize(run.getTask()));
+    }
+
     private static String jsonField(String json, String field) {
         if (json == null || json.isBlank()) {
             return "";
@@ -442,6 +520,22 @@ public final class FastShellLauncher {
 
         ShellState withModel(String model) {
             return new ShellState(model, status, project, branch, recentActivity);
+        }
+    }
+
+    private static final class ShellSession {
+        private String sessionKey;
+
+        private ShellSession(String sessionKey) {
+            this.sessionKey = sessionKey;
+        }
+
+        private String sessionKey() {
+            return sessionKey;
+        }
+
+        private void setSessionKey(String sessionKey) {
+            this.sessionKey = sessionKey;
         }
     }
 }

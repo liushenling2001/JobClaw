@@ -39,17 +39,30 @@ public class RunCommand extends CliCommand {
     }
 
     public int executeTask(String task, boolean printSummary) throws Exception {
-        return execute(new String[]{task}, printSummary);
+        return execute(new String[]{task}, printSummary, true, null);
+    }
+
+    public int executeTask(String task, boolean printSummary, boolean renderUser, String session) throws Exception {
+        return execute(new String[]{task}, printSummary, renderUser, session);
     }
 
     private int execute(String[] args, boolean printSummary) throws Exception {
+        return execute(args, printSummary, true, null);
+    }
+
+    private int execute(String[] args, boolean printSummary, boolean renderUser, String sessionOverride) throws Exception {
         ParsedArgs parsed = parse(args);
         if (parsed.task == null || parsed.task.isBlank()) {
             printHelp();
             return 1;
         }
+        if (sessionOverride != null && !sessionOverride.isBlank()) {
+            parsed.session = sessionOverride;
+        }
         TerminalEventRenderer renderer = new TerminalEventRenderer();
-        renderer.renderUser(parsed.task);
+        if (renderUser) {
+            renderer.renderUser(parsed.task);
+        }
         RunRecord record = runService.startForeground(new RunRequest(
                 parsed.task,
                 parsed.session,
