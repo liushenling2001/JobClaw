@@ -1,6 +1,7 @@
 package io.jobclaw.agent.experience;
 
 import io.jobclaw.config.ExperienceConfig;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -17,6 +18,7 @@ public class ExperienceMemoryRetriever {
     private final ExperienceMemoryService memoryService;
     private final ExperienceConfig config;
 
+    @Autowired
     public ExperienceMemoryRetriever(ExperienceMemoryService memoryService, io.jobclaw.config.Config config) {
         this(memoryService, config != null ? config.getExperience() : new ExperienceConfig());
     }
