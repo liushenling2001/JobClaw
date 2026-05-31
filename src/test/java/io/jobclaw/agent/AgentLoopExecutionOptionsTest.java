@@ -6,14 +6,15 @@ import io.jobclaw.context.ContextAssemblyPolicy;
 import io.jobclaw.session.SessionManager;
 import io.jobclaw.summary.SummaryService;
 import org.junit.jupiter.api.Test;
+import org.springframework.ai.chat.prompt.ChatOptions;
+import org.springframework.ai.deepseek.DeepSeekChatOptions;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.tool.ToolCallback;
 
 import java.lang.reflect.Method;
-import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.mockito.Mockito.mock;
 
 class AgentLoopExecutionOptionsTest {
@@ -47,7 +48,8 @@ class AgentLoopExecutionOptionsTest {
 
         Method method = AgentLoop.class.getDeclaredMethod("buildExecutionOptions", AgentDefinition.class, String.class);
         method.setAccessible(true);
-        OpenAiChatOptions options = (OpenAiChatOptions) method.invoke(loop, definition, config.getAgent().getModel());
+        ChatOptions genericOptions = (ChatOptions) method.invoke(loop, definition, config.getAgent().getModel());
+        OpenAiChatOptions options = assertInstanceOf(OpenAiChatOptions.class, genericOptions);
 
         assertEquals("custom-model", options.getModel());
         assertEquals(4096, options.getMaxTokens());
@@ -77,7 +79,7 @@ class AgentLoopExecutionOptionsTest {
     }
 
     @Test
-    void shouldDisableDeepSeekThinkingForToolCompatibleModels() throws Exception {
+    void shouldUseNativeDeepSeekOptionsForDeepSeekProvider() throws Exception {
         Config config = Config.defaultConfig();
         config.getAgent().setProvider("deepseek");
         config.getAgent().setModel("deepseek-v4-flash");
@@ -96,17 +98,18 @@ class AgentLoopExecutionOptionsTest {
                 AgentDefinition.class, String.class, String.class);
         method.setAccessible(true);
 
-        OpenAiChatOptions options = (OpenAiChatOptions) method.invoke(loop, null, "deepseek-v4-flash", "deepseek");
+        ChatOptions genericOptions = (ChatOptions) method.invoke(loop, null, "deepseek-v4-flash", "deepseek");
+        DeepSeekChatOptions options = assertInstanceOf(DeepSeekChatOptions.class, genericOptions);
 
-        assertEquals(Map.of("thinking", Map.of("type", "disabled")), options.getExtraBody());
+        assertEquals("deepseek-v4-flash", options.getModel());
     }
 
     @Test
-    void shouldNotDisableThinkingForDeepSeekReasoner() throws Exception {
+    void shouldKeepOpenAiOptionsForNonDeepSeekProvidersUsingDeepSeekNamedModels() throws Exception {
         Config config = Config.defaultConfig();
-        config.getAgent().setProvider("deepseek");
+        config.getAgent().setProvider("openrouter");
         config.getAgent().setModel("deepseek-reasoner");
-        config.getProviders().getDeepseek().setApiKey("sk-test");
+        config.getProviders().getOpenrouter().setApiKey("sk-test");
         AgentLoop loop = new AgentLoop(
                 config,
                 new SessionManager(),
@@ -121,8 +124,9 @@ class AgentLoopExecutionOptionsTest {
                 AgentDefinition.class, String.class, String.class);
         method.setAccessible(true);
 
-        OpenAiChatOptions options = (OpenAiChatOptions) method.invoke(loop, null, "deepseek-reasoner", "deepseek");
+        ChatOptions genericOptions = (ChatOptions) method.invoke(loop, null, "deepseek-reasoner", "openrouter");
+        OpenAiChatOptions options = assertInstanceOf(OpenAiChatOptions.class, genericOptions);
 
-        assertNull(options.getExtraBody());
+        assertEquals("deepseek-reasoner", options.getModel());
     }
 }

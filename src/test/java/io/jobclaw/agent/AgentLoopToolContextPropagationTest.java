@@ -67,10 +67,11 @@ class AgentLoopToolContextPropagationTest {
                 "wrapSingleCallback",
                 ToolCallback.class,
                 String.class,
-                java.util.function.Consumer.class
+                java.util.function.Consumer.class,
+                AgentLoop.ArtifactCompletionTracker.class
         );
         method.setAccessible(true);
-        ToolCallback wrapped = (ToolCallback) method.invoke(agentLoop, raw, "session-a", null);
+        ToolCallback wrapped = (ToolCallback) method.invoke(agentLoop, raw, "session-a", null, null);
 
         String observed = CompletableFuture.supplyAsync(() -> wrapped.call("{}")).join();
 

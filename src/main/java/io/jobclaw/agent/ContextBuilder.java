@@ -97,6 +97,10 @@ public class ContextBuilder {
         return memoryStore;
     }
 
+    public SkillsService getSkillsService() {
+        return skillsService;
+    }
+
     /**
      * Legacy compatibility helper. Only returns system + current user message.
      * History assembly now belongs to ContextAssembler.

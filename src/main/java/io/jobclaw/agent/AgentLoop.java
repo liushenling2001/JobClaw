@@ -2,7 +2,6 @@ package io.jobclaw.agent;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.jobclaw.agent.evolution.MemoryEvolver;
 import io.jobclaw.agent.evolution.MemoryStore;
 import io.jobclaw.agent.runtime.AgentRunIds;
@@ -27,6 +26,8 @@ import io.jobclaw.runtime.tool.ToolExecutionStateTracker;
 import io.jobclaw.runtime.tool.ToolRuntime;
 import io.jobclaw.session.Session;
 import io.jobclaw.session.SessionManager;
+import io.jobclaw.skills.SkillInfo;
+import io.jobclaw.skills.SkillsService;
 import io.jobclaw.summary.SummaryService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,13 +37,17 @@ import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.chat.prompt.ChatOptions;
+import org.springframework.ai.deepseek.DeepSeekChatModel;
+import org.springframework.ai.deepseek.DeepSeekChatOptions;
+import org.springframework.ai.deepseek.api.DeepSeekApi;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.openai.api.OpenAiApi;
 import org.springframework.ai.tool.ToolCallback;
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
-import org.springframework.http.client.ClientHttpRequestInterceptor;
 import org.springframework.web.client.RestClient;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Flux;
 
@@ -52,15 +57,21 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
+import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * AgentLoop - 基于 Spring AI 重构（使用 OpenAI 兼容模式支持 DashScope Coding Plan）
@@ -74,6 +85,27 @@ import java.util.function.Consumer;
 public class AgentLoop {
 
     private static final Logger logger = LoggerFactory.getLogger(AgentLoop.class);
+    private static final Set<String> BASE_TOOL_NAMES = Set.of(
+            "skills",
+            "context_ref",
+            "manifest",
+            "completion",
+            "list_dir",
+            "read_file",
+            "run_command"
+    );
+    private static final Map<String, Set<String>> TOOL_PROFILE_TOOL_NAMES = Map.ofEntries(
+            Map.entry("code", Set.of("write_file", "edit_file", "append_file")),
+            Map.entry("document", Set.of("read_pdf", "read_word", "write_file", "append_file")),
+            Map.entry("spreadsheet", Set.of("read_excel", "write_file", "append_file")),
+            Map.entry("web", Set.of("web_search", "web_fetch")),
+            Map.entry("messaging", Set.of("message")),
+            Map.entry("memory", Set.of("memory")),
+            Map.entry("agent", Set.of("spawn", "collaborate", "agent_catalog", "board_write", "board_read")),
+            Map.entry("scheduler", Set.of("cron")),
+            Map.entry("mcp", Set.of("mcp")),
+            Map.entry("usage", Set.of("query_token_usage"))
+    );
 
     private final Config config;
     private final SessionManager sessionManager;
@@ -106,6 +138,13 @@ public class AgentLoop {
     private static final String MANAGED_MANIFEST_TAKEOVER_REASON = "managed manifest control returned to framework loop";
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final int ASSISTANT_DRAFT_CHECKPOINT_CHARS = 1000;
+    private static final Pattern WINDOWS_ABSOLUTE_PATH = Pattern.compile("[A-Za-z]:\\\\[^\\r\\n<>|?*\"]+");
+    private static final Pattern ARTIFACT_ACTION_PATTERN = Pattern.compile(
+            "(?i)(生成|新建|另存|保存|导出|写入|形成|产出|输出|修改|修订|改完|放在|存到|new\\s+file|save\\s+as|export|write\\s+(?:to|file)|generate|create)"
+    );
+    private static final Pattern ARTIFACT_OBJECT_PATTERN = Pattern.compile(
+            "(?i)(\\.docx|\\.doc|\\.xlsx|\\.xls|\\.pdf|\\.csv|\\.jsonl|\\.json|\\.md|\\.txt|\\.pptx|excel|word|pdf|文档|报告|表格|文件|当前文件夹|目录|folder|directory|document|report|spreadsheet)"
+    );
 
     public AgentLoop(Config config, SessionManager sessionManager,
                      ToolCallback[] allToolCallbacks,
@@ -268,36 +307,20 @@ public class AgentLoop {
             logger.warn("requested provider not available, falling back to provider '{}'", resolvedProvider.providerName());
         }
 
-        logger.info("Spring AI OpenAI Compatible config - apiKey: {}***, model: {}, apiBase: {} -> using: {}",
+        logger.info("Spring AI provider config - provider: {}, apiKey: {}***, model: {}, apiBase: {} -> using: {}",
+                resolvedProvider.providerName(),
                 resolvedProvider.apiKey() != null && resolvedProvider.apiKey().length() > 4
                         ? resolvedProvider.apiKey().substring(0, 4)
                         : "null",
                 this.model, resolvedProvider.apiBase(), resolvedProvider.springAiBaseUrl());
 
-        // 创建 OpenAI API 客户端（支持自定义 baseUrl，兼容 DashScope Coding Plan）
-        OpenAiApi openAiApi = createOpenAiApi(resolvedProvider);
-
-        // 创建 ChatModel（带工具调用）
-        OpenAiChatModel.Builder chatModelBuilder = OpenAiChatModel.builder()
-                .openAiApi(openAiApi);
-        OpenAiChatOptions defaultOptions = deepSeekThinkingDisabledOptions(
-                resolvedProvider.providerName(), resolvedProvider.model());
-        if (defaultOptions != null) {
-            chatModelBuilder.defaultOptions(defaultOptions);
-        }
-        OpenAiChatModel chatModel = chatModelBuilder.build();
+        ChatModel chatModel = createChatModel(resolvedProvider);
 
         // 创建 ChatClient（带工具调用）
         this.chatClient = chatClient != null ? chatClient : ChatClient.builder(chatModel).build();
 
         // 创建简单的 ChatClient（用于摘要生成，不带工具调用）
-        OpenAiChatModel.Builder simpleChatModelBuilder = OpenAiChatModel.builder()
-                .openAiApi(openAiApi);
-        if (defaultOptions != null) {
-            simpleChatModelBuilder.defaultOptions(defaultOptions);
-        }
-        OpenAiChatModel simpleChatModel = simpleChatModelBuilder.build();
-        this.simpleChatClient = ChatClient.builder(simpleChatModel).build();
+        this.simpleChatClient = ChatClient.builder(createChatModel(resolvedProvider)).build();
 
         // 初始化 ContextBuilder（需要 SkillsService）
         io.jobclaw.skills.SkillsService skillsService = null;
@@ -425,6 +448,8 @@ public class AgentLoop {
         int managedManifestContinuations = 0;
         boolean managedManifestHandoffIssued = false;
         int managedCreateRepairAttempts = 0;
+        boolean artifactCompletionPromptIssued = false;
+        ArtifactCompletionTracker artifactCompletionTracker = new ArtifactCompletionTracker();
 
         try {
             Session session = sessionManager.getOrCreate(sessionKey);
@@ -451,10 +476,10 @@ public class AgentLoop {
 
             // 创建工具回调（支持工具过滤）
             ToolCallback[] rawTools = filterToolsByDefinition(definition, userContent);
-            ToolCallback[] tools = wrapToolCallbacks(rawTools, sessionKey, eventCallback);
+            ToolCallback[] tools = wrapToolCallbacks(rawTools, sessionKey, eventCallback, artifactCompletionTracker);
 
             ExecutionClientBundle executionClientBundle = createExecutionClientBundle(definition);
-            OpenAiChatOptions options = buildExecutionOptions(definition, executionClientBundle.model(),
+            ChatOptions options = buildExecutionOptions(definition, executionClientBundle.model(),
                     executionClientBundle.providerName());
 
             // 使用结构化上下文装配器，保留消息边界，不再拍平成单段文本
@@ -570,6 +595,27 @@ public class AgentLoop {
                         promptMessages.add(new UserMessage(managedHandoffPrompt));
                         continue;
                     }
+                }
+
+                String artifactGuardPrompt = buildArtifactCompletionGuardPrompt(
+                        scope.sessionKey(),
+                        scope.runId(),
+                        userContent,
+                        attemptResponse,
+                        artifactCompletionTracker,
+                        artifactCompletionPromptIssued
+                );
+                if (!artifactGuardPrompt.isBlank()) {
+                    artifactCompletionPromptIssued = true;
+                    logger.info("artifact completion guard retry session={} run={} promptChars={} candidateChars={} writeEvidence={}",
+                            sessionKey,
+                            scope.runId(),
+                            artifactGuardPrompt.length(),
+                            attemptResponse != null ? attemptResponse.length() : 0,
+                            artifactCompletionTracker.hasWriteEvidence());
+                    promptMessages.add(new AssistantMessage(attemptResponse));
+                    promptMessages.add(new UserMessage(artifactGuardPrompt));
+                    continue;
                 }
 
                 CompletionGateResult gateResult = completionRegistry.evaluateForFinal(sessionKey, scope.runId(), attemptResponse);
@@ -999,6 +1045,76 @@ public class AgentLoop {
         return sb.toString();
     }
 
+    private String buildArtifactCompletionGuardPrompt(String sessionKey,
+                                                      String runId,
+                                                      String userContent,
+                                                      String attemptResponse,
+                                                      ArtifactCompletionTracker tracker,
+                                                      boolean alreadyIssued) {
+        if (alreadyIssued || completionRegistry.hasContract(sessionKey, runId)) {
+            return "";
+        }
+        if (activeManifestRegistry.findManagedBlockingState(sessionKey, runId).isPresent()) {
+            return "";
+        }
+        boolean intentSignal = hasArtifactIntent(userContent);
+        boolean writeEvidence = tracker != null && tracker.hasWriteEvidence();
+        boolean responsePathSignal = containsArtifactPath(attemptResponse);
+        if (!intentSignal && !writeEvidence) {
+            return "";
+        }
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("JOBCLAW_ARTIFACT_COMPLETION_GUARD\n");
+        sb.append("You are about to give a final answer, but this turn has signals that a file or directory artifact may be required.\n");
+        sb.append("This is a one-time finalization check. Do not restart the task from scratch.\n\n");
+        sb.append("Signals:\n");
+        sb.append("- userArtifactIntent: ").append(intentSignal).append("\n");
+        sb.append("- writeToolEvidence: ").append(writeEvidence).append("\n");
+        sb.append("- finalResponsePathEvidence: ").append(responsePathSignal).append("\n");
+        List<String> paths = tracker != null ? tracker.artifactPaths() : List.of();
+        if (!paths.isEmpty()) {
+            sb.append("- toolArtifactPathCandidates:\n");
+            paths.stream().limit(8).forEach(path -> sb.append("  - ").append(path).append("\n"));
+        }
+        sb.append("\nRequired response behavior:\n");
+        sb.append("- If the current user request requires a generated/modified/exported artifact and it is already complete, final answer with exactly one concrete absolute artifact path.\n");
+        sb.append("- If the artifact is not complete, continue using tools to create or finish it before final answer.\n");
+        sb.append("- If the current user request does not require an artifact, say briefly that no artifact is required and answer normally.\n");
+        sb.append("- If you now know the expected artifact type but not a stable path yet, call completion(action='register', checks='[{\"type\":\"artifact_expected\",\"artifactType\":\"file\"}]') before continuing.\n");
+        return sb.toString();
+    }
+
+    static boolean hasArtifactIntent(String text) {
+        if (text == null || text.isBlank()) {
+            return false;
+        }
+        return ARTIFACT_ACTION_PATTERN.matcher(text).find()
+                && ARTIFACT_OBJECT_PATTERN.matcher(text).find();
+    }
+
+    static boolean containsArtifactPath(String text) {
+        if (text == null || text.isBlank()) {
+            return false;
+        }
+        Matcher matcher = WINDOWS_ABSOLUTE_PATH.matcher(text);
+        while (matcher.find()) {
+            String path = trimArtifactPathCandidate(matcher.group());
+            if (!path.isBlank()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String trimArtifactPathCandidate(String value) {
+        String result = value == null ? "" : value.trim();
+        while (!result.isEmpty() && ".,;，。；、)）]】'\"`".indexOf(result.charAt(result.length() - 1)) >= 0) {
+            result = result.substring(0, result.length() - 1).trim();
+        }
+        return result;
+    }
+
     private String truncateForCompletionRecovery(String text) {
         int maxChars = 6000;
         if (text.length() <= maxChars) {
@@ -1019,7 +1135,7 @@ public class AgentLoop {
 
     private ManagedRunnerResult runManagedSkillRunner(ExecutionClientBundle executionClientBundle,
                                                       ToolCallback[] tools,
-                                                      OpenAiChatOptions options,
+                                                      ChatOptions options,
                                                       String systemPrompt,
                                                       String originalUserContent,
                                                       String sessionKey,
@@ -1881,7 +1997,7 @@ public class AgentLoop {
     private String runModelAttempt(ExecutionClientBundle executionClientBundle,
                                    List<Message> promptMessages,
                                    ToolCallback[] tools,
-                                   OpenAiChatOptions options,
+                                   ChatOptions options,
                                    String sessionKey,
                                    Consumer<ExecutionEvent> eventCallback,
                                    StringBuilder fullResponse,
@@ -1892,49 +2008,6 @@ public class AgentLoop {
                 isReasoningSideChannelProvider(executionClientBundle.providerName(), executionClientBundle.model()));
         int fullResponseStartLength = fullResponse != null ? fullResponse.length() : 0;
         AtomicInteger lastDraftCheckpoint = new AtomicInteger(fullResponse != null ? fullResponse.length() : 0);
-
-        if (shouldDisableDeepSeekThinking(executionClientBundle.providerName(), executionClientBundle.model())) {
-            try {
-                String content = executionClientBundle.chatClient().prompt()
-                        .messages(promptMessages)
-                        .toolCallbacks(tools)
-                        .options(options)
-                        .call()
-                        .content();
-                String delta = reasoningContentFilter.sanitizeFinal(content != null ? content : "");
-                if (!delta.isEmpty()) {
-                    attemptResponse.append(delta);
-                    fullResponse.append(delta);
-                    if (checkpointAssistantDraft) {
-                        sessionManager.saveAssistantDraft(sessionKey, fullResponse.toString());
-                    }
-                    if (eventCallback != null) {
-                        eventCallback.accept(new ExecutionEvent(
-                                sessionKey,
-                                ExecutionEvent.EventType.THINK_STREAM,
-                                delta
-                        ));
-                    }
-                }
-                if (attemptResponse.isEmpty()) {
-                    throw new IllegalStateException("LLM returned empty content in non-stream call");
-                }
-                return attemptResponse.toString();
-            } catch (RuntimeException e) {
-                if (containsManagedManifestTakeoverSignal(e)) {
-                    logger.info("managed manifest takeover session={} attemptChars={}", sessionKey, attemptResponse.length());
-                    return attemptResponse.toString();
-                }
-                WebClientResponseException responseException = findWebClientResponseException(e);
-                if (responseException != null) {
-                    logger.warn("LLM HTTP error session={} status={} body={}",
-                            sessionKey,
-                            responseException.getStatusCode(),
-                            responseException.getResponseBodyAsString());
-                }
-                throw e;
-            }
-        }
 
         Flux<String> contentStream = executionClientBundle.chatClient().prompt()
                 .messages(promptMessages)
@@ -2137,7 +2210,7 @@ public class AgentLoop {
         return node == null || node.isNull() || (node.isTextual() && node.asText("").isBlank());
     }
 
-    private boolean isToolErrorResponse(String response) {
+    private static boolean isToolErrorResponse(String response) {
         return response != null && response.stripLeading().startsWith("Error:");
     }
 
@@ -2358,7 +2431,8 @@ public class AgentLoop {
      */
     private ToolCallback[] wrapToolCallbacks(ToolCallback[] rawCallbacks,
                                              String sessionKey,
-                                             Consumer<ExecutionEvent> eventCallback) {
+                                             Consumer<ExecutionEvent> eventCallback,
+                                             ArtifactCompletionTracker artifactCompletionTracker) {
         if (rawCallbacks == null) {
             return rawCallbacks;
         }
@@ -2367,7 +2441,7 @@ public class AgentLoop {
 
         // 包装每个 ToolCallback，使其在执行时发布事件
         return java.util.Arrays.stream(rawCallbacks)
-                .map(callback -> wrapSingleCallback(callback, sessionKey, eventCallback))
+                .map(callback -> wrapSingleCallback(callback, sessionKey, eventCallback, artifactCompletionTracker))
                 .toArray(ToolCallback[]::new);
     }
 
@@ -2381,7 +2455,8 @@ public class AgentLoop {
      */
     private ToolCallback wrapSingleCallback(ToolCallback callback,
                                             String sessionKey,
-                                            Consumer<ExecutionEvent> eventCallback) {
+                                            Consumer<ExecutionEvent> eventCallback,
+                                            ArtifactCompletionTracker artifactCompletionTracker) {
         AgentExecutionContext.ExecutionScope capturedScope = AgentExecutionContext.getCurrentScope();
         return new ToolCallback() {
             @Override
@@ -2408,6 +2483,13 @@ public class AgentLoop {
                             callback,
                             eventCallback
                     ));
+                    if (artifactCompletionTracker != null) {
+                        artifactCompletionTracker.recordToolResult(
+                                getToolDefinition().name(),
+                                effectiveRequest,
+                                result
+                        );
+                    }
                     if (shouldReturnManagedManifestControl(getToolDefinition().name(), effectiveRequest, result)) {
                         logger.info("managed manifest tool boundary reached session={} run={} tool={} request={}",
                                 capturedScope != null ? capturedScope.sessionKey() : sessionKey,
@@ -2443,8 +2525,331 @@ public class AgentLoop {
             return explicitTools;
         }
 
-        logger.debug("No explicit agent tool allowlist; using full toolset: {}", toolNames(allToolCallbacks));
-        return allToolCallbacks;
+        ToolSelection selection = resolveDeterministicToolSelection(definition, userContent);
+        ToolCallback[] selectedTools = Arrays.stream(allToolCallbacks)
+                .filter(tool -> selection.toolNames().contains(tool.getToolDefinition().name()))
+                .toArray(ToolCallback[]::new);
+        logger.info("tool injection selected profiles={} sources={} tools={}",
+                selection.profiles(), selection.sources(), toolNames(selectedTools));
+        return selectedTools;
+    }
+
+    private ToolSelection resolveDeterministicToolSelection(AgentDefinition definition, String userContent) {
+        LinkedHashSet<String> profiles = new LinkedHashSet<>();
+        LinkedHashSet<String> sources = new LinkedHashSet<>();
+        LinkedHashSet<String> toolNames = new LinkedHashSet<>(BASE_TOOL_NAMES);
+        sources.add("base");
+
+        Collection<String> agentProfiles = readAgentToolProfiles(definition);
+        if (!agentProfiles.isEmpty()) {
+            profiles.addAll(agentProfiles);
+            sources.add("agent-profile");
+        }
+
+        Collection<String> roleProfiles = defaultProfilesForRole(definition);
+        if (!roleProfiles.isEmpty()) {
+            profiles.addAll(roleProfiles);
+            sources.add("role-profile");
+        }
+
+        SkillToolHints skillHints = resolveSkillToolHints(userContent);
+        if (!skillHints.profiles().isEmpty() || !skillHints.toolNames().isEmpty()) {
+            profiles.addAll(skillHints.profiles());
+            toolNames.addAll(skillHints.toolNames());
+            sources.add("skill-metadata");
+        }
+
+        LinkedHashSet<String> explicitProfiles = inferProfilesFromExplicitIntent(userContent);
+        if (!explicitProfiles.isEmpty()) {
+            profiles.addAll(explicitProfiles);
+            sources.add("explicit-intent");
+        }
+
+        for (String profile : profiles) {
+            Set<String> profileTools = TOOL_PROFILE_TOOL_NAMES.get(profile);
+            if (profileTools != null) {
+                toolNames.addAll(profileTools);
+            }
+        }
+
+        return new ToolSelection(toolNames, profiles, sources);
+    }
+
+    private Collection<String> readAgentToolProfiles(AgentDefinition definition) {
+        if (definition == null || definition.getMetadata() == null) {
+            return List.of();
+        }
+        Object profiles = definition.getMetadata().get("toolProfiles");
+        if (profiles == null) {
+            profiles = definition.getMetadata().get("toolProfile");
+        }
+        return normalizeProfiles(profiles);
+    }
+
+    private Collection<String> defaultProfilesForRole(AgentDefinition definition) {
+        if (definition == null || definition.getCode() == null || definition.getCode().isBlank()) {
+            return List.of();
+        }
+        return switch (definition.getCode().trim().toLowerCase(Locale.ROOT)) {
+            case "coder", "tester" -> List.of("code");
+            case "writer" -> List.of("document");
+            case "researcher" -> List.of("document", "web");
+            case "reviewer" -> List.of("code", "document");
+            default -> List.of();
+        };
+    }
+
+    private Collection<String> normalizeProfiles(Object profiles) {
+        if (profiles instanceof Collection<?> collection) {
+            return collection.stream()
+                    .map(value -> value != null ? value.toString() : "")
+                    .map(this::normalizeProfile)
+                    .filter(profile -> !profile.isBlank())
+                    .toList();
+        }
+        if (profiles != null && !profiles.toString().isBlank()) {
+            return Arrays.stream(profiles.toString().split(","))
+                    .map(this::normalizeProfile)
+                    .filter(profile -> !profile.isBlank())
+                    .toList();
+        }
+        return List.of();
+    }
+
+    private String normalizeProfile(String profile) {
+        String normalized = profile == null ? "" : profile.trim().toLowerCase(Locale.ROOT);
+        if ("github".equals(normalized) || "notification".equals(normalized) || "message".equals(normalized)) {
+            return "messaging";
+        }
+        if ("token".equals(normalized) || "tokens".equals(normalized) || "billing".equals(normalized)) {
+            return "usage";
+        }
+        return TOOL_PROFILE_TOOL_NAMES.containsKey(normalized) ? normalized : "";
+    }
+
+    private LinkedHashSet<String> inferProfilesFromExplicitIntent(String userContent) {
+        LinkedHashSet<String> profiles = new LinkedHashSet<>();
+        String text = userContent == null ? "" : userContent.toLowerCase(Locale.ROOT);
+        if (text.isBlank()) {
+            return profiles;
+        }
+
+        if (containsAny(text, ".java", ".kt", ".py", ".js", ".ts", ".tsx", ".vue", ".go", ".rs",
+                "pom.xml", "package.json", "build.gradle", "测试", "编译", "打包", "修复", "改代码", "代码",
+                "分支", "合并", "提交", "commit", "branch", "merge", "test", "build", "mvn", "gradle", "npm")) {
+            profiles.add("code");
+        }
+        if (containsAny(text, ".pdf", ".doc", ".docx", "pdf", "word", "document", "论文", "本地文档", "文档文件", "综述", "报告", "docx")) {
+            profiles.add("document");
+        }
+        if (containsAny(text, ".xls", ".xlsx", ".csv", ".tsv", "excel", "表格", "电子表格", "spreadsheet")) {
+            profiles.add("spreadsheet");
+        }
+        boolean lookupRequest = containsAny(text, "查一下", "查询", "查资料", "搜索", "找一下", "看看有没有", "了解一下");
+        boolean externalKnowledge = containsAny(text, "最新", "官方文档", "文档里", "资料", "网页", "网站", "版本", "变化", "更新", "spring ai");
+        if (containsAny(text, "http://", "https://", "搜索", "查资料", "网页", "网站", "联网", "web", "url")
+                || (lookupRequest && externalKnowledge)) {
+            profiles.add("web");
+        }
+        if (containsAny(text, "github", "issue", "pull request", " pr ", "提交github", "提 issue", "发起 issue",
+                "飞书", "消息", "通知", "发消息", "提醒他")) {
+            profiles.add("messaging");
+        }
+        if (containsAny(text, "记忆", "经验", "memory")) {
+            profiles.add("memory");
+        }
+        if (containsAny(text, "子 agent", "子agent", "多智能体", "协作", "spawn", "collaborate", "共享看板", "board")) {
+            profiles.add("agent");
+        }
+        if (containsAny(text, "定时", "明天", "后天", "早上", "晚上", "每天", "每周", "每月", "分钟", "小时", "点钟", "监控", "cron", "automation")) {
+            profiles.add("scheduler");
+        }
+        if (containsAny(text, "mcp", "model context protocol")) {
+            profiles.add("mcp");
+        }
+        if (containsAny(text, "token", "tokens", "用量", "费用", "消耗", "api cost", "billing")) {
+            profiles.add("usage");
+        }
+        return profiles;
+    }
+
+    private boolean containsAny(String text, String... needles) {
+        for (String needle : needles) {
+            if (needle != null && !needle.isBlank() && text.contains(needle)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private SkillToolHints resolveSkillToolHints(String userContent) {
+        if (contextBuilder == null || userContent == null || userContent.isBlank()) {
+            return SkillToolHints.empty();
+        }
+        SkillsService skillsService = contextBuilder.getSkillsService();
+        if (skillsService == null) {
+            return SkillToolHints.empty();
+        }
+        String text = userContent.toLowerCase(Locale.ROOT);
+        LinkedHashSet<String> profiles = new LinkedHashSet<>();
+        LinkedHashSet<String> toolNames = new LinkedHashSet<>();
+        try {
+            for (SkillInfo skill : skillsService.listSkills()) {
+                if (skill == null || skill.getName() == null || skill.getName().isBlank()) {
+                    continue;
+                }
+                String skillName = skill.getName();
+                if (!text.contains(skillName.toLowerCase(Locale.ROOT))) {
+                    continue;
+                }
+                profiles.addAll(inferProfilesFromExplicitIntent(skillName + " " + nullToBlank(skill.getDescription())));
+                String content = skillsService.loadSkill(skillName);
+                SkillToolHints hints = extractSkillToolHints(content);
+                profiles.addAll(hints.profiles());
+                toolNames.addAll(hints.toolNames());
+            }
+        } catch (Exception e) {
+            logger.debug("Failed to resolve skill tool hints: {}", e.getMessage());
+        }
+        return new SkillToolHints(toolNames, profiles);
+    }
+
+    private SkillToolHints extractSkillToolHints(String skillContent) {
+        if (skillContent == null || skillContent.isBlank()) {
+            return SkillToolHints.empty();
+        }
+        LinkedHashSet<String> profiles = new LinkedHashSet<>();
+        LinkedHashSet<String> toolNames = new LinkedHashSet<>();
+
+        for (String line : skillContent.lines().toList()) {
+            int separator = line.indexOf(':');
+            if (separator <= 0) {
+                separator = line.indexOf('=');
+            }
+            if (separator <= 0) {
+                continue;
+            }
+            String key = line.substring(0, separator).trim().toLowerCase(Locale.ROOT);
+            String value = line.substring(separator + 1).trim();
+            switch (key) {
+                case "toolprofile", "toolprofiles", "tool_profiles" -> profiles.addAll(normalizeProfiles(value));
+                case "requiredtools", "required_tools", "optionaltools", "optional_tools", "tools", "allowedtools", "allowed_tools" ->
+                        toolNames.addAll(normalizeToolNames(value));
+                case "metadata" -> addJsonMetadataHints(value, profiles, toolNames);
+                default -> {
+                    // Other skill content is instructional text, not a tool declaration.
+                }
+            }
+        }
+
+        return new SkillToolHints(toolNames, profiles);
+    }
+
+    private void addJsonMetadataHints(String value, Set<String> profiles, Set<String> toolNames) {
+        if (value == null || value.isBlank() || !value.trim().startsWith("{")) {
+            return;
+        }
+        try {
+            JsonNode root = OBJECT_MAPPER.readTree(value);
+            collectJsonMetadataHints(root, profiles, toolNames);
+        } catch (Exception ignored) {
+            // Metadata is optional; malformed metadata must not block the task.
+        }
+    }
+
+    private void collectJsonMetadataHints(JsonNode node, Set<String> profiles, Set<String> toolNames) {
+        if (node == null || node.isNull()) {
+            return;
+        }
+        if (node.isObject()) {
+            node.fields().forEachRemaining(entry -> {
+                String key = entry.getKey() != null ? entry.getKey().toLowerCase(Locale.ROOT) : "";
+                JsonNode value = entry.getValue();
+                if ("toolprofile".equals(key) || "toolprofiles".equals(key) || "tool_profiles".equals(key)) {
+                    profiles.addAll(jsonValues(value).stream()
+                            .map(this::normalizeProfile)
+                            .filter(profile -> !profile.isBlank())
+                            .toList());
+                } else if ("requiredtools".equals(key) || "required_tools".equals(key)
+                        || "optionaltools".equals(key) || "optional_tools".equals(key)
+                        || "tools".equals(key) || "allowedtools".equals(key) || "allowed_tools".equals(key)) {
+                    toolNames.addAll(jsonValues(value).stream()
+                            .map(this::normalizeToolName)
+                            .filter(tool -> !tool.isBlank())
+                            .toList());
+                } else {
+                    collectJsonMetadataHints(value, profiles, toolNames);
+                }
+            });
+            return;
+        }
+        if (node.isArray()) {
+            node.forEach(child -> collectJsonMetadataHints(child, profiles, toolNames));
+        }
+    }
+
+    private List<String> jsonValues(JsonNode node) {
+        if (node == null || node.isNull()) {
+            return List.of();
+        }
+        if (node.isArray()) {
+            List<String> values = new ArrayList<>();
+            node.forEach(child -> values.addAll(jsonValues(child)));
+            return values;
+        }
+        if (node.isTextual() || node.isNumber() || node.isBoolean()) {
+            return splitListValue(node.asText());
+        }
+        return List.of();
+    }
+
+    private Collection<String> normalizeToolNames(String value) {
+        return splitListValue(value).stream()
+                .map(this::normalizeToolName)
+                .filter(tool -> !tool.isBlank())
+                .toList();
+    }
+
+    private String normalizeToolName(String toolName) {
+        if (toolName == null) {
+            return "";
+        }
+        String normalized = toolName.trim()
+                .replace("\"", "")
+                .replace("'", "")
+                .toLowerCase(Locale.ROOT);
+        if ("exec".equals(normalized)) {
+            return "run_command";
+        }
+        return normalized;
+    }
+
+    private List<String> splitListValue(String value) {
+        if (value == null || value.isBlank()) {
+            return List.of();
+        }
+        String cleaned = value
+                .replace("[", "")
+                .replace("]", "")
+                .replace("\"", "")
+                .replace("'", "");
+        return Arrays.stream(cleaned.split("[,，]"))
+                .map(String::trim)
+                .filter(part -> !part.isBlank())
+                .toList();
+    }
+
+    private String nullToBlank(String value) {
+        return value != null ? value : "";
+    }
+
+    private record ToolSelection(Set<String> toolNames, Set<String> profiles, Set<String> sources) {
+    }
+
+    private record SkillToolHints(Set<String> toolNames, Set<String> profiles) {
+        static SkillToolHints empty() {
+            return new SkillToolHints(Set.of(), Set.of());
+        }
     }
 
     private boolean containsInterruptedException(Throwable throwable) {
@@ -2469,6 +2874,57 @@ public class AgentLoop {
 
     static String normalizeStreamDelta(CharSequence currentResponse, String nextChunk) {
         return new StreamDeltaNormalizer().normalize(currentResponse, nextChunk);
+    }
+
+    static final class ArtifactCompletionTracker {
+        private static final List<String> WRITE_TOOLS = List.of(
+                "write_file",
+                "edit_file",
+                "append_file"
+        );
+
+        private final List<String> artifactPaths = new ArrayList<>();
+        private boolean writeEvidence;
+
+        void recordToolResult(String toolName, String request, ToolExecutionResult result) {
+            String normalizedTool = toolName == null ? "" : toolName.trim().toLowerCase();
+            boolean writeTool = WRITE_TOOLS.contains(normalizedTool);
+            if (!writeTool && !isSuccessful(result)) {
+                return;
+            }
+            if (writeTool && isSuccessful(result)) {
+                writeEvidence = true;
+            }
+            collectPaths(request);
+            if (result != null) {
+                collectPaths(result.response());
+            }
+        }
+
+        boolean hasWriteEvidence() {
+            return writeEvidence;
+        }
+
+        List<String> artifactPaths() {
+            return artifactPaths.stream().distinct().toList();
+        }
+
+        private boolean isSuccessful(ToolExecutionResult result) {
+            return result != null && result.success() && !isToolErrorResponse(result.response());
+        }
+
+        private void collectPaths(String text) {
+            if (text == null || text.isBlank()) {
+                return;
+            }
+            Matcher matcher = WINDOWS_ABSOLUTE_PATH.matcher(text);
+            while (matcher.find()) {
+                String path = trimArtifactPathCandidate(matcher.group());
+                if (!path.isBlank() && !artifactPaths.contains(path)) {
+                    artifactPaths.add(path);
+                }
+            }
+        }
     }
 
     static final class StreamDeltaNormalizer {
@@ -2513,11 +2969,11 @@ public class AgentLoop {
         return "Spring AI initialized (model: " + config.getAgent().getModel() + ")";
     }
 
-    private OpenAiChatOptions buildExecutionOptions(AgentDefinition definition, String baseModel) {
+    private ChatOptions buildExecutionOptions(AgentDefinition definition, String baseModel) {
         return buildExecutionOptions(definition, baseModel, defaultProviderConfig.providerName());
     }
 
-    private OpenAiChatOptions buildExecutionOptions(AgentDefinition definition, String baseModel, String providerName) {
+    private ChatOptions buildExecutionOptions(AgentDefinition definition, String baseModel, String providerName) {
         String effectiveModel = baseModel != null && !baseModel.isBlank() ? baseModel : model;
         Integer effectiveMaxTokens = null;
         Double effectiveTemperature = null;
@@ -2535,6 +2991,18 @@ public class AgentLoop {
             }
         }
 
+        if (isNativeDeepSeekProvider(providerName)) {
+            DeepSeekChatOptions.Builder builder = DeepSeekChatOptions.builder()
+                    .model(effectiveModel);
+            if (effectiveMaxTokens != null) {
+                builder.maxTokens(effectiveMaxTokens);
+            }
+            if (effectiveTemperature != null) {
+                builder.temperature(effectiveTemperature);
+            }
+            return builder.build();
+        }
+
         OpenAiChatOptions.Builder builder = OpenAiChatOptions.builder()
                 .model(effectiveModel);
         if (effectiveMaxTokens != null) {
@@ -2543,28 +3011,7 @@ public class AgentLoop {
         if (effectiveTemperature != null) {
             builder.temperature(effectiveTemperature);
         }
-        if (shouldDisableDeepSeekThinking(providerName, effectiveModel)) {
-            builder.extraBody(Map.of("thinking", Map.of("type", "disabled")));
-        }
         return builder.build();
-    }
-
-    private boolean shouldDisableDeepSeekThinking(String providerName, String modelName) {
-        if (!isReasoningSideChannelProvider(providerName, modelName)) {
-            return false;
-        }
-        String modelValue = modelName != null ? modelName.toLowerCase() : "";
-        return !modelValue.contains("reasoner");
-    }
-
-    private OpenAiChatOptions deepSeekThinkingDisabledOptions(String providerName, String modelName) {
-        if (!shouldDisableDeepSeekThinking(providerName, modelName)) {
-            return null;
-        }
-        return OpenAiChatOptions.builder()
-                .model(modelName)
-                .extraBody(Map.of("thinking", Map.of("type", "disabled")))
-                .build();
     }
 
     private ExecutionClientBundle createExecutionClientBundle(AgentDefinition definition) {
@@ -2585,15 +3032,7 @@ public class AgentLoop {
                 apiBaseOverride,
                 modelOverride
         );
-        OpenAiApi openAiApi = createOpenAiApi(resolved);
-        OpenAiChatModel.Builder chatModelBuilder = OpenAiChatModel.builder()
-                .openAiApi(openAiApi);
-        OpenAiChatOptions defaultOptions = deepSeekThinkingDisabledOptions(resolved.providerName(), resolved.model());
-        if (defaultOptions != null) {
-            chatModelBuilder.defaultOptions(defaultOptions);
-        }
-        OpenAiChatModel chatModel = chatModelBuilder.build();
-        ChatClient executionChatClient = ChatClient.builder(chatModel).build();
+        ChatClient executionChatClient = ChatClient.builder(createChatModel(resolved)).build();
         return new ExecutionClientBundle(executionChatClient, resolved.model(), resolved.providerName());
     }
 
@@ -2604,6 +3043,10 @@ public class AgentLoop {
         String provider = providerName != null ? providerName.toLowerCase() : "";
         String modelValue = modelName != null ? modelName.toLowerCase() : "";
         return provider.contains("deepseek") || modelValue.contains("deepseek");
+    }
+
+    private boolean isNativeDeepSeekProvider(String providerName) {
+        return "deepseek".equalsIgnoreCase(providerName);
     }
 
     private static final class ReasoningContentFilter {
@@ -2673,36 +3116,40 @@ public class AgentLoop {
         }
     }
 
+    private ChatModel createChatModel(ResolvedProviderConfig resolvedProvider) {
+        ChatOptions defaultOptions = buildExecutionOptions(null, resolvedProvider.model(), resolvedProvider.providerName());
+        if (isNativeDeepSeekProvider(resolvedProvider.providerName())) {
+            DeepSeekChatModel.Builder builder = DeepSeekChatModel.builder()
+                    .deepSeekApi(createDeepSeekApi(resolvedProvider));
+            if (defaultOptions instanceof DeepSeekChatOptions deepSeekOptions) {
+                builder.defaultOptions(deepSeekOptions);
+            }
+            return builder.build();
+        }
+
+        OpenAiChatModel.Builder builder = OpenAiChatModel.builder()
+                .openAiApi(createOpenAiApi(resolvedProvider));
+        if (defaultOptions instanceof OpenAiChatOptions openAiOptions) {
+            builder.defaultOptions(openAiOptions);
+        }
+        return builder.build();
+    }
+
+    private DeepSeekApi createDeepSeekApi(ResolvedProviderConfig resolvedProvider) {
+        return DeepSeekApi.builder()
+                .apiKey(resolvedProvider.apiKey())
+                .baseUrl(resolvedProvider.springAiBaseUrl())
+                .restClientBuilder(RestClient.builder().requestFactory(openAiRequestFactory()))
+                .build();
+    }
+
     private OpenAiApi createOpenAiApi(ResolvedProviderConfig resolvedProvider) {
         RestClient.Builder restClientBuilder = RestClient.builder().requestFactory(openAiRequestFactory());
-        if (shouldDisableDeepSeekThinking(resolvedProvider.providerName(), resolvedProvider.model())) {
-            restClientBuilder.requestInterceptor(deepSeekThinkingDisabledInterceptor());
-        }
         return OpenAiApi.builder()
                 .apiKey(resolvedProvider.apiKey())
                 .baseUrl(resolvedProvider.springAiBaseUrl())
                 .restClientBuilder(restClientBuilder)
                 .build();
-    }
-
-    private ClientHttpRequestInterceptor deepSeekThinkingDisabledInterceptor() {
-        return (request, body, execution) -> {
-            byte[] patchedBody = body;
-            if (body != null && body.length > 0) {
-                try {
-                    JsonNode root = OBJECT_MAPPER.readTree(body);
-                    if (root instanceof ObjectNode objectNode && !objectNode.has("thinking")) {
-                        ObjectNode thinking = OBJECT_MAPPER.createObjectNode();
-                        thinking.put("type", "disabled");
-                        objectNode.set("thinking", thinking);
-                        patchedBody = OBJECT_MAPPER.writeValueAsBytes(objectNode);
-                    }
-                } catch (Exception e) {
-                    logger.debug("failed to inject DeepSeek thinking disabled flag: {}", e.getMessage());
-                }
-            }
-            return execution.execute(request, patchedBody);
-        };
     }
 
     private SimpleClientHttpRequestFactory openAiRequestFactory() {
@@ -2766,7 +3213,7 @@ public class AgentLoop {
             String response = simpleChatClient.prompt()
                     .system("You are a helpful assistant.")
                     .user(prompt)
-                    .options(OpenAiChatOptions.builder().model(model).build())
+                    .options(buildExecutionOptions(null, model, defaultProviderConfig.providerName()))
                     .call()
                     .content();
 

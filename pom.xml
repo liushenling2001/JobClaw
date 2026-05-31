@@ -145,6 +145,13 @@
             <version>${spring-ai.version}</version>
         </dependency>
 
+        <!-- Spring AI - Native DeepSeek support (manual ChatModel wiring, no auto-config starter) -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-deepseek</artifactId>
+            <version>${spring-ai.version}</version>
+        </dependency>
+
         <!-- Apache POI - Office Document Support (Word, Excel) -->
         <dependency>
             <groupId>org.apache.poi</groupId>
