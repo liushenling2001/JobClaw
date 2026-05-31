@@ -6,9 +6,9 @@ metadata: {"nanobot":{"emoji":"🧵","os":["darwin","linux"],"requires":{"bins":
 
 # tmux Skill
 
-Use tmux only when you need an interactive TTY. Prefer exec background mode for long-running, non-interactive tasks.
+Use tmux only when you need an interactive TTY. Prefer run_command background mode for long-running, non-interactive tasks.
 
-## Quickstart (isolated socket, exec tool)
+## Quickstart (isolated socket, run_command tool)
 
 ```bash
 SOCKET_DIR="${NANOBOT_TMUX_SOCKET_DIR:-${TMPDIR:-/tmp}/nanobot-tmux-sockets}"

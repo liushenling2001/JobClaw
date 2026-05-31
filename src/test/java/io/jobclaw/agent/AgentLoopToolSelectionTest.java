@@ -10,6 +10,8 @@ import io.jobclaw.agent.skill.ActiveSkillRegistry;
 import io.jobclaw.context.result.NoopResultStore;
 import io.jobclaw.runtime.provider.ProviderRuntime;
 import io.jobclaw.session.SessionManager;
+import io.jobclaw.skills.SkillInfo;
+import io.jobclaw.skills.SkillsService;
 import io.jobclaw.summary.SummaryService;
 import io.jobclaw.tools.ManifestTool;
 import org.junit.jupiter.api.Test;
@@ -26,21 +28,31 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class AgentLoopToolSelectionTest {
 
     @Test
-    void shouldUseFullToolsetWhenNoExplicitAllowlist() throws Exception {
-        AgentLoop loop = loopWithTools("memory", "skills", "read_pdf", "spawn", "run_command");
+    void shouldUseBaseToolsetWhenNoExplicitAllowlist() throws Exception {
+        AgentLoop loop = loopWithTools(
+                "memory", "skills", "read_pdf", "spawn", "run_command",
+                "context_ref", "manifest", "completion", "list_dir", "read_file", "exec"
+        );
 
         ToolCallback[] selected = invokeFilter(loop, null, "解释一下上下文压缩");
         List<String> names = names(selected);
 
-        assertTrue(names.contains("memory"));
         assertTrue(names.contains("skills"));
-        assertTrue(names.contains("read_pdf"));
-        assertTrue(names.contains("spawn"));
+        assertTrue(names.contains("context_ref"));
+        assertTrue(names.contains("manifest"));
+        assertTrue(names.contains("completion"));
+        assertTrue(names.contains("list_dir"));
+        assertTrue(names.contains("read_file"));
         assertTrue(names.contains("run_command"));
+        assertFalse(names.contains("memory"));
+        assertFalse(names.contains("read_pdf"));
+        assertFalse(names.contains("spawn"));
+        assertFalse(names.contains("exec"));
     }
 
     @Test
@@ -61,10 +73,10 @@ class AgentLoopToolSelectionTest {
     }
 
     @Test
-    void shouldUseFullToolsetForSkillInvocation() throws Exception {
+    void shouldAddDocumentAndSpreadsheetProfilesForExplicitSkillLikeTask() throws Exception {
         AgentLoop loop = loopWithTools(
                 "memory", "skills", "read_file", "read_word", "read_pdf", "read_excel",
-                "list_dir", "append_file", "manifest", "context_ref", "run_command"
+                "list_dir", "append_file", "manifest", "context_ref", "run_command", "write_file", "completion"
         );
 
         ToolCallback[] selected = invokeFilter(loop, null, "使用 batch-document-extract-excel 技能处理文档");
@@ -76,6 +88,111 @@ class AgentLoopToolSelectionTest {
         assertTrue(names.contains("append_file"));
         assertTrue(names.contains("manifest"));
         assertTrue(names.contains("context_ref"));
+        assertTrue(names.contains("run_command"));
+        assertTrue(names.contains("read_pdf"));
+        assertTrue(names.contains("read_excel"));
+        assertFalse(names.contains("memory"));
+    }
+
+    @Test
+    void shouldAddAgentDeclaredProfilesWithoutModelRouter() throws Exception {
+        AgentLoop loop = loopWithTools(
+                "skills", "context_ref", "manifest", "completion", "list_dir", "read_file", "run_command",
+                "web_search", "web_fetch", "spawn"
+        );
+        AgentDefinition definition = AgentDefinition.builder()
+                .code("research-agent")
+                .displayName("Research Agent")
+                .systemPrompt("Research")
+                .build();
+        definition.putMetadata("toolProfiles", List.of("web"));
+
+        ToolCallback[] selected = invokeFilter(loop, definition, "查一下这个页面");
+        List<String> names = names(selected);
+
+        assertTrue(names.contains("web_search"));
+        assertTrue(names.contains("web_fetch"));
+        assertTrue(names.contains("skills"));
+        assertFalse(names.contains("spawn"));
+    }
+
+    @Test
+    void shouldSupplementBuiltInRoleAgentsWithDefaultProfiles() throws Exception {
+        AgentLoop loop = loopWithTools(
+                "skills", "context_ref", "manifest", "completion", "list_dir", "read_file", "run_command",
+                "read_pdf", "read_word", "write_file", "append_file", "web_search", "web_fetch"
+        );
+
+        ToolCallback[] writerTools = invokeFilter(loop, AgentDefinition.fromRole(AgentRole.WRITER), "总结这个文件夹");
+        List<String> writerNames = names(writerTools);
+        assertTrue(writerNames.contains("read_pdf"));
+        assertTrue(writerNames.contains("read_word"));
+        assertTrue(writerNames.contains("write_file"));
+        assertTrue(writerNames.contains("context_ref"));
+
+        ToolCallback[] researcherTools = invokeFilter(loop, AgentDefinition.fromRole(AgentRole.RESEARCHER), "调查这个主题");
+        List<String> researcherNames = names(researcherTools);
+        assertTrue(researcherNames.contains("read_pdf"));
+        assertTrue(researcherNames.contains("web_search"));
+        assertTrue(researcherNames.contains("web_fetch"));
+    }
+
+    @Test
+    void shouldRouteNaturalLanguageRequestsToExpectedProfiles() throws Exception {
+        AgentLoop loop = loopWithTools(
+                "skills", "context_ref", "manifest", "completion", "list_dir", "read_file", "run_command",
+                "write_file", "edit_file", "append_file", "read_pdf", "read_word", "read_excel",
+                "web_search", "web_fetch", "message", "memory", "spawn", "collaborate",
+                "agent_catalog", "cron", "mcp"
+        );
+
+        assertSelectedTools(loop, "你看下这个项目能不能编译通过，顺手跑一下测试",
+                "edit_file", "write_file");
+        assertSelectedTools(loop, "把这个文件夹里的论文整理成一篇综述，最后生成 word",
+                "read_pdf", "read_word", "write_file");
+        assertSelectedTools(loop, "处理这个 Excel，提取每个 sheet 的统计信息",
+                "read_excel", "write_file");
+        assertSelectedTools(loop, "帮我查一下 Spring AI 最新文档里 tool calling 的变化",
+                "web_search", "web_fetch");
+        assertSelectedTools(loop, "明天早上提醒我继续检查这个任务",
+                "cron");
+        assertSelectedTools(loop, "这个任务让两个子 agent 协作，一个写代码一个审查",
+                "spawn", "collaborate", "agent_catalog");
+        assertSelectedTools(loop, "连接 MCP 服务看一下里面有什么资源",
+                "mcp");
+        assertSelectedTools(loop, "记住这次处理 Excel 的经验，下次遇到类似任务提醒我",
+                "memory", "read_excel");
+    }
+
+    @Test
+    void shouldAddToolsDeclaredByExplicitlyNamedSkill() throws Exception {
+        SkillsService skillsService = mock(SkillsService.class);
+        SkillInfo skill = new SkillInfo();
+        skill.setName("neutral-skill");
+        skill.setDescription("Neutral reusable workflow");
+        when(skillsService.listSkills()).thenReturn(List.of(skill));
+        when(skillsService.loadSkill("neutral-skill")).thenReturn("""
+                ---
+                name: neutral-skill
+                metadata: {"jobclaw":{"toolProfiles":["spreadsheet"],"requiredTools":["read_excel","write_file","exec"]}}
+                ---
+                # Neutral Skill
+                """);
+        ContextBuilder contextBuilder = mock(ContextBuilder.class);
+        when(contextBuilder.getSkillsService()).thenReturn(skillsService);
+        AgentLoop loop = loopWithContextBuilder(contextBuilder,
+                "skills", "context_ref", "manifest", "completion", "list_dir", "read_file", "run_command",
+                "read_excel", "write_file", "spawn", "exec"
+        );
+
+        ToolCallback[] selected = invokeFilter(loop, null, "使用 neutral-skill 完成任务");
+        List<String> names = names(selected);
+
+        assertTrue(names.contains("read_excel"));
+        assertTrue(names.contains("write_file"));
+        assertTrue(names.contains("run_command"));
+        assertFalse(names.contains("exec"));
+        assertFalse(names.contains("spawn"));
     }
 
     @Test
@@ -193,6 +310,10 @@ class AgentLoopToolSelectionTest {
     }
 
     private AgentLoop loopWithTools(String... toolNames) {
+        return loopWithContextBuilder(mock(ContextBuilder.class), toolNames);
+    }
+
+    private AgentLoop loopWithContextBuilder(ContextBuilder contextBuilder, String... toolNames) {
         ToolCallback[] callbacks = Arrays.stream(toolNames)
                 .map(this::tool)
                 .toArray(ToolCallback[]::new);
@@ -203,7 +324,7 @@ class AgentLoopToolSelectionTest {
                 config,
                 new SessionManager(),
                 callbacks,
-                mock(ContextBuilder.class),
+                contextBuilder,
                 mock(ContextAssembler.class),
                 mock(ContextAssemblyPolicy.class),
                 mock(SummaryService.class)
@@ -302,6 +423,15 @@ class AgentLoopToolSelectionTest {
         return Arrays.stream(callbacks)
                 .map(callback -> callback.getToolDefinition().name())
                 .toList();
+    }
+
+    private void assertSelectedTools(AgentLoop loop, String userContent, String... expectedTools) throws Exception {
+        List<String> selected = names(invokeFilter(loop, null, userContent));
+        for (String expectedTool : expectedTools) {
+            assertTrue(selected.contains(expectedTool),
+                    () -> "Expected tool " + expectedTool + " for request: " + userContent + ", selected=" + selected);
+        }
+        assertFalse(selected.contains("exec"), () -> "exec must not be injected for request: " + userContent);
     }
 
     private ToolCallback tool(String name) {

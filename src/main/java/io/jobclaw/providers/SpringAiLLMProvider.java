@@ -10,6 +10,11 @@ import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.chat.prompt.ChatOptions;
+import org.springframework.ai.deepseek.DeepSeekChatModel;
+import org.springframework.ai.deepseek.DeepSeekChatOptions;
+import org.springframework.ai.deepseek.api.DeepSeekApi;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 
@@ -37,7 +42,7 @@ public class SpringAiLLMProvider implements LLMProvider {
         try {
             ResolvedProviderConfig resolved = providerRuntime.resolve(config, model);
             ChatClient chatClient = ChatClient.builder(createChatModel(resolved)).build();
-            OpenAiChatOptions.Builder requestOptions = buildRequestOptions(resolved, options);
+            ChatOptions.Builder<?> requestOptions = buildRequestOptions(resolved, options);
             String content = chatClient.prompt()
                     .messages(toSpringMessages(messages, shouldNormalizeForDeepSeek(resolved)))
                     .options(requestOptions)
@@ -61,7 +66,7 @@ public class SpringAiLLMProvider implements LLMProvider {
         try {
             ResolvedProviderConfig resolved = providerRuntime.resolve(config, model);
             ChatClient chatClient = ChatClient.builder(createChatModel(resolved)).build();
-            OpenAiChatOptions.Builder requestOptions = buildRequestOptions(resolved, options);
+            ChatOptions.Builder<?> requestOptions = buildRequestOptions(resolved, options);
             Duration timeout = requestTimeout();
             List<String> chunks = chatClient.prompt()
                     .messages(toSpringMessages(messages, shouldNormalizeForDeepSeek(resolved)))
@@ -92,9 +97,24 @@ public class SpringAiLLMProvider implements LLMProvider {
         }
     }
 
-    private OpenAiChatModel createChatModel(ResolvedProviderConfig resolved) {
+    private ChatModel createChatModel(ResolvedProviderConfig resolved) {
+        if (isNativeDeepSeekProvider(resolved.providerName())) {
+            return DeepSeekChatModel.builder()
+                    .deepSeekApi(DeepSeekApi.builder()
+                            .apiKey(resolved.apiKey())
+                            .baseUrl(nativeDeepSeekBaseUrl(resolved.springAiBaseUrl()))
+                            .build())
+                    .defaultOptions(buildDeepSeekDefaultOptions(resolved))
+                    .build();
+        }
         return OpenAiChatModel.builder()
                 .options(buildDefaultOptions(resolved))
+                .build();
+    }
+
+    private DeepSeekChatOptions buildDeepSeekDefaultOptions(ResolvedProviderConfig resolved) {
+        return DeepSeekChatOptions.builder()
+                .model(resolved.model())
                 .build();
     }
 
@@ -111,7 +131,20 @@ public class SpringAiLLMProvider implements LLMProvider {
         return Duration.ofSeconds(Math.max(1, config.getAgent().getLlmCallTimeoutSeconds()));
     }
 
-    private OpenAiChatOptions.Builder buildRequestOptions(ResolvedProviderConfig resolved, LLMOptions options) {
+    private ChatOptions.Builder<?> buildRequestOptions(ResolvedProviderConfig resolved, LLMOptions options) {
+        if (isNativeDeepSeekProvider(resolved.providerName())) {
+            DeepSeekChatOptions.Builder builder = DeepSeekChatOptions.builder();
+            builder.model(resolved.model());
+            if (options != null) {
+                if (options.getTemperature() != null) {
+                    builder.temperature(options.getTemperature());
+                }
+                if (options.getMaxTokens() != null) {
+                    builder.maxTokens(options.getMaxTokens());
+                }
+            }
+            return builder;
+        }
         OpenAiChatOptions.Builder builder = OpenAiChatOptions.builder();
         builder.model(resolved.model());
         if (options != null) {
@@ -126,6 +159,21 @@ public class SpringAiLLMProvider implements LLMProvider {
             }
         }
         return builder;
+    }
+
+    private boolean isNativeDeepSeekProvider(String providerName) {
+        return providerName != null && providerName.equalsIgnoreCase("deepseek");
+    }
+
+    private String nativeDeepSeekBaseUrl(String baseUrl) {
+        if (baseUrl == null || baseUrl.isBlank()) {
+            return "https://api.deepseek.com";
+        }
+        String trimmed = baseUrl.trim();
+        if (trimmed.endsWith("/v1")) {
+            return trimmed.substring(0, trimmed.length() - 3);
+        }
+        return trimmed;
     }
 
     private boolean shouldNormalizeForDeepSeek(ResolvedProviderConfig resolved) {

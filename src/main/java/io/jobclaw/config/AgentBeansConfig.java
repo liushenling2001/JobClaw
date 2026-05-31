@@ -231,7 +231,6 @@ public class AgentBeansConfig {
             TokenUsageTool tokenUsageTool,
             WebSearchTool webSearchTool,
             WebFetchTool webFetchTool,
-            ExecTool execTool,
             SharedBoardTool sharedBoardTool,
             AgentCatalogTool agentCatalogTool,
             MemoryTool memoryTool,
@@ -245,7 +244,7 @@ public class AgentBeansConfig {
 
         return MethodToolCallbackProvider.builder()
                 .toolObjects(fileTools, runCommandTool, skillsTools, messageTool, cronTool,
-                            mcpTool, tokenUsageTool, webSearchTool, webFetchTool, execTool,
+                            mcpTool, tokenUsageTool, webSearchTool, webFetchTool,
                             sharedBoardTool,
                             agentCatalogTool, memoryTool, contextRefTool, manifestTool, completionTool, spawnTool, collaborateTool)
                 .build()

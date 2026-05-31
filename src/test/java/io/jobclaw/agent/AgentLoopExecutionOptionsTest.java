@@ -6,14 +6,15 @@ import io.jobclaw.context.ContextAssemblyPolicy;
 import io.jobclaw.session.SessionManager;
 import io.jobclaw.summary.SummaryService;
 import org.junit.jupiter.api.Test;
+import org.springframework.ai.deepseek.DeepSeekChatModel;
+import org.springframework.ai.deepseek.DeepSeekChatOptions;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.tool.ToolCallback;
 
 import java.lang.reflect.Method;
-import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.mockito.Mockito.mock;
 
 class AgentLoopExecutionOptionsTest {
@@ -47,7 +48,7 @@ class AgentLoopExecutionOptionsTest {
 
         Method method = AgentLoop.class.getDeclaredMethod("buildExecutionOptions", AgentDefinition.class, String.class);
         method.setAccessible(true);
-        OpenAiChatOptions options = buildOptions(method.invoke(loop, definition, config.getAgent().getModel()));
+        OpenAiChatOptions options = buildOpenAiOptions(method.invoke(loop, definition, config.getAgent().getModel()));
 
         assertEquals("custom-model", options.getModel());
         assertEquals(4096, options.getMaxTokens());
@@ -77,7 +78,7 @@ class AgentLoopExecutionOptionsTest {
     }
 
     @Test
-    void shouldDisableDeepSeekThinkingForToolCompatibleModels() throws Exception {
+    void shouldUseNativeDeepSeekOptionsForDeepSeekProvider() throws Exception {
         Config config = Config.defaultConfig();
         config.getAgent().setProvider("deepseek");
         config.getAgent().setModel("deepseek-v4-flash");
@@ -96,13 +97,13 @@ class AgentLoopExecutionOptionsTest {
                 AgentDefinition.class, String.class, String.class);
         method.setAccessible(true);
 
-        OpenAiChatOptions options = buildOptions(method.invoke(loop, null, "deepseek-v4-flash", "deepseek"));
+        DeepSeekChatOptions options = buildDeepSeekOptions(method.invoke(loop, null, "deepseek-v4-flash", "deepseek"));
 
-        assertEquals(Map.of("thinking", Map.of("type", "disabled")), options.getExtraBody());
+        assertEquals("deepseek-v4-flash", options.getModel());
     }
 
     @Test
-    void shouldNotDisableThinkingForDeepSeekReasoner() throws Exception {
+    void shouldCreateNativeDeepSeekChatModelForDeepSeekProvider() throws Exception {
         Config config = Config.defaultConfig();
         config.getAgent().setProvider("deepseek");
         config.getAgent().setModel("deepseek-reasoner");
@@ -117,20 +118,58 @@ class AgentLoopExecutionOptionsTest {
                 mock(SummaryService.class)
         );
 
-        Method method = AgentLoop.class.getDeclaredMethod("buildExecutionOptions",
-                AgentDefinition.class, String.class, String.class);
+        Method method = AgentLoop.class.getDeclaredMethod("createChatModel",
+                io.jobclaw.runtime.provider.ResolvedProviderConfig.class);
         method.setAccessible(true);
 
-        OpenAiChatOptions options = buildOptions(method.invoke(loop, null, "deepseek-reasoner", "deepseek"));
+        Object chatModel = method.invoke(loop, new io.jobclaw.runtime.provider.ResolvedProviderConfig(
+                "deepseek",
+                "deepseek-reasoner",
+                "sk-test",
+                "https://api.deepseek.com/v1",
+                "https://api.deepseek.com/v1",
+                false
+        ));
 
-        assertNull(options.getExtraBody());
+        assertInstanceOf(DeepSeekChatModel.class, chatModel);
     }
 
-    private OpenAiChatOptions buildOptions(Object value) {
+    @Test
+    void shouldStripOpenAiCompatibleV1SuffixForNativeDeepSeekBaseUrl() throws Exception {
+        Config config = Config.defaultConfig();
+        config.getAgent().setProvider("ollama");
+        config.getAgent().setModel("llama3.1");
+        AgentLoop loop = new AgentLoop(
+                config,
+                new SessionManager(),
+                new ToolCallback[0],
+                mock(ContextBuilder.class),
+                mock(ContextAssembler.class),
+                mock(ContextAssemblyPolicy.class),
+                mock(SummaryService.class)
+        );
+
+        Method method = AgentLoop.class.getDeclaredMethod("nativeDeepSeekBaseUrl", String.class);
+        method.setAccessible(true);
+
+        assertEquals("https://api.deepseek.com", method.invoke(loop, "https://api.deepseek.com/v1"));
+    }
+
+    private OpenAiChatOptions buildOpenAiOptions(Object value) {
         if (value instanceof OpenAiChatOptions options) {
             return options;
         }
         if (value instanceof OpenAiChatOptions.Builder builder) {
+            return builder.build();
+        }
+        throw new IllegalArgumentException("Unexpected options type: " + value);
+    }
+
+    private DeepSeekChatOptions buildDeepSeekOptions(Object value) {
+        if (value instanceof DeepSeekChatOptions options) {
+            return options;
+        }
+        if (value instanceof DeepSeekChatOptions.Builder builder) {
             return builder.build();
         }
         throw new IllegalArgumentException("Unexpected options type: " + value);

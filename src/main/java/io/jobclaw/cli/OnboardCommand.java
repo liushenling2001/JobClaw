@@ -332,7 +332,7 @@ public class OnboardCommand extends CliCommand {
                 "- 搜索信息用 `web_search`（百度千帆）\n" +
                 "- 读取文档用 `read_word` / `read_excel`\n" +
                 "- 文件操作用 `read_file` / `write_file` / `edit_file`\n" +
-                "- 执行命令用 `exec`（注意安全）\n" +
+                "- 执行命令用 `run_command`（注意安全）\n" +
                 "- 定时任务用 `cron`\n" +
                 "- 发送消息用 `message`\n" +
                 "- 创建子 Agent 用 `spawn`\n" +
@@ -404,7 +404,7 @@ public class OnboardCommand extends CliCommand {
                 "### 🛠️ 工具系统（14 个内置工具）\n" +
                 "- **文件操作**：read_file, write_file, list_dir, edit_file, append_file\n" +
                 "- **文档处理**：read_word (.doc/.docx), read_excel (.xls/.xlsx)\n" +
-                "- **命令执行**：exec（跨平台，安全控制）\n" +
+                "- **命令执行**：run_command（跨平台，安全控制）\n" +
                 "- **网络工具**：web_search（百度千帆）, web_fetch（网页抓取）\n" +
                 "- **系统工具**：cron（定时任务）, message（消息发送）, spawn（子 Agent）, query_token_usage（用量统计）\n" +
                 "- **MCP 集成**：mcp（Model Context Protocol，支持外部服务器）\n" +

@@ -118,7 +118,7 @@ public class SkillsTools {
         sb.append("- 严格遵循上述技能说明；如果技能声明了脚本或命令入口，请把 base-path 作为工作目录执行该入口。\n");
         sb.append("- 运行技能时不要自行读取、分析或修改技能内部实现文件；只有当用户明确要求创建、编辑、调试或修复技能时才可以检查或改动技能文件。\n");
         sb.append("- 不要通过 shell 读取 `.env`、密钥、令牌、凭据文件；需要配置时根据技能说明使用环境变量或让用户在安全位置配置。\n");
-        sb.append("- 长时间任务应在 run_command/exec 调用中设置合理 timeout，避免外层工具超时中断。");
+        sb.append("- 长时间任务应在 run_command 调用中设置合理 timeout，避免外层工具超时中断。");
 
         return sb.toString();
     }

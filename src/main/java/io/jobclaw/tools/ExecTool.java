@@ -27,6 +27,7 @@ import java.util.concurrent.TimeUnit;
  * - 安全警告
  */
 @Component
+@Deprecated(since = "1.0.0", forRemoval = true)
 public class ExecTool {
 
     private static final Logger logger = LoggerFactory.getLogger(ExecTool.class);
@@ -40,7 +41,7 @@ public class ExecTool {
         this.config = config;
     }
 
-    @Tool(name = "exec", description = "Execute a shell command and return output. WARNING: Use with caution!")
+    @Tool(name = "exec", description = "Deprecated. Use run_command instead. This legacy shell command tool will be removed.")
     public String execute(
         @ToolParam(description = "The shell command to execute") String command,
         @ToolParam(description = "Working directory (optional, defaults to current directory)") String workingDir,
@@ -51,7 +52,7 @@ public class ExecTool {
         }
         if (looksLikeUnsafeInlineScript(command)) {
             return "Error: Inline script command is too large or complex for reliable shell execution. "
-                    + "Write the script to a temporary .py/.ps1/.sh file with write_file first, then run that file with exec. "
+                    + "Write the script to a temporary .py/.ps1/.sh file with write_file first, then run that file with run_command. "
                     + "This allows stderr, exit code, and repair to work reliably.";
         }
 
