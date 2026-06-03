@@ -12,6 +12,21 @@ JobClaw 是一个基于 Spring Boot 4 和 Spring AI 2 的智能体运行框架�
 - 工具调用基于 Spring AI `ToolCallback`
 - 单次 LLM 调用统一收敛到 `SpringAiLlmClient`
 
+## 热点能力
+
+JobClaw 的重点不是“能聊天”，而是让智能体在复杂任务里更不容易跑散。下面这些能力是当前主线最值得关注的地方。
+
+| 能力 | 解决什么问题 | 用户能得到什么 |
+| --- | --- | --- |
+| Skill Harness / Managed Runner | 批量任务容易漏项、重复、半路断掉 | 对文件夹、论文集、表格批处理时，框架按 item 推进并记录状态 |
+| 经验记忆增强 | 模型容易重复犯错，或者错误套用旧经验 | 经验只作为保守提示，按任务类型和对象类型筛选，避免把旧路径、旧 manifest 硬套到新任务 |
+| context_ref | 工具结果和子智能体结果太长 | 大结果落盘成引用，模型按需读取、搜索、摘要，不把上下文撑爆 |
+| completion 产物兜底 | 模型口头说完成，但文件没生成 | 最终回答前检查文件是否真实存在、非空，并要求模型修复 |
+| 用户交互暂停 | 任务中途必须确认，但框架只会往前冲 | 模型可以请求用户输入，前端显示等待状态，而不是误判失败 |
+| 上传资料到 workspace | 用户资料无法自然进入任务 | 前端上传后把本地路径交给智能体，后续可直接读取 PDF、Word、Excel |
+| 动态工具注入 | 工具太多会干扰模型 | 按任务 profile、skill 和角色选择工具，普通任务默认保持轻量 |
+| Spring AI 2 原生适配 | 自建 HTTPProvider 难维护 | DeepSeek、OpenAI compatible 等统一走 Spring AI 客户端体系 |
+
 ## 核心定位
 
 JobClaw 关注的是“能把任务做完”的智能体运行时。
@@ -206,6 +221,38 @@ E:\jobwork\skills
 - `batch-document-extract-excel`：批量读取文档，抽取字段，生成 Excel
 - `paper-folder-literature-review`：读取论文文件夹，生成综述或研究笔记
 
+## Skill Harness
+
+这里的 harness 指的是 JobClaw 为 skill 提供的一套运行护栏和执行框架。它不是替模型思考，也不是把所有任务都强行拆成流程，而是在 skill 明确声明后，把容易机械出错的部分交给框架处理。
+
+Skill Harness 主要包含：
+
+- skill 激活状态：记录当前任务正在执行哪个 skill
+- 工具白名单：item 执行时只给 skill 允许的工具
+- manifest 合同：记录真实 item 列表、状态、中间产物和最终产物预期
+- managed runner：按 item 推进执行，不让模型在一个 item 里重启整个批处理
+- item 输出合同：要求单项结果是 JSON、文本、Markdown 或文件路径
+- 中间结果保存：把每个 item 的原始输出保存为 context_ref 或 item 文件
+- 聚合产物维护：可持续追加 JSONL、Markdown 或 JSON array
+- finalize 交还：item loop 完成后，把控制权交回主模型生成最终文件
+
+它适合：
+
+- 多文件抽取
+- 批量论文阅读
+- 多表格检查
+- 大目录巡检
+- 可以拆成独立 item 的长任务
+
+它不适合：
+
+- 普通问答
+- 单文件编辑
+- 强依赖全局推理的开放任务
+- 需要模型自由探索、频繁改变步骤的任务
+
+JobClaw 对 harness 的设计是保守的：只有 skill 明确声明 `mode: runner`，并且模型显式创建 `executionMode=managed` 的 manifest，框架才接管 item loop。普通 direct 任务不会被框架偷偷改造成批处理。
+
 ## Manifest 与长任务
 
 `manifest` 是显式多项任务台账，用于记录批量任务的每个 item 状态。
@@ -299,6 +346,17 @@ JobClaw 有两类长期沉淀：
 经验来自执行过程中的候选总结和人工筛选，用来帮助后续任务避免重复失败。
 
 经验注入是保守的：相似不代表相关。系统会尽量避免把“看起来像”的旧任务经验硬套到当前任务上，尤其是涉及路径、文件夹、删除、覆盖、批处理这类高风险操作时。
+
+经验增强重点做了几件事：
+
+- 提取任务签名：区分文件处理、GitHub、文档综述、清理目录、批处理等任务类型
+- 提取对象类型：例如 folder、file、paper、issue、spreadsheet
+- 过滤易污染内容：旧路径、旧 manifestId、旧 artifactPath、旧 pending/done 计数不会作为可复用指令注入
+- 记录用户态：支持 pin、forget、accept、reject，避免系统自己把所有候选都当成真经验
+- 注入为 guidance：经验只提示流程和风险，不覆盖当前用户明确路径和目标
+- 复盘报告：定期或手动生成 `.jobclaw/experience/latest.md`，供用户审阅
+
+例如，历史经验里有“清理 D:\old\folder 前先 dry-run”，当前用户要求“清理 E:\new\data”。系统可以注入“清理前先 dry-run 和确认目标路径”这个流程经验，但不会把 `D:\old\folder` 当成当前目标。
 
 经验复盘可以生成 `.jobclaw/experience` 下的报告，并在启用 LLM review 时调用 `SpringAiLlmClient` 做精炼。
 
