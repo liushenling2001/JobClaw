@@ -115,6 +115,10 @@ public class CompletionRegistry {
         );
     }
 
+    public boolean hasContract(String sessionKey, String runId) {
+        return contracts.containsKey(key(sessionKey, runId));
+    }
+
     public void clear(String sessionKey, String runId) {
         contracts.remove(key(sessionKey, runId));
     }

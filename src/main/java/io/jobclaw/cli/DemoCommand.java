@@ -103,7 +103,7 @@ public class DemoCommand extends CliCommand {
 
     private int runAgentBasicDemo() {
         System.out.println(LOGO + " Running demo: agent-basic");
-        System.out.println("这个 Demo 会加载配置、初始化 LLMProvider 和 AgentLoop，然后用一个固定问题跑完一次 CLI 对话流程。\n");
+        System.out.println("这个 Demo 会加载配置、初始化 AgentLoop，然后用一个固定问题跑完一次 CLI 对话流程。\n");
 
         // 1. 加载配置（用于验证配置是否正确加载）
         Config config;

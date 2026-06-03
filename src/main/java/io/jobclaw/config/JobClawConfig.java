@@ -14,11 +14,8 @@ import io.jobclaw.context.DefaultContextAssembler;
 import io.jobclaw.cron.CronService;
 import io.jobclaw.heartbeat.HeartbeatService;
 import io.jobclaw.mcp.MCPService;
-import io.jobclaw.providers.LLMProvider;
-import io.jobclaw.providers.SpringAiLLMProvider;
 import io.jobclaw.retrieval.RetrievalService;
 import io.jobclaw.retrieval.SqliteRetrievalService;
-import io.jobclaw.runtime.provider.ProviderRuntime;
 import io.jobclaw.security.SecurityGuard;
 import io.jobclaw.session.SessionManager;
 import io.jobclaw.skills.SkillsService;
@@ -131,12 +128,6 @@ public class JobClawConfig {
                                                        SessionManager sessionManager,
                                                        SummaryService summaryService) {
         return new DefaultContextAssemblyPolicy(config.getAgent(), sessionManager, summaryService);
-    }
-
-    @Bean
-    @ConditionalOnMissingBean
-    public LLMProvider llmProvider(Config config, ProviderRuntime providerRuntime) {
-        return new SpringAiLLMProvider(config, providerRuntime);
     }
 
     @Bean

@@ -27,11 +27,8 @@ import io.jobclaw.context.result.ResultStore;
 import io.jobclaw.cron.CronService;
 import io.jobclaw.cron.CronJobDispatcher;
 import io.jobclaw.mcp.MCPService;
-import io.jobclaw.providers.LLMProvider;
-import io.jobclaw.providers.SpringAiLLMProvider;
 import io.jobclaw.retrieval.RetrievalService;
 import io.jobclaw.retrieval.SqliteRetrievalService;
-import io.jobclaw.runtime.provider.ProviderRuntime;
 import io.jobclaw.session.SessionManager;
 import io.jobclaw.skills.SkillsLoader;
 import io.jobclaw.skills.SkillsService;
@@ -50,7 +47,7 @@ import java.nio.file.Paths;
 
 /**
  * Spring configuration for Agent-related beans
- * Ensures consistent initialization of LLMProvider, AgentLoop, and related components
+ * Ensures consistent initialization of AgentLoop and related components
  */
 @Configuration
 public class AgentBeansConfig {
@@ -196,12 +193,6 @@ public class AgentBeansConfig {
 
     @Bean
     @ConditionalOnMissingBean
-    public LLMProvider llmProvider(Config config, ProviderRuntime providerRuntime) {
-        return new SpringAiLLMProvider(config, providerRuntime);
-    }
-
-    @Bean
-    @ConditionalOnMissingBean
     public CronService cronService(Config config, CronJobDispatcher cronJobDispatcher) {
         CronService cronService = new CronService(config.getWorkspacePath());
         cronService.setOnJob(cronJobDispatcher);
@@ -237,6 +228,7 @@ public class AgentBeansConfig {
             ContextRefTool contextRefTool,
             ManifestTool manifestTool,
             CompletionTool completionTool,
+            UserInputTool userInputTool,
             SpawnTool spawnTool,
             CollaborateTool collaborateTool) {
 
@@ -246,7 +238,8 @@ public class AgentBeansConfig {
                 .toolObjects(fileTools, runCommandTool, skillsTools, messageTool, cronTool,
                             mcpTool, tokenUsageTool, webSearchTool, webFetchTool,
                             sharedBoardTool,
-                            agentCatalogTool, memoryTool, contextRefTool, manifestTool, completionTool, spawnTool, collaborateTool)
+                            agentCatalogTool, memoryTool, contextRefTool, manifestTool, completionTool, userInputTool,
+                            spawnTool, collaborateTool)
                 .build()
                 .getToolCallbacks();
     }

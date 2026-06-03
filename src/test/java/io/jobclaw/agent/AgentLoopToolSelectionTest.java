@@ -36,7 +36,7 @@ class AgentLoopToolSelectionTest {
     void shouldUseBaseToolsetWhenNoExplicitAllowlist() throws Exception {
         AgentLoop loop = loopWithTools(
                 "memory", "skills", "read_pdf", "spawn", "run_command",
-                "context_ref", "manifest", "completion", "list_dir", "read_file", "exec"
+                "context_ref", "manifest", "completion", "user_input", "list_dir", "read_file", "exec"
         );
 
         ToolCallback[] selected = invokeFilter(loop, null, "解释一下上下文压缩");
@@ -46,6 +46,7 @@ class AgentLoopToolSelectionTest {
         assertTrue(names.contains("context_ref"));
         assertTrue(names.contains("manifest"));
         assertTrue(names.contains("completion"));
+        assertTrue(names.contains("user_input"));
         assertTrue(names.contains("list_dir"));
         assertTrue(names.contains("read_file"));
         assertTrue(names.contains("run_command"));
@@ -143,7 +144,7 @@ class AgentLoopToolSelectionTest {
                 "skills", "context_ref", "manifest", "completion", "list_dir", "read_file", "run_command",
                 "write_file", "edit_file", "append_file", "read_pdf", "read_word", "read_excel",
                 "web_search", "web_fetch", "message", "memory", "spawn", "collaborate",
-                "agent_catalog", "cron", "mcp"
+                "agent_catalog", "board_write", "board_read", "cron", "mcp", "query_token_usage", "user_input"
         );
 
         assertSelectedTools(loop, "你看下这个项目能不能编译通过，顺手跑一下测试",
@@ -157,11 +158,28 @@ class AgentLoopToolSelectionTest {
         assertSelectedTools(loop, "明天早上提醒我继续检查这个任务",
                 "cron");
         assertSelectedTools(loop, "这个任务让两个子 agent 协作，一个写代码一个审查",
-                "spawn", "collaborate", "agent_catalog");
+                "spawn", "collaborate", "agent_catalog", "board_write", "board_read");
         assertSelectedTools(loop, "连接 MCP 服务看一下里面有什么资源",
                 "mcp");
         assertSelectedTools(loop, "记住这次处理 Excel 的经验，下次遇到类似任务提醒我",
                 "memory", "read_excel");
+        assertSelectedTools(loop, "查一下今天 token 用量和 API 费用",
+                "query_token_usage");
+    }
+
+    @Test
+    void artifactIntentShouldRequireActionAndArtifactObject() {
+        assertTrue(AgentLoop.hasArtifactIntent("把这个报告修改后生成一个新docx文档"));
+        assertTrue(AgentLoop.hasArtifactIntent("帮我修改这个word文档并保存"));
+        assertTrue(AgentLoop.hasArtifactIntent("形成excel，放在当前文件夹"));
+        assertFalse(AgentLoop.hasArtifactIntent("解释一下这个文档的主要观点"));
+        assertFalse(AgentLoop.hasArtifactIntent("帮我分析一下上下文压缩问题"));
+    }
+
+    @Test
+    void shouldDetectAbsoluteArtifactPathInFinalCandidate() {
+        assertTrue(AgentLoop.containsArtifactPath("结果已保存到 D:\\work\\out\\result.docx"));
+        assertFalse(AgentLoop.containsArtifactPath("结果已经保存。"));
     }
 
     @Test
@@ -199,13 +217,13 @@ class AgentLoopToolSelectionTest {
     void managedRunnerShouldUseDefaultReadOnlyToolsWhenSkillDoesNotDeclareAllowlist() throws Exception {
         AgentLoop loop = loopWithTools(
                 "skills", "manifest", "write_file", "append_file", "read_file",
-                "read_word", "read_pdf", "context_ref", "run_command", "spawn"
+                "read_word", "read_pdf", "context_ref", "user_input", "run_command", "spawn"
         );
 
         ToolCallback[] selected = invokeManagedRunnerFilter(loop,
                 Arrays.stream(new String[]{
                 "skills", "manifest", "write_file", "append_file", "read_file",
-                "read_word", "read_pdf", "context_ref", "run_command", "spawn"
+                "read_word", "read_pdf", "context_ref", "user_input", "run_command", "spawn"
                 }).map(this::tool).toArray(ToolCallback[]::new),
                 "session-a",
                 "run-1");
@@ -215,6 +233,7 @@ class AgentLoopToolSelectionTest {
         assertTrue(names.contains("read_word"));
         assertTrue(names.contains("read_pdf"));
         assertTrue(names.contains("context_ref"));
+        assertTrue(names.contains("user_input"));
         assertFalse(names.contains("skills"));
         assertFalse(names.contains("manifest"));
         assertFalse(names.contains("write_file"));

@@ -11,6 +11,8 @@ import io.jobclaw.agent.completion.CompletionGateResult;
 import io.jobclaw.agent.completion.CompletionRegistry;
 import io.jobclaw.agent.manifest.ActiveManifestRegistry;
 import io.jobclaw.agent.skill.ActiveSkillRegistry;
+import io.jobclaw.agent.userinput.UserInputRequest;
+import io.jobclaw.agent.userinput.UserInputRequestRegistry;
 import io.jobclaw.context.ContextAssembler;
 import io.jobclaw.context.ContextAssemblyOptions;
 import io.jobclaw.context.ContextAssemblyPolicy;
@@ -70,6 +72,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * AgentLoop - 基于 Spring AI 重构（使用 OpenAI 兼容模式支持 DashScope Coding Plan）
@@ -88,20 +92,23 @@ public class AgentLoop {
             "context_ref",
             "manifest",
             "completion",
+            "user_input",
             "list_dir",
             "read_file",
             "run_command"
     );
-    private static final Map<String, Set<String>> TOOL_PROFILE_TOOL_NAMES = Map.of(
-            "code", Set.of("write_file", "edit_file", "append_file"),
-            "document", Set.of("read_pdf", "read_word", "write_file", "append_file"),
-            "spreadsheet", Set.of("read_excel", "write_file", "append_file"),
-            "web", Set.of("web_search", "web_fetch"),
-            "github", Set.of("message"),
-            "memory", Set.of("memory"),
-            "agent", Set.of("spawn", "collaborate", "agent_catalog"),
-            "scheduler", Set.of("cron"),
-            "mcp", Set.of("mcp")
+    private static final Map<String, Set<String>> TOOL_PROFILE_TOOL_NAMES = Map.ofEntries(
+            Map.entry("code", Set.of("write_file", "edit_file", "append_file")),
+            Map.entry("document", Set.of("read_pdf", "read_word", "write_file", "append_file")),
+            Map.entry("spreadsheet", Set.of("read_excel", "write_file", "append_file")),
+            Map.entry("web", Set.of("web_search", "web_fetch")),
+            Map.entry("github", Set.of("message")),
+            Map.entry("messaging", Set.of("message")),
+            Map.entry("memory", Set.of("memory")),
+            Map.entry("agent", Set.of("spawn", "collaborate", "agent_catalog", "board_write", "board_read")),
+            Map.entry("scheduler", Set.of("cron")),
+            Map.entry("mcp", Set.of("mcp")),
+            Map.entry("usage", Set.of("query_token_usage"))
     );
 
     private final Config config;
@@ -123,6 +130,7 @@ public class AgentLoop {
     private final CompletionRegistry completionRegistry;
     private final ActiveSkillRegistry activeSkillRegistry;
     private final ActiveManifestRegistry activeManifestRegistry;
+    private final UserInputRequestRegistry userInputRequestRegistry = new UserInputRequestRegistry();
     private final ResultStore resultStore;
 
     // 无工具调用的专用 ChatClient（用于摘要生成）
@@ -135,6 +143,13 @@ public class AgentLoop {
     private static final String MANAGED_MANIFEST_TAKEOVER_REASON = "managed manifest control returned to framework loop";
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final int ASSISTANT_DRAFT_CHECKPOINT_CHARS = 1000;
+    private static final Pattern WINDOWS_ABSOLUTE_PATH = Pattern.compile("[A-Za-z]:\\\\[^\\r\\n<>|?*\"]+");
+    private static final Pattern ARTIFACT_ACTION_PATTERN = Pattern.compile(
+            "(?i)(生成|新建|另存|保存|导出|写入|形成|产出|输出|修改|修订|改完|放在|存到|new\\s+file|save\\s+as|export|write\\s+(?:to|file)|generate|create)"
+    );
+    private static final Pattern ARTIFACT_OBJECT_PATTERN = Pattern.compile(
+            "(?i)(\\.docx|\\.doc|\\.xlsx|\\.xls|\\.pdf|\\.csv|\\.jsonl|\\.json|\\.md|\\.txt|\\.pptx|excel|word|pdf|文档|报告|表格|文件|当前文件夹|目录|folder|directory|document|report|spreadsheet)"
+    );
 
     public AgentLoop(Config config, SessionManager sessionManager,
                      ToolCallback[] allToolCallbacks,
@@ -431,6 +446,7 @@ public class AgentLoop {
                 previousScope
         );
         AgentExecutionContext.setCurrentContext(scope);
+        userInputRequestRegistry.clear(sessionKey, scope.runId());
         boolean userMessagePersisted = false;
         boolean assistantMessagePersisted = false;
         StringBuilder fullResponse = new StringBuilder();
@@ -438,6 +454,8 @@ public class AgentLoop {
         int managedManifestContinuations = 0;
         boolean managedManifestHandoffIssued = false;
         int managedCreateRepairAttempts = 0;
+        boolean artifactCompletionPromptIssued = false;
+        ArtifactCompletionTracker artifactCompletionTracker = new ArtifactCompletionTracker();
 
         try {
             Session session = sessionManager.getOrCreate(sessionKey);
@@ -464,7 +482,7 @@ public class AgentLoop {
 
             // 创建工具回调（支持工具过滤）
             ToolCallback[] rawTools = filterToolsByDefinition(definition, userContent);
-            ToolCallback[] tools = wrapToolCallbacks(rawTools, sessionKey, eventCallback);
+            ToolCallback[] tools = wrapToolCallbacks(rawTools, sessionKey, eventCallback, artifactCompletionTracker);
 
             ExecutionClientBundle executionClientBundle = createExecutionClientBundle(definition);
             ChatOptions.Builder<?> options = buildExecutionOptions(definition, executionClientBundle.model(),
@@ -501,6 +519,14 @@ public class AgentLoop {
                         fullResponse,
                         true
                 );
+
+                Optional<UserInputRequest> pendingUserInput = userInputRequestRegistry.getPending(scope.sessionKey(), scope.runId());
+                if (pendingUserInput.isPresent()) {
+                    String waitingResponse = emitUserInputRequired(sessionKey, pendingUserInput.get(), eventCallback, startTime);
+                    sessionManager.finalizeAssistantMessage(sessionKey, waitingResponse);
+                    assistantMessagePersisted = true;
+                    return waitingResponse;
+                }
 
                 String createRepairPrompt = buildManagedCreateRepairPrompt(
                         scope.sessionKey(),
@@ -563,6 +589,15 @@ public class AgentLoop {
                             assistantMessagePersisted = true;
                             return runnerResult.message();
                         }
+                        if (runnerResult.waitingForUserInput()) {
+                            Optional<UserInputRequest> pendingRunnerInput = userInputRequestRegistry.getPending(scope.sessionKey(), scope.runId());
+                            String waitingResponse = pendingRunnerInput
+                                    .map(request -> emitUserInputRequired(sessionKey, request, eventCallback, startTime))
+                                    .orElse(runnerResult.message());
+                            sessionManager.finalizeAssistantMessage(sessionKey, waitingResponse);
+                            assistantMessagePersisted = true;
+                            return waitingResponse;
+                        }
                         if (!runnerResult.message().isBlank()) {
                             managedManifestHandoffIssued = true;
                             promptMessages.add(new AssistantMessage(attemptResponse));
@@ -589,6 +624,27 @@ public class AgentLoop {
                         promptMessages.add(new UserMessage(managedHandoffPrompt));
                         continue;
                     }
+                }
+
+                String artifactGuardPrompt = buildArtifactCompletionGuardPrompt(
+                        scope.sessionKey(),
+                        scope.runId(),
+                        userContent,
+                        attemptResponse,
+                        artifactCompletionTracker,
+                        artifactCompletionPromptIssued
+                );
+                if (!artifactGuardPrompt.isBlank()) {
+                    artifactCompletionPromptIssued = true;
+                    logger.info("artifact completion guard retry session={} run={} promptChars={} candidateChars={} writeEvidence={}",
+                            sessionKey,
+                            scope.runId(),
+                            artifactGuardPrompt.length(),
+                            attemptResponse != null ? attemptResponse.length() : 0,
+                            artifactCompletionTracker.hasWriteEvidence());
+                    promptMessages.add(new AssistantMessage(attemptResponse));
+                    promptMessages.add(new UserMessage(artifactGuardPrompt));
+                    continue;
                 }
 
                 CompletionGateResult gateResult = completionRegistry.evaluateForFinal(sessionKey, scope.runId(), attemptResponse);
@@ -1018,6 +1074,76 @@ public class AgentLoop {
         return sb.toString();
     }
 
+    private String buildArtifactCompletionGuardPrompt(String sessionKey,
+                                                      String runId,
+                                                      String userContent,
+                                                      String attemptResponse,
+                                                      ArtifactCompletionTracker tracker,
+                                                      boolean alreadyIssued) {
+        if (alreadyIssued || completionRegistry.hasContract(sessionKey, runId)) {
+            return "";
+        }
+        if (activeManifestRegistry.findManagedBlockingState(sessionKey, runId).isPresent()) {
+            return "";
+        }
+        boolean intentSignal = hasArtifactIntent(userContent);
+        boolean writeEvidence = tracker != null && tracker.hasWriteEvidence();
+        boolean responsePathSignal = containsArtifactPath(attemptResponse);
+        if (!intentSignal && !writeEvidence) {
+            return "";
+        }
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("JOBCLAW_ARTIFACT_COMPLETION_GUARD\n");
+        sb.append("You are about to give a final answer, but this turn has signals that a file or directory artifact may be required.\n");
+        sb.append("This is a one-time finalization check. Do not restart the task from scratch.\n\n");
+        sb.append("Signals:\n");
+        sb.append("- userArtifactIntent: ").append(intentSignal).append("\n");
+        sb.append("- writeToolEvidence: ").append(writeEvidence).append("\n");
+        sb.append("- finalResponsePathEvidence: ").append(responsePathSignal).append("\n");
+        List<String> paths = tracker != null ? tracker.artifactPaths() : List.of();
+        if (!paths.isEmpty()) {
+            sb.append("- toolArtifactPathCandidates:\n");
+            paths.stream().limit(8).forEach(path -> sb.append("  - ").append(path).append("\n"));
+        }
+        sb.append("\nRequired response behavior:\n");
+        sb.append("- If the current user request requires a generated/modified/exported artifact and it is already complete, final answer with exactly one concrete absolute artifact path.\n");
+        sb.append("- If the artifact is not complete, continue using tools to create or finish it before final answer.\n");
+        sb.append("- If the current user request does not require an artifact, say briefly that no artifact is required and answer normally.\n");
+        sb.append("- If you now know the expected artifact type but not a stable path yet, call completion(action='register', checks='[{\"type\":\"artifact_expected\",\"artifactType\":\"file\"}]') before continuing.\n");
+        return sb.toString();
+    }
+
+    static boolean hasArtifactIntent(String text) {
+        if (text == null || text.isBlank()) {
+            return false;
+        }
+        return ARTIFACT_ACTION_PATTERN.matcher(text).find()
+                && ARTIFACT_OBJECT_PATTERN.matcher(text).find();
+    }
+
+    static boolean containsArtifactPath(String text) {
+        if (text == null || text.isBlank()) {
+            return false;
+        }
+        Matcher matcher = WINDOWS_ABSOLUTE_PATH.matcher(text);
+        while (matcher.find()) {
+            String path = trimArtifactPathCandidate(matcher.group());
+            if (!path.isBlank()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String trimArtifactPathCandidate(String value) {
+        String result = value == null ? "" : value.trim();
+        while (!result.isEmpty() && ".,;，。；、)）]】'\"`".indexOf(result.charAt(result.length() - 1)) >= 0) {
+            result = result.substring(0, result.length() - 1).trim();
+        }
+        return result;
+    }
+
     private String truncateForCompletionRecovery(String text) {
         int maxChars = 6000;
         if (text.length() <= maxChars) {
@@ -1034,6 +1160,46 @@ public class AgentLoop {
             return partialResponse.toString();
         }
         return errorResponse;
+    }
+
+    private String emitUserInputRequired(String sessionKey,
+                                         UserInputRequest request,
+                                         Consumer<ExecutionEvent> eventCallback,
+                                         long startTime) {
+        String response = formatUserInputResponse(request);
+        logger.info("agent run waiting for user input session={} run={} requestId={} requiredFor={}",
+                sessionKey, request.runId(), request.requestId(), request.requiredFor());
+        if (eventCallback != null) {
+            Map<String, Object> metadata = new LinkedHashMap<>();
+            metadata.put("source", "user_input");
+            metadata.put("status", "waiting_user_input");
+            metadata.put("requestId", request.requestId());
+            metadata.put("runId", request.runId());
+            metadata.put("requiredFor", request.requiredFor());
+            metadata.put("resumeKey", request.resumeKey());
+            metadata.put("reason", request.reason());
+            metadata.put("options", request.options());
+            eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.CUSTOM, response, metadata));
+            eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.THINK_END,
+                    "等待用户反馈，耗时：" + (System.currentTimeMillis() - startTime) + "ms"));
+            eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.FINAL_RESPONSE, response, metadata));
+        }
+        return response;
+    }
+
+    private String formatUserInputResponse(UserInputRequest request) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(request.question());
+        if (!request.options().isEmpty()) {
+            sb.append("\n\n可选项：");
+            for (int i = 0; i < request.options().size(); i++) {
+                sb.append("\n").append(i + 1).append(". ").append(request.options().get(i));
+            }
+        }
+        if (request.reason() != null && !request.reason().isBlank()) {
+            sb.append("\n\n原因：").append(request.reason());
+        }
+        return sb.toString();
     }
 
     private ManagedRunnerResult runManagedSkillRunner(ExecutionClientBundle executionClientBundle,
@@ -1110,6 +1276,9 @@ public class AgentLoop {
                                 workerResponse,
                                 false
                         );
+                        if (userInputRequestRegistry.getPending(sessionKey, runId).isPresent()) {
+                            return workerResponse.toString();
+                        }
                         closeManagedItemFromModelResult(sessionKey, runId, itemId, resolvedItemArtifactPath,
                                 workerResponse.toString(), eventCallback);
                     } catch (Exception e) {
@@ -1123,6 +1292,12 @@ public class AgentLoop {
             }
             for (CompletableFuture<String> worker : workers) {
                 worker.join();
+            }
+            Optional<UserInputRequest> pendingUserInput = userInputRequestRegistry.getPending(sessionKey, runId);
+            if (pendingUserInput.isPresent()) {
+                logger.info("managed skill runner paused for user input session={} run={} requestId={}",
+                        sessionKey, runId, pendingUserInput.get().requestId());
+                return new ManagedRunnerResult(formatUserInputResponse(pendingUserInput.get()), false, true);
             }
         }
 
@@ -1643,6 +1818,7 @@ public class AgentLoop {
         return normalized.startsWith("read_")
                 || "list_dir".equals(normalized)
                 || "context_ref".equals(normalized)
+                || "user_input".equals(normalized)
                 || "web_fetch".equals(normalized)
                 || "web_search".equals(normalized);
     }
@@ -1894,7 +2070,10 @@ public class AgentLoop {
         return messages;
     }
 
-    private record ManagedRunnerResult(String message, boolean error) {
+    private record ManagedRunnerResult(String message, boolean error, boolean waitingForUserInput) {
+        private ManagedRunnerResult(String message, boolean error) {
+            this(message, error, false);
+        }
     }
 
     private String runModelAttempt(ExecutionClientBundle executionClientBundle,
@@ -2113,7 +2292,7 @@ public class AgentLoop {
         return node == null || node.isNull() || (node.isTextual() && node.asText("").isBlank());
     }
 
-    private boolean isToolErrorResponse(String response) {
+    private static boolean isToolErrorResponse(String response) {
         return response != null && response.stripLeading().startsWith("Error:");
     }
 
@@ -2339,7 +2518,8 @@ public class AgentLoop {
      */
     private ToolCallback[] wrapToolCallbacks(ToolCallback[] rawCallbacks,
                                              String sessionKey,
-                                             Consumer<ExecutionEvent> eventCallback) {
+                                             Consumer<ExecutionEvent> eventCallback,
+                                             ArtifactCompletionTracker artifactCompletionTracker) {
         if (rawCallbacks == null) {
             return rawCallbacks;
         }
@@ -2348,7 +2528,7 @@ public class AgentLoop {
 
         // 包装每个 ToolCallback，使其在执行时发布事件
         return java.util.Arrays.stream(rawCallbacks)
-                .map(callback -> wrapSingleCallback(callback, sessionKey, eventCallback))
+                .map(callback -> wrapSingleCallback(callback, sessionKey, eventCallback, artifactCompletionTracker))
                 .toArray(ToolCallback[]::new);
     }
 
@@ -2362,7 +2542,8 @@ public class AgentLoop {
      */
     private ToolCallback wrapSingleCallback(ToolCallback callback,
                                             String sessionKey,
-                                            Consumer<ExecutionEvent> eventCallback) {
+                                            Consumer<ExecutionEvent> eventCallback,
+                                            ArtifactCompletionTracker artifactCompletionTracker) {
         AgentExecutionContext.ExecutionScope capturedScope = AgentExecutionContext.getCurrentScope();
         return new ToolCallback() {
             @Override
@@ -2389,6 +2570,13 @@ public class AgentLoop {
                             callback,
                             eventCallback
                     ));
+                    if (artifactCompletionTracker != null) {
+                        artifactCompletionTracker.recordToolResult(
+                                getToolDefinition().name(),
+                                effectiveRequest,
+                                result
+                        );
+                    }
                     if (shouldReturnManagedManifestControl(getToolDefinition().name(), effectiveRequest, result)) {
                         logger.info("managed manifest tool boundary reached session={} run={} tool={} request={}",
                                 capturedScope != null ? capturedScope.sessionKey() : sessionKey,
@@ -2407,6 +2595,12 @@ public class AgentLoop {
                 }
             }
         };
+    }
+
+    private ToolCallback wrapSingleCallback(ToolCallback callback,
+                                            String sessionKey,
+                                            Consumer<ExecutionEvent> eventCallback) {
+        return wrapSingleCallback(callback, sessionKey, eventCallback, null);
     }
 
     /**
@@ -2558,6 +2752,9 @@ public class AgentLoop {
         }
         if (containsAny(text, "mcp", "model context protocol")) {
             profiles.add("mcp");
+        }
+        if (containsAny(text, "token", "用量", "消耗", "费用", "计费", "api 费用", "api费用", "usage")) {
+            profiles.add("usage");
         }
         return profiles;
     }
@@ -2763,6 +2960,57 @@ public class AgentLoop {
 
     static String normalizeStreamDelta(CharSequence currentResponse, String nextChunk) {
         return new StreamDeltaNormalizer().normalize(currentResponse, nextChunk);
+    }
+
+    static final class ArtifactCompletionTracker {
+        private static final List<String> WRITE_TOOLS = List.of(
+                "write_file",
+                "edit_file",
+                "append_file"
+        );
+
+        private final List<String> artifactPaths = new ArrayList<>();
+        private boolean writeEvidence;
+
+        void recordToolResult(String toolName, String request, ToolExecutionResult result) {
+            String normalizedTool = toolName == null ? "" : toolName.trim().toLowerCase();
+            boolean writeTool = WRITE_TOOLS.contains(normalizedTool);
+            if (!writeTool && !isSuccessful(result)) {
+                return;
+            }
+            if (writeTool && isSuccessful(result)) {
+                writeEvidence = true;
+            }
+            collectPaths(request);
+            if (result != null) {
+                collectPaths(result.response());
+            }
+        }
+
+        boolean hasWriteEvidence() {
+            return writeEvidence;
+        }
+
+        List<String> artifactPaths() {
+            return artifactPaths.stream().distinct().toList();
+        }
+
+        private boolean isSuccessful(ToolExecutionResult result) {
+            return result != null && result.success() && !isToolErrorResponse(result.response());
+        }
+
+        private void collectPaths(String text) {
+            if (text == null || text.isBlank()) {
+                return;
+            }
+            Matcher matcher = WINDOWS_ABSOLUTE_PATH.matcher(text);
+            while (matcher.find()) {
+                String path = trimArtifactPathCandidate(matcher.group());
+                if (!path.isBlank() && !artifactPaths.contains(path)) {
+                    artifactPaths.add(path);
+                }
+            }
+        }
     }
 
     static final class StreamDeltaNormalizer {

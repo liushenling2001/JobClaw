@@ -31,13 +31,17 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.Base64;
@@ -254,9 +258,22 @@ public class WebConsoleController {
      */
     @PostMapping(value = "/execute/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public ResponseEntity<SseEmitter> executeStream(@RequestBody ChatRequest request) {
-        SseEmitter emitter = new SseEmitter(0L);
-
         String sessionKey = request.getSessionKey() != null ? request.getSessionKey() : "web:default";
+        return executeStreamInternal(sessionKey, request.getMessage());
+    }
+
+    @PostMapping(value = "/execute/stream", consumes = MediaType.MULTIPART_FORM_DATA_VALUE, produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public ResponseEntity<SseEmitter> executeStreamWithUploads(
+            @RequestParam("message") String message,
+            @RequestParam(value = "sessionKey", required = false) String sessionKey,
+            @RequestPart(value = "files", required = false) MultipartFile[] files) {
+        String resolvedSessionKey = sessionKey != null && !sessionKey.isBlank() ? sessionKey : "web:default";
+        String messageWithUploads = appendUploadedFilePaths(message, resolvedSessionKey, files);
+        return executeStreamInternal(resolvedSessionKey, messageWithUploads);
+    }
+
+    private ResponseEntity<SseEmitter> executeStreamInternal(String sessionKey, String message) {
+        SseEmitter emitter = new SseEmitter(0L);
 
         // 鐠併垽妲勯幍褑顢戞禍瀣╂
         String subscriberId = executionTraceService.subscribe(sessionKey, emitter);
@@ -275,7 +292,7 @@ public class WebConsoleController {
                 logger.debug("Sent connected event to client");
 
                 // 閹笛嗩攽娴犺濮熼敍鍫濈敨閸ョ偠鐨熼敍? 娴ｈ法鏁?orchestrator 閺€顖涘瘮婢?Agent 濡€崇础閻ㄥ嫬娲栫拫?
-                String result = orchestrator.process(sessionKey, request.getMessage(),
+                String result = orchestrator.process(sessionKey, message,
                     (ExecutionEvent event) -> {
                         try {
                             // 闁俺绻?ExecutionTraceService 閸欐垵绔锋禍瀣╂閿涘牅绱伴懛顏勫З閹恒劑鈧胶绮伴幍鈧張澶庮吂闂冨懓鈧拑绱?
@@ -304,6 +321,92 @@ public class WebConsoleController {
         });
 
         return ResponseEntity.ok(emitter);
+    }
+
+    private String appendUploadedFilePaths(String message, String sessionKey, MultipartFile[] files) {
+        List<Path> savedPaths = saveUploadedFiles(sessionKey, files);
+        if (savedPaths.isEmpty()) {
+            return message;
+        }
+        StringBuilder enhanced = new StringBuilder(message != null ? message : "");
+        enhanced.append("\n\n用户上传的资料已保存到 workspace，路径如下。请优先使用这些路径读取资料：\n");
+        for (Path path : savedPaths) {
+            enhanced.append("- ").append(path.toAbsolutePath().normalize()).append("\n");
+        }
+        return enhanced.toString();
+    }
+
+    private List<Path> saveUploadedFiles(String sessionKey, MultipartFile[] files) {
+        if (files == null || files.length == 0) {
+            return List.of();
+        }
+        List<Path> saved = new ArrayList<>();
+        Path uploadDir = uploadDirectory(sessionKey);
+        try {
+            Files.createDirectories(uploadDir);
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to create upload directory: " + e.getMessage(), e);
+        }
+        for (MultipartFile file : files) {
+            if (file == null || file.isEmpty()) {
+                continue;
+            }
+            String filename = safeUploadFilename(file.getOriginalFilename());
+            Path target = uniqueUploadPath(uploadDir, filename);
+            try (InputStream input = file.getInputStream()) {
+                Files.copy(input, target, StandardCopyOption.REPLACE_EXISTING);
+                saved.add(target);
+                logger.info("Saved uploaded file for session={} path={} bytes={}",
+                        sessionKey, target.toAbsolutePath().normalize(), file.getSize());
+            } catch (IOException e) {
+                throw new IllegalStateException("Failed to save uploaded file " + filename + ": " + e.getMessage(), e);
+            }
+        }
+        return saved;
+    }
+
+    private Path uploadDirectory(String sessionKey) {
+        String safeSession = safePathSegment(sessionKey);
+        String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS"));
+        return Paths.get(config.getWorkspacePath(), "uploads", safeSession, timestamp).normalize();
+    }
+
+    private Path uniqueUploadPath(Path directory, String filename) {
+        Path target = directory.resolve(filename).normalize();
+        if (!Files.exists(target)) {
+            return target;
+        }
+        String base = filename;
+        String ext = "";
+        int dot = filename.lastIndexOf('.');
+        if (dot > 0) {
+            base = filename.substring(0, dot);
+            ext = filename.substring(dot);
+        }
+        for (int i = 1; i < 10_000; i++) {
+            target = directory.resolve(base + "-" + i + ext).normalize();
+            if (!Files.exists(target)) {
+                return target;
+            }
+        }
+        throw new IllegalStateException("Too many uploaded files with the same name: " + filename);
+    }
+
+    private String safeUploadFilename(String originalFilename) {
+        String filename = originalFilename == null || originalFilename.isBlank()
+                ? "upload.bin"
+                : Paths.get(originalFilename).getFileName().toString();
+        filename = filename.replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]", "_").trim();
+        if (filename.isBlank() || ".".equals(filename) || "..".equals(filename)) {
+            return "upload.bin";
+        }
+        return filename;
+    }
+
+    private String safePathSegment(String value) {
+        String segment = value == null || value.isBlank() ? "default" : value.trim();
+        segment = segment.replaceAll("[^A-Za-z0-9._-]", "_");
+        return segment.isBlank() ? "default" : segment;
     }
 
     /**

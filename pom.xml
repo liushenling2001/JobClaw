@@ -133,20 +133,6 @@
             <version>${jline.version}</version>
         </dependency>
 
-        <!-- Telegram -->
-        <dependency>
-            <groupId>org.telegram</groupId>
-            <artifactId>telegrambots</artifactId>
-            <version>6.8.0</version>
-        </dependency>
-
-        <!-- Discord JDA -->
-        <dependency>
-            <groupId>net.dv8tion</groupId>
-            <artifactId>JDA</artifactId>
-            <version>5.0.0-beta.20</version>
-        </dependency>
-
         <!-- Spring AI - OpenAI Compatible (works with DashScope Coding Plan) -->
         <dependency>
             <groupId>org.springframework.ai</groupId>
@@ -196,7 +182,22 @@
         </dependency>
         <dependency>
             <groupId>org.apache.tika</groupId>
-            <artifactId>tika-parsers-standard-package</artifactId>
+            <artifactId>tika-parser-pdf-module</artifactId>
+            <version>${tika.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.tika</groupId>
+            <artifactId>tika-parser-microsoft-module</artifactId>
+            <version>${tika.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.tika</groupId>
+            <artifactId>tika-parser-miscoffice-module</artifactId>
+            <version>${tika.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.tika</groupId>
+            <artifactId>tika-parser-text-module</artifactId>
             <version>${tika.version}</version>
         </dependency>
 
