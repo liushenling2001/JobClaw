@@ -156,8 +156,8 @@ public class WebConsoleController {
 
     @PutMapping("/agents/{id}")
     public ResponseEntity<?> updateAgent(@PathVariable String id, @RequestBody AgentProfileUpsertRequest request) {
-        if (id.startsWith("main:")) {
-            return ResponseEntity.badRequest().body(Map.of("error", "main assistant is managed through global config.json"));
+        if (AgentProfileService.MAIN_AGENT_ID.equals(id) || id.startsWith("main:")) {
+            return updateMainAssistant(request);
         }
         String code = extractAgentCode(id);
         if (code == null) {
@@ -178,6 +178,85 @@ public class WebConsoleController {
                 .flatMap(entry -> agentProfileService.getProfile("agent:" + entry.code()))
                 .<ResponseEntity<?>>map(ResponseEntity::ok)
                 .orElseGet(() -> ResponseEntity.notFound().build());
+    }
+
+    private ResponseEntity<?> updateMainAssistant(AgentProfileUpsertRequest request) {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            Map<String, Object> modelConfig = normalizeModelConfig(request.getModelConfig());
+            AgentConfig agentConfig = config.getAgent();
+
+            String provider = stringValue(modelConfig.get("provider"));
+            if (provider != null) {
+                if (getProviderConfig(config.getProviders(), provider) == null) {
+                    response.put("error", "Unknown provider: " + provider);
+                    return ResponseEntity.status(400).body(response);
+                }
+                agentConfig.setProvider(provider);
+            }
+
+            String model = stringValue(modelConfig.get("model"));
+            if (model != null) {
+                agentConfig.setModel(model);
+            }
+
+            Double temperature = doubleValue(modelConfig.get("temperature"));
+            if (temperature != null) {
+                agentConfig.setTemperature(temperature);
+            }
+
+            Integer maxTokens = integerValue(modelConfig.get("maxTokens"));
+            if (maxTokens != null) {
+                agentConfig.setMaxTokens(maxTokens);
+            }
+
+            Integer toolCallTimeoutSeconds = integerValue(modelConfig.get("toolCallTimeoutSeconds"));
+            if (toolCallTimeoutSeconds == null) {
+                Long timeoutMs = longValue(modelConfig.get("timeoutMs"));
+                if (timeoutMs != null) {
+                    toolCallTimeoutSeconds = (int) Math.max(1L, (timeoutMs + 999L) / 1000L);
+                }
+            }
+            if (toolCallTimeoutSeconds != null) {
+                agentConfig.setToolCallTimeoutSeconds(toolCallTimeoutSeconds);
+            }
+
+            Long childAgentTimeoutMs = longValue(modelConfig.get("childAgentTimeoutMs"));
+            if (childAgentTimeoutMs != null) {
+                agentConfig.setChildAgentTimeoutMs(childAgentTimeoutMs);
+            }
+
+            String apiBase = stringValue(modelConfig.get("apiBase"));
+            String apiKey = stringValue(modelConfig.get("apiKey"));
+            if (apiBase != null || (apiKey != null && !isMaskedSecret(apiKey))) {
+                ProvidersConfig.ProviderConfig providerConfig =
+                        getProviderConfig(config.getProviders(), agentConfig.getProvider());
+                if (providerConfig == null) {
+                    response.put("error", "Unknown provider: " + agentConfig.getProvider());
+                    return ResponseEntity.status(400).body(response);
+                }
+                if (apiBase != null) {
+                    providerConfig.setApiBase(apiBase);
+                }
+                if (apiKey != null && !isMaskedSecret(apiKey)) {
+                    providerConfig.setApiKey(apiKey);
+                }
+            }
+
+            ConfigLoader.save(ConfigLoader.getConfigPath(), config);
+            addAgentClientReloadResult(response);
+
+            return agentProfileService.getProfile(AgentProfileService.MAIN_AGENT_ID)
+                    .<ResponseEntity<?>>map(profile -> {
+                        response.put("success", true);
+                        response.put("agent", profile);
+                        return ResponseEntity.ok(response);
+                    })
+                    .orElseGet(() -> ResponseEntity.status(500).body(Map.of("error", "main assistant profile unavailable")));
+        } catch (Exception e) {
+            response.put("error", e.getMessage());
+            return ResponseEntity.status(500).body(response);
+        }
     }
 
     @PostMapping("/agents/{id}/clone")
@@ -631,6 +710,60 @@ public class WebConsoleController {
         return ResponseEntity.ok(config);
     }
 
+    @GetMapping("/config/file")
+    public ResponseEntity<Map<String, Object>> getConfigFileStatus() {
+        Path configPath = Paths.get(ConfigLoader.getConfigPath());
+        boolean exists = Files.exists(configPath);
+        return ResponseEntity.ok(Map.of(
+                "path", configPath.toAbsolutePath().toString(),
+                "exists", exists,
+                "canCreate", !exists
+        ));
+    }
+
+    @PostMapping("/config/file")
+    public ResponseEntity<Map<String, Object>> createConfigFile() {
+        Path configPath = Paths.get(ConfigLoader.getConfigPath());
+        if (Files.exists(configPath)) {
+            return ResponseEntity.status(409).body(Map.of(
+                    "error", "config file already exists",
+                    "path", configPath.toAbsolutePath().toString(),
+                    "exists", true,
+                    "canCreate", false
+            ));
+        }
+        try {
+            ConfigLoader.save(configPath.toString(), config);
+            return ResponseEntity.ok(Map.of(
+                    "success", true,
+                    "path", configPath.toAbsolutePath().toString(),
+                    "exists", true,
+                    "canCreate", false
+            ));
+        } catch (IOException e) {
+            logger.warn("Failed to create config file {}: {}", configPath, e.getMessage());
+            return ResponseEntity.status(500).body(Map.of(
+                    "error", "failed to create config file: " + e.getMessage(),
+                    "path", configPath.toAbsolutePath().toString(),
+                    "exists", false,
+                    "canCreate", true
+            ));
+        }
+    }
+
+    private void addAgentClientReloadResult(Map<String, Object> response) {
+        try {
+            var resolved = agentLoop.reloadDefaultClient();
+            response.put("clientReloaded", true);
+            response.put("reloadedProvider", resolved.providerName());
+            response.put("reloadedModel", resolved.model());
+        } catch (Exception e) {
+            logger.warn("Failed to hot reload main agent client: {}", e.getMessage());
+            response.put("clientReloaded", false);
+            response.put("reloadError", e.getMessage());
+        }
+    }
+
     @GetMapping("/cron")
     public ResponseEntity<List<Map<String, Object>>> getCronJobs() {
         List<Map<String, Object>> jobs = new ArrayList<>();
@@ -1029,6 +1162,9 @@ public class WebConsoleController {
             }
 
             ConfigLoader.save(ConfigLoader.getConfigPath(), config);
+            if (name.equalsIgnoreCase(config.getAgent().getProvider())) {
+                addAgentClientReloadResult(response);
+            }
 
             response.put("success", true);
             response.put("message", "????????????");
@@ -1040,7 +1176,8 @@ public class WebConsoleController {
     }
 
     private ProvidersConfig.ProviderConfig getProviderConfig(ProvidersConfig providers, String name) {
-        return switch (name) {
+        String normalizedName = name == null ? "" : name.trim().toLowerCase(Locale.ROOT);
+        return switch (normalizedName) {
             case "openrouter" -> providers.getOpenrouter();
             case "anthropic" -> providers.getAnthropic();
             case "deepseek" -> providers.getDeepseek();
@@ -1184,8 +1321,8 @@ public class WebConsoleController {
                 config.getAgent().setProvider(request.getProvider());
             }
 
-            // TODO: 鐏忓棝鍘ょ純顔藉瘮娑斿懎瀵查崚?config.json
-            // ConfigLoader.save(ConfigLoader.getConfigPath(), config);
+            ConfigLoader.save(ConfigLoader.getConfigPath(), config);
+            addAgentClientReloadResult(response);
 
             response.put("success", true);
             response.put("message", "Model updated");
@@ -1288,6 +1425,7 @@ public class WebConsoleController {
             }
 
             ConfigLoader.save(ConfigLoader.getConfigPath(), config);
+            addAgentClientReloadResult(response);
 
             response.put("success", true);
             response.put("message", "Agent config updated");
@@ -1935,6 +2073,38 @@ public class WebConsoleController {
         }
         String trimmed = value.trim();
         return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private String stringValue(Object value) {
+        if (value == null) {
+            return null;
+        }
+        String text = String.valueOf(value).trim();
+        return text.isEmpty() ? null : text;
+    }
+
+    private Integer integerValue(Object value) {
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        String text = stringValue(value);
+        return text == null ? null : Integer.parseInt(text);
+    }
+
+    private Long longValue(Object value) {
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        String text = stringValue(value);
+        return text == null ? null : Long.parseLong(text);
+    }
+
+    private Double doubleValue(Object value) {
+        if (value instanceof Number number) {
+            return number.doubleValue();
+        }
+        String text = stringValue(value);
+        return text == null ? null : Double.parseDouble(text);
     }
 
     private String defaultPromptIfBlank(String displayName, String description, String systemPrompt) {

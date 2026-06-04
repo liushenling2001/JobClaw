@@ -8,6 +8,536 @@
     <link rel="stylesheet" crossorigin href="/assets/index-DG_ndgyf.css">
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app"></div>
+    <script>
+      (() => {
+        const ID = "jobclaw-create-config-file";
+        const MAIN_AGENT_BUTTON_ID = "jobclaw-configure-main-agent";
+        const MAIN_AGENT_MODAL_ID = "jobclaw-main-agent-modal";
+        const PROVIDER_DATALIST_ID = "jobclaw-provider-options";
+        const MODEL_DATALIST_ID = "jobclaw-model-options";
+        let providerOptionsPromise = null;
+        let modelOptionsPromise = null;
+
+        function loadProviderOptions() {
+          if (!providerOptionsPromise) {
+            providerOptionsPromise = fetch("/api/providers")
+              .then(response => response.ok ? response.json() : [])
+              .catch(() => []);
+          }
+          return providerOptionsPromise;
+        }
+
+        function loadModelOptions() {
+          if (!modelOptionsPromise) {
+            modelOptionsPromise = fetch("/api/models")
+              .then(response => response.ok ? response.json() : [])
+              .catch(() => []);
+          }
+          return modelOptionsPromise;
+        }
+
+        async function fetchStatus(button) {
+          try {
+            button.dataset.lastChecked = String(Date.now());
+            const response = await fetch("/api/config/file");
+            const status = await response.json();
+            button.dataset.configPath = status.path || "";
+            if (status.exists) {
+              button.disabled = true;
+              button.textContent = "配置文件已存在";
+              button.title = status.path || "配置文件已存在";
+            } else {
+              button.disabled = false;
+              button.textContent = "新建配置文件";
+              button.title = status.path ? `创建 ${status.path}` : "创建配置文件";
+            }
+          } catch (error) {
+            button.disabled = true;
+            button.textContent = "配置状态不可用";
+            button.title = error && error.message ? error.message : "配置状态不可用";
+          }
+        }
+
+        async function createConfigFile(button) {
+          button.disabled = true;
+          button.textContent = "创建中...";
+          try {
+            const response = await fetch("/api/config/file", { method: "POST" });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok) {
+              throw new Error(result.error || "创建配置文件失败");
+            }
+            button.textContent = "配置文件已创建";
+            button.title = result.path || button.dataset.configPath || "";
+            alert(`配置文件已创建：\n${result.path || ""}`);
+          } catch (error) {
+            alert(error && error.message ? error.message : "创建配置文件失败");
+            await fetchStatus(button);
+          }
+        }
+
+        function inputValue(form, name) {
+          const value = new FormData(form).get(name);
+          return typeof value === "string" ? value.trim() : "";
+        }
+
+        function numberValue(form, name) {
+          const value = inputValue(form, name);
+          return value === "" ? undefined : Number(value);
+        }
+
+        async function openMainAgentConfigModal() {
+          const oldModal = document.getElementById(MAIN_AGENT_MODAL_ID);
+          if (oldModal) {
+            oldModal.remove();
+          }
+
+          let profile;
+          try {
+            const response = await fetch("/api/agents/main%3Aassistant");
+            if (!response.ok) {
+              throw new Error("主智能体配置不可用");
+            }
+            profile = await response.json();
+          } catch (error) {
+            alert(error && error.message ? error.message : "主智能体配置不可用");
+            return;
+          }
+
+          const modelConfig = profile.modelConfig || {};
+          const modal = document.createElement("div");
+          modal.id = MAIN_AGENT_MODAL_ID;
+          modal.className = "fixed inset-0 z-[9999] bg-black/60 flex items-center justify-center p-4";
+          modal.innerHTML = `
+            <div class="glass-panel p-6 rounded-lg border border-outline-variant/20 w-[min(720px,calc(100vw-2rem))] max-h-[90vh] overflow-y-auto">
+              <div class="flex items-center justify-between gap-4 mb-5">
+                <div>
+                  <h2 class="text-lg font-bold text-on-surface font-headline">配置主智能体</h2>
+                  <p class="text-sm text-on-surface-variant mt-1">保存后会立即热重载 Spring AI client。</p>
+                </div>
+                <button type="button" data-close class="px-3 py-2 rounded bg-surface-container-high text-on-surface hover:bg-surface-container-highest">关闭</button>
+              </div>
+              <form data-form class="space-y-4">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <label class="block text-sm text-on-surface-variant">
+                    Provider
+                    <input name="provider" value="${escapeHtml(modelConfig.provider || "")}" class="mt-2 w-full bg-surface-container-high px-4 py-2 rounded text-on-surface outline-none focus:ring-2 focus:ring-secondary/40" />
+                  </label>
+                  <label class="block text-sm text-on-surface-variant">
+                    Model
+                    <input name="model" value="${escapeHtml(modelConfig.model || "")}" class="mt-2 w-full bg-surface-container-high px-4 py-2 rounded text-on-surface outline-none focus:ring-2 focus:ring-secondary/40" />
+                  </label>
+                </div>
+                <label class="block text-sm text-on-surface-variant">
+                  API Base
+                  <input name="apiBase" value="${escapeHtml(modelConfig.apiBase || "")}" class="mt-2 w-full bg-surface-container-high px-4 py-2 rounded text-on-surface outline-none focus:ring-2 focus:ring-secondary/40" />
+                </label>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <label class="block text-sm text-on-surface-variant">
+                    Temperature
+                    <input name="temperature" type="number" step="0.01" value="${escapeHtml(modelConfig.temperature ?? "")}" class="mt-2 w-full bg-surface-container-high px-4 py-2 rounded text-on-surface outline-none focus:ring-2 focus:ring-secondary/40" />
+                  </label>
+                  <label class="block text-sm text-on-surface-variant">
+                    Max Tokens
+                    <input name="maxTokens" type="number" step="1" value="${escapeHtml(modelConfig.maxTokens ?? "")}" class="mt-2 w-full bg-surface-container-high px-4 py-2 rounded text-on-surface outline-none focus:ring-2 focus:ring-secondary/40" />
+                  </label>
+                  <label class="block text-sm text-on-surface-variant">
+                    Tool Timeout Seconds
+                    <input name="toolCallTimeoutSeconds" type="number" step="1" value="${escapeHtml(modelConfig.toolCallTimeoutSeconds ?? "")}" class="mt-2 w-full bg-surface-container-high px-4 py-2 rounded text-on-surface outline-none focus:ring-2 focus:ring-secondary/40" />
+                  </label>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <label class="block text-sm text-on-surface-variant">
+                    Child Agent Timeout Ms
+                    <input name="childAgentTimeoutMs" type="number" step="1" value="${escapeHtml(modelConfig.childAgentTimeoutMs ?? "")}" class="mt-2 w-full bg-surface-container-high px-4 py-2 rounded text-on-surface outline-none focus:ring-2 focus:ring-secondary/40" />
+                  </label>
+                </div>
+                <div data-error class="hidden text-sm text-red-300"></div>
+                <div class="flex justify-end gap-3 pt-2">
+                  <button type="button" data-close class="px-4 py-2 rounded bg-surface-container-high text-on-surface hover:bg-surface-container-highest">取消</button>
+                  <button type="submit" class="px-4 py-2 rounded bg-secondary text-on-secondary hover:opacity-90">保存并热重载</button>
+                </div>
+              </form>
+            </div>
+          `;
+
+          modal.querySelectorAll("[data-close]").forEach(node => {
+            node.addEventListener("click", () => modal.remove());
+          });
+          modal.addEventListener("click", event => {
+            if (event.target === modal) {
+              modal.remove();
+            }
+          });
+          modal.querySelector("[data-form]").addEventListener("submit", async event => {
+            event.preventDefault();
+            const form = event.currentTarget;
+            const error = modal.querySelector("[data-error]");
+            const submit = form.querySelector("button[type='submit']");
+            error.classList.add("hidden");
+            submit.disabled = true;
+            submit.textContent = "保存中...";
+            try {
+              const payload = {
+                displayName: "主智能体",
+                modelConfig: {
+                  provider: inputValue(form, "provider") || undefined,
+                  model: inputValue(form, "model") || undefined,
+                  apiBase: inputValue(form, "apiBase") || undefined,
+                  temperature: numberValue(form, "temperature"),
+                  maxTokens: numberValue(form, "maxTokens"),
+                  toolCallTimeoutSeconds: numberValue(form, "toolCallTimeoutSeconds"),
+                  childAgentTimeoutMs: numberValue(form, "childAgentTimeoutMs")
+                }
+              };
+              Object.keys(payload.modelConfig).forEach(key => {
+                if (payload.modelConfig[key] === undefined || Number.isNaN(payload.modelConfig[key])) {
+                  delete payload.modelConfig[key];
+                }
+              });
+              const response = await fetch("/api/agents/main%3Aassistant", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+              });
+              const result = await response.json().catch(() => ({}));
+              if (!response.ok) {
+                throw new Error(result.error || "保存主智能体配置失败");
+              }
+              modal.remove();
+              alert(result.clientReloaded === false
+                ? `配置已保存，但热重载失败：${result.reloadError || ""}`
+                : "主智能体配置已保存并热重载");
+              location.reload();
+            } catch (saveError) {
+              error.textContent = saveError && saveError.message ? saveError.message : "保存主智能体配置失败";
+              error.classList.remove("hidden");
+            } finally {
+              submit.disabled = false;
+              submit.textContent = "保存并热重载";
+            }
+          });
+          document.body.appendChild(modal);
+        }
+
+        function escapeHtml(value) {
+          return String(value)
+            .replaceAll("&", "&amp;")
+            .replaceAll("<", "&lt;")
+            .replaceAll(">", "&gt;")
+            .replaceAll('"', "&quot;");
+        }
+
+        function ensureDatalist(id, values) {
+          let datalist = document.getElementById(id);
+          if (!datalist) {
+            datalist = document.createElement("datalist");
+            datalist.id = id;
+            document.body.appendChild(datalist);
+          }
+          datalist.innerHTML = values
+            .filter(Boolean)
+            .map(value => `<option value="${escapeHtml(value)}"></option>`)
+            .join("");
+          return datalist;
+        }
+
+        function inputAfterLabel(labelText) {
+          const labels = Array.from(document.querySelectorAll("label"));
+          const label = labels.find(node => (node.textContent || "").trim().startsWith(labelText));
+          if (!label) {
+            return null;
+          }
+          const wrapped = label.querySelector("input,textarea");
+          if (wrapped) {
+            return wrapped;
+          }
+          return label.parentElement ? label.parentElement.querySelector("input,textarea") : null;
+        }
+
+        function selectedAgentLooksMain() {
+          return Array.from(document.querySelectorAll("span"))
+            .some(node => (node.textContent || "").trim() === "MAIN_AGENT");
+        }
+
+        async function enhanceAgentEditModal() {
+          if (location.pathname !== "/agents") {
+            return;
+          }
+          const providerInput = inputAfterLabel("Provider");
+          const modelInput = inputAfterLabel("Model");
+          const apiBaseInput = inputAfterLabel("API Base");
+          if (!providerInput || !modelInput || !apiBaseInput) {
+            return;
+          }
+
+          const [providers, models] = await Promise.all([loadProviderOptions(), loadModelOptions()]);
+          if (providerInput.dataset.jobclawEnhanced === "true") {
+            return;
+          }
+          providerInput.dataset.jobclawEnhanced = "true";
+
+          const providerSelect = createSelectFromInput(
+            providerInput,
+            "jobclaw-main-provider-select",
+            providers.map(provider => provider.name),
+            "选择 Provider"
+          );
+          const modelSelect = createSelectFromInput(
+            modelInput,
+            "jobclaw-main-model-select",
+            modelValuesForProvider(models, providerSelect.value, modelInput.value),
+            "选择 Model"
+          );
+          const apiKeyInput = ensureMainAgentApiKeyInput(apiBaseInput);
+
+          function refreshProviderDerivedFields() {
+            const selectedProvider = providers.find(provider => provider.name === providerSelect.value);
+            if (selectedProvider && selectedProvider.apiBase) {
+              syncInputValue(apiBaseInput, selectedProvider.apiBase);
+            }
+            if (apiKeyInput && selectedAgentLooksMain()) {
+              apiKeyInput.value = "";
+              apiKeyInput.placeholder = selectedProvider && selectedProvider.apiKey
+                ? `当前：${selectedProvider.apiKey}，留空不修改`
+                : "留空则不修改已有 API Key";
+            }
+            updateSelectOptions(
+              modelSelect,
+              modelValuesForProvider(models, providerSelect.value, modelInput.value),
+              "选择 Model",
+              modelInput.value
+            );
+            if (providerSelect.value) {
+              const modelStillMatchesProvider = models.some(model =>
+                model.provider === providerSelect.value
+                  && ((model.name || model.model) === modelSelect.value || model.model === modelSelect.value));
+              if (!modelStillMatchesProvider) {
+                syncInputValue(modelInput, "");
+                modelSelect.value = "";
+              }
+            }
+          }
+
+          providerSelect.addEventListener("change", () => {
+            syncInputValue(providerInput, providerSelect.value);
+            refreshProviderDerivedFields();
+          });
+
+          modelSelect.addEventListener("change", () => {
+            const selected = models.find(model => model.name === modelSelect.value || model.model === modelSelect.value);
+            if (!selected) {
+              syncInputValue(modelInput, modelSelect.value);
+              return;
+            }
+            syncInputValue(modelInput, selected.name || selected.model);
+            if (selected.provider && providerSelect.value !== selected.provider) {
+              providerSelect.value = selected.provider;
+              syncInputValue(providerInput, selected.provider);
+              refreshProviderDerivedFields();
+            }
+          });
+
+          refreshProviderDerivedFields();
+        }
+
+        function ensureMainAgentApiKeyInput(apiBaseInput) {
+          const existing = document.getElementById("jobclaw-main-agent-api-key");
+          if (existing) {
+            return existing;
+          }
+          const apiBaseContainer = apiBaseInput.parentElement;
+          if (!apiBaseContainer) {
+            return null;
+          }
+          const wrapper = document.createElement("div");
+          wrapper.className = apiBaseContainer.className || "";
+          wrapper.innerHTML = `
+            <label class="block text-sm text-on-surface-variant mb-2">API Key</label>
+            <input id="jobclaw-main-agent-api-key" type="password" autocomplete="off" placeholder="留空则不修改已有 API Key" class="${escapeHtml(apiBaseInput.className || "")}" />
+          `;
+          apiBaseContainer.parentElement.insertBefore(wrapper, apiBaseContainer.nextSibling);
+          return document.getElementById("jobclaw-main-agent-api-key");
+        }
+
+        function modelValuesForProvider(models, provider, currentValue) {
+          const filtered = provider
+            ? models.filter(model => model.provider === provider)
+            : models;
+          return Array.from(new Set([currentValue, ...filtered.map(model => model.name || model.model)].filter(Boolean)));
+        }
+
+        function updateSelectOptions(select, options, placeholder, selectedValue) {
+          const values = Array.from(new Set([selectedValue, ...options].filter(Boolean)));
+          select.innerHTML = [
+            `<option value="">${escapeHtml(placeholder)}</option>`,
+            ...values.map(value => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`)
+          ].join("");
+          select.value = selectedValue && values.includes(selectedValue) ? selectedValue : "";
+        }
+
+        function createSelectFromInput(input, id, options, placeholder) {
+          let select = document.getElementById(id);
+          if (!select) {
+            select = document.createElement("select");
+            select.id = id;
+            select.className = input.className;
+            input.parentElement.insertBefore(select, input);
+            input.type = "hidden";
+            input.classList.add("hidden");
+            select.addEventListener("change", () => syncInputValue(input, select.value));
+          }
+
+          const values = Array.from(new Set([input.value, ...options].filter(Boolean)));
+          updateSelectOptions(select, values, placeholder, input.value || "");
+          return select;
+        }
+
+        function syncInputValue(input, value) {
+          input.value = value;
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+          input.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+
+        const originalFetch = window.fetch;
+        window.fetch = function (resource, init) {
+          const url = typeof resource === "string" ? resource : resource && resource.url;
+          const method = init && init.method ? String(init.method).toUpperCase() : "GET";
+          if (method === "PUT" && url && url.includes("/api/agents/main%3Aassistant")) {
+            const apiKeyInput = document.getElementById("jobclaw-main-agent-api-key");
+            const apiKey = apiKeyInput && apiKeyInput.value ? apiKeyInput.value.trim() : "";
+            if (apiKey && init && init.body && typeof init.body === "string") {
+              try {
+                const body = JSON.parse(init.body);
+                body.modelConfig = body.modelConfig || {};
+                body.modelConfig.apiKey = apiKey;
+                init = { ...init, body: JSON.stringify(body) };
+              } catch (ignored) {
+                // Keep the original request body if it is not JSON.
+              }
+            }
+          }
+          return originalFetch.call(this, resource, init);
+        };
+
+        const originalXhrOpen = XMLHttpRequest.prototype.open;
+        const originalXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+          this.__jobclawMethod = method ? String(method).toUpperCase() : "";
+          this.__jobclawUrl = url ? String(url) : "";
+          return originalXhrOpen.call(this, method, url, ...rest);
+        };
+        XMLHttpRequest.prototype.send = function (body) {
+          if (this.__jobclawMethod === "PUT" && this.__jobclawUrl.includes("/api/agents/main%3Aassistant")) {
+            const apiKeyInput = document.getElementById("jobclaw-main-agent-api-key");
+            const apiKey = apiKeyInput && apiKeyInput.value ? apiKeyInput.value.trim() : "";
+            if (apiKey && typeof body === "string") {
+              try {
+                const parsed = JSON.parse(body);
+                parsed.modelConfig = parsed.modelConfig || {};
+                parsed.modelConfig.apiKey = apiKey;
+                body = JSON.stringify(parsed);
+              } catch (ignored) {
+                // Keep the original request body if it is not JSON.
+              }
+            }
+          }
+          return originalXhrSend.call(this, body);
+        };
+
+        function findAgentsHeader() {
+          if (location.pathname !== "/agents") {
+            return null;
+          }
+          const headings = Array.from(document.querySelectorAll("h1"));
+          const heading = headings.find(node => node.textContent && node.textContent.trim() === "智能体");
+          return heading ? heading.closest(".flex.items-center.justify-between") : null;
+        }
+
+        function patchAgentsCopy() {
+          if (location.pathname !== "/agents") {
+            return;
+          }
+          Array.from(document.querySelectorAll("p")).forEach(node => {
+            const text = node.textContent || "";
+            if (text.includes("主智能体只读")) {
+              node.textContent = " 管理智能体配置。主智能体可在此页配置；系统角色和用户智能体都可编辑；用户智能体可删除。 ";
+            }
+          });
+        }
+
+        function ensureButton() {
+          patchAgentsCopy();
+          enhanceAgentEditModal();
+          const existing = document.getElementById(ID);
+          const header = findAgentsHeader();
+          if (!header) {
+            if (existing) {
+              existing.remove();
+            }
+            const mainAgentButton = document.getElementById(MAIN_AGENT_BUTTON_ID);
+            if (mainAgentButton) {
+              mainAgentButton.remove();
+            }
+            return;
+          }
+          if (existing && header.contains(existing)) {
+            const now = Date.now();
+            const lastChecked = Number(existing.dataset.lastChecked || "0");
+            if (now - lastChecked > 5000) {
+              fetchStatus(existing);
+            }
+            ensureMainAgentConfigButton(header);
+            return;
+          }
+          if (existing) {
+            existing.remove();
+          }
+          const button = document.createElement("button");
+          button.id = ID;
+          button.type = "button";
+          button.className = "px-4 py-2 rounded bg-surface-container-high text-on-surface border border-outline-variant/30 hover:bg-surface-container-highest disabled:opacity-50 disabled:cursor-not-allowed transition-colors";
+          button.textContent = "检查配置文件";
+          button.addEventListener("click", () => createConfigFile(button));
+          header.appendChild(button);
+          fetchStatus(button);
+          ensureMainAgentConfigButton(header);
+        }
+
+        function ensureMainAgentConfigButton(header) {
+          if (!header) {
+            return;
+          }
+          const existing = document.getElementById(MAIN_AGENT_BUTTON_ID);
+          if (existing && header.contains(existing)) {
+            return;
+          }
+          if (existing) {
+            existing.remove();
+          }
+          const button = document.createElement("button");
+          button.id = MAIN_AGENT_BUTTON_ID;
+          button.type = "button";
+          button.className = "px-4 py-2 rounded bg-secondary text-on-secondary hover:opacity-90 transition-colors";
+          button.textContent = "配置主智能体";
+          button.addEventListener("click", openMainAgentConfigModal);
+          header.appendChild(button);
+        }
+
+        const observer = new MutationObserver(ensureButton);
+        observer.observe(document.body, { childList: true, subtree: true });
+        window.addEventListener("popstate", () => setTimeout(ensureButton, 0));
+        const originalPushState = history.pushState;
+        history.pushState = function (...args) {
+          const result = originalPushState.apply(this, args);
+          setTimeout(ensureButton, 0);
+          return result;
+        };
+        setInterval(ensureButton, 1000);
+        setInterval(enhanceAgentEditModal, 500);
+        ensureButton();
+      })();
+    </script>
   </body>
 </html>

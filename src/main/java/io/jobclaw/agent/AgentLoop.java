@@ -113,8 +113,8 @@ public class AgentLoop {
 
     private final Config config;
     private final SessionManager sessionManager;
-    private final ChatClient chatClient;
-    private final String model;
+    private volatile ChatClient chatClient;
+    private volatile String model;
     private final ToolCallback[] allToolCallbacks;
 
     // 新增组件
@@ -125,7 +125,8 @@ public class AgentLoop {
     private final ProviderRuntime providerRuntime;
     private final ToolRuntime toolRuntime;
     private final ToolExecutionStateTracker toolExecutionStateTracker;
-    private final ResolvedProviderConfig defaultProviderConfig;
+    private volatile ResolvedProviderConfig defaultProviderConfig;
+    private final String modelOverride;
     private final ActiveExecutionRegistry activeExecutionRegistry;
     private final CompletionRegistry completionRegistry;
     private final ActiveSkillRegistry activeSkillRegistry;
@@ -134,7 +135,7 @@ public class AgentLoop {
     private final ResultStore resultStore;
 
     // 无工具调用的专用 ChatClient（用于摘要生成）
-    private final ChatClient simpleChatClient;
+    private volatile ChatClient simpleChatClient;
 
     private final ExecutorService toolExecutionExecutor;
     private static final String ACTIVE_SKILL_FRAME_MARKER = "[[JOBCLAW_ACTIVE_SKILL_FRAME]]";
@@ -303,29 +304,9 @@ public class AgentLoop {
         this.activeSkillRegistry = activeSkillRegistry != null ? activeSkillRegistry : new ActiveSkillRegistry();
         this.activeManifestRegistry = activeManifestRegistry != null ? activeManifestRegistry : new ActiveManifestRegistry();
         this.resultStore = resultStore != null ? resultStore : new NoopResultStore();
+        this.modelOverride = model;
 
-        ResolvedProviderConfig resolvedProvider = providerRuntime.resolve(config, model);
-        this.defaultProviderConfig = resolvedProvider;
-        this.model = resolvedProvider.model();
-
-        if (resolvedProvider.fallbackUsed()) {
-            logger.warn("requested provider not available, falling back to provider '{}'", resolvedProvider.providerName());
-        }
-
-        logger.info("Spring AI OpenAI Compatible config - apiKey: {}***, model: {}, apiBase: {} -> using: {}",
-                resolvedProvider.apiKey() != null && resolvedProvider.apiKey().length() > 4
-                        ? resolvedProvider.apiKey().substring(0, 4)
-                        : "null",
-                this.model, resolvedProvider.apiBase(), resolvedProvider.springAiBaseUrl());
-
-        // 创建 ChatModel（带工具调用）
-        ChatModel chatModel = createChatModel(resolvedProvider);
-
-        // 创建 ChatClient（带工具调用）
-        this.chatClient = chatClient != null ? chatClient : ChatClient.builder(chatModel).build();
-
-        // 创建简单的 ChatClient（用于摘要生成，不带工具调用）
-        this.simpleChatClient = ChatClient.builder(createChatModel(resolvedProvider)).build();
+        reloadDefaultClient(chatClient);
 
         // 初始化 ContextBuilder（需要 SkillsService）
         io.jobclaw.skills.SkillsService skillsService = null;
@@ -3055,14 +3036,41 @@ public class AgentLoop {
         return "Spring AI initialized (model: " + config.getAgent().getModel() + ")";
     }
 
+    public synchronized ResolvedProviderConfig reloadDefaultClient() {
+        return reloadDefaultClient(null);
+    }
+
+    private synchronized ResolvedProviderConfig reloadDefaultClient(ChatClient providedChatClient) {
+        ResolvedProviderConfig resolvedProvider = providerRuntime.resolve(config, modelOverride);
+        ChatModel chatModel = createChatModel(resolvedProvider);
+        ChatClient nextChatClient = providedChatClient != null ? providedChatClient : ChatClient.builder(chatModel).build();
+        ChatClient nextSimpleChatClient = ChatClient.builder(createChatModel(resolvedProvider)).build();
+
+        this.defaultProviderConfig = resolvedProvider;
+        this.model = resolvedProvider.model();
+        this.chatClient = nextChatClient;
+        this.simpleChatClient = nextSimpleChatClient;
+
+        if (resolvedProvider.fallbackUsed()) {
+            logger.warn("requested provider not available, falling back to provider '{}'", resolvedProvider.providerName());
+        }
+
+        logger.info("Spring AI OpenAI Compatible config reloaded - apiKey: {}***, model: {}, apiBase: {} -> using: {}",
+                resolvedProvider.apiKey() != null && resolvedProvider.apiKey().length() > 4
+                        ? resolvedProvider.apiKey().substring(0, 4)
+                        : "null",
+                this.model, resolvedProvider.apiBase(), resolvedProvider.springAiBaseUrl());
+        return resolvedProvider;
+    }
+
     private ChatOptions.Builder<?> buildExecutionOptions(AgentDefinition definition, String baseModel) {
         return buildExecutionOptions(definition, baseModel, defaultProviderConfig.providerName());
     }
 
     private ChatOptions.Builder<?> buildExecutionOptions(AgentDefinition definition, String baseModel, String providerName) {
         String effectiveModel = baseModel != null && !baseModel.isBlank() ? baseModel : model;
-        Integer effectiveMaxTokens = null;
-        Double effectiveTemperature = null;
+        Integer effectiveMaxTokens = config.getAgent().getMaxTokens() > 0 ? config.getAgent().getMaxTokens() : null;
+        Double effectiveTemperature = config.getAgent().getTemperature();
 
         if (definition != null && definition.getConfig() != null) {
             AgentDefinition.AgentConfig definitionConfig = definition.getConfig();
@@ -3217,6 +3225,10 @@ public class AgentLoop {
     private DeepSeekChatOptions createDeepSeekDefaultOptions(ResolvedProviderConfig resolvedProvider) {
         DeepSeekChatOptions.Builder builder = DeepSeekChatOptions.builder();
         builder.model(resolvedProvider.model());
+        if (config.getAgent().getMaxTokens() > 0) {
+            builder.maxTokens(config.getAgent().getMaxTokens());
+        }
+        builder.temperature(config.getAgent().getTemperature());
         return builder.build();
     }
 
@@ -3226,6 +3238,10 @@ public class AgentLoop {
         builder.baseUrl(resolvedProvider.springAiBaseUrl());
         builder.model(resolvedProvider.model());
         builder.timeout(Duration.ofMillis(safeTimeoutMillis(config.getAgent().getLlmCallTimeoutSeconds(), 300)));
+        if (config.getAgent().getMaxTokens() > 0) {
+            builder.maxTokens(config.getAgent().getMaxTokens());
+        }
+        builder.temperature(config.getAgent().getTemperature());
         return builder.build();
     }
 

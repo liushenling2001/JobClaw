@@ -139,6 +139,7 @@ public class AgentProfileService {
         modelConfig.put("model", config.getAgent().getModel());
         modelConfig.put("temperature", config.getAgent().getTemperature());
         modelConfig.put("maxTokens", config.getAgent().getMaxTokens());
+        modelConfig.put("timeoutMs", config.getAgent().getToolCallTimeoutSeconds() * 1000L);
         modelConfig.put("toolCallTimeoutSeconds", config.getAgent().getToolCallTimeoutSeconds());
         modelConfig.put("childAgentTimeoutMs", config.getAgent().getChildAgentTimeoutMs());
         ProvidersConfig.ProviderConfig providerConfig = config.getProviderConfigByName(config.getAgent().getProvider());
