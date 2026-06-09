@@ -16,8 +16,10 @@
         const MAIN_AGENT_MODAL_ID = "jobclaw-main-agent-modal";
         const PROVIDER_DATALIST_ID = "jobclaw-provider-options";
         const MODEL_DATALIST_ID = "jobclaw-model-options";
+        const CHAT_SUGGESTIONS_ID = "jobclaw-chat-suggestions";
         let providerOptionsPromise = null;
         let modelOptionsPromise = null;
+        let chatSuggestionsPromise = null;
 
         function loadProviderOptions() {
           if (!providerOptionsPromise) {
@@ -400,6 +402,209 @@
           input.dispatchEvent(new Event("change", { bubbles: true }));
         }
 
+        function capabilityChatSuggestions() {
+          return [
+            "检查当前项目能否正常打包，并汇总失败原因",
+            "帮我梳理当前工作区最近修改，形成下一步待办",
+            "读取 workspace 里的资料，整理一份结构化摘要",
+            "检查最近一次任务有没有遗漏的文件产物或收尾动作",
+            "根据当前项目代码，找出最值得优先修复的风险点",
+            "帮我设计一个可执行的测试场景，并运行验证",
+            "整理当前智能体配置和可用工具，说明适合做哪些任务",
+            "分析一个文件夹里的文档，并生成报告或表格"
+          ];
+        }
+
+        function mixChatSuggestions(recentPrompts) {
+          const recent = Array.from(new Set((recentPrompts || []).filter(Boolean))).slice(0, 2);
+          const abilities = capabilityChatSuggestions()
+            .filter(item => !recent.includes(item))
+            .sort(() => Math.random() - 0.5);
+          return [...recent, ...abilities].slice(0, 4);
+        }
+
+        function normalizePrompt(value) {
+          const text = String(value || "")
+            .replace(/\s+/g, " ")
+            .replace(/^用户[:：]\s*/, "")
+            .trim();
+          if (!text || text.length < 4) {
+            return "";
+          }
+          if (/^(ok|yes|no|好|嗯|继续|可以|收到)$/i.test(text)) {
+            return "";
+          }
+          return text.length > 72 ? `${text.slice(0, 72)}...` : text;
+        }
+
+        function collectPromptCandidates(value, output, seen) {
+          if (!value || output.length >= 6) {
+            return;
+          }
+          if (Array.isArray(value)) {
+            value.forEach(item => collectPromptCandidates(item, output, seen));
+            return;
+          }
+          if (typeof value !== "object") {
+            return;
+          }
+
+          const role = String(value.role || value.sender || value.type || value.messageType || "").toLowerCase();
+          const isUserMessage = role === "user" || role === "human" || role === "request" || role === "user_message";
+          if (isUserMessage) {
+            const text = normalizePrompt(value.content || value.message || value.text || value.body || value.prompt);
+            if (text && !seen.has(text)) {
+              seen.add(text);
+              output.push(text);
+            }
+          }
+
+          ["messages", "history", "entries", "conversation", "turns", "items"].forEach(key => {
+            if (value[key]) {
+              collectPromptCandidates(value[key], output, seen);
+            }
+          });
+        }
+
+        async function loadChatSuggestions() {
+          if (chatSuggestionsPromise) {
+            return chatSuggestionsPromise;
+          }
+          chatSuggestionsPromise = (async () => {
+            try {
+              const response = await fetch("/api/sessions?channel=web&page=1&size=8");
+              if (!response.ok) {
+                return mixChatSuggestions([]);
+              }
+              const payload = await response.json();
+              const sessions = Array.isArray(payload)
+                ? payload
+                : Array.isArray(payload.items)
+                  ? payload.items
+                  : Array.isArray(payload.content)
+                    ? payload.content
+                    : [];
+              const prompts = [];
+              const seen = new Set();
+              for (const session of sessions) {
+                const key = session && (session.key || session.sessionKey || session.id);
+                if (!key || prompts.length >= 4) {
+                  continue;
+                }
+                try {
+                  const detailResponse = await fetch(`/api/sessions/${encodeURIComponent(key)}`);
+                  if (detailResponse.ok) {
+                    collectPromptCandidates(await detailResponse.json(), prompts, seen);
+                  }
+                } catch (ignored) {
+                  // Recent prompts are a convenience only.
+                }
+              }
+              return mixChatSuggestions(prompts);
+            } catch (ignored) {
+              return mixChatSuggestions([]);
+            }
+          })();
+          return chatSuggestionsPromise;
+        }
+
+        function findChatTextarea() {
+          if (location.pathname !== "/chat") {
+            return null;
+          }
+          const textareas = Array.from(document.querySelectorAll("textarea"));
+          return textareas.find(node => !node.disabled && node.offsetParent !== null) || textareas[0] || null;
+        }
+
+        function currentChatIsBlank() {
+          try {
+            const key = localStorage.getItem("jobclaw:chat:currentSessionKey");
+            if (!key) {
+              return true;
+            }
+            const raw = localStorage.getItem(`jobclaw:chat:messages:${key}`);
+            if (!raw) {
+              return true;
+            }
+            const messages = JSON.parse(raw);
+            return !Array.isArray(messages) || messages.length === 0;
+          } catch (ignored) {
+            return true;
+          }
+        }
+
+        function submitChatSuggestion(prompt) {
+          const textarea = findChatTextarea();
+          if (!textarea) {
+            return;
+          }
+          syncInputValue(textarea, prompt);
+          const inputPanel = textarea.closest(".border-t") || textarea.closest("div[class*='border-t']") || textarea.parentElement;
+          const buttons = Array.from((inputPanel || document).querySelectorAll("button"));
+          const send = buttons.find(button => (button.textContent || "").trim() === "发送" && !button.disabled);
+          if (send) {
+            send.click();
+          }
+        }
+
+        async function ensureChatSuggestions() {
+          const existing = document.getElementById(CHAT_SUGGESTIONS_ID);
+          const textarea = findChatTextarea();
+          if (!textarea || !currentChatIsBlank()) {
+            if (existing) {
+              existing.remove();
+            }
+            return;
+          }
+          const inputPanel = textarea.closest(".border-t") || textarea.closest("div[class*='border-t']");
+          if (!inputPanel) {
+            return;
+          }
+          if (existing && inputPanel.contains(existing)) {
+            return;
+          }
+          if (existing) {
+            existing.remove();
+          }
+
+          const panel = document.createElement("div");
+          panel.id = CHAT_SUGGESTIONS_ID;
+          panel.className = "mb-3 rounded-lg border border-outline-variant/20 bg-surface-container-high/70 px-3 py-2";
+          panel.innerHTML = `
+            <div class="flex items-center justify-between gap-3 mb-2">
+              <div class="text-xs font-medium text-on-surface-variant">最近可以继续</div>
+              <button type="button" data-refresh class="text-xs text-secondary hover:opacity-80">换一组</button>
+            </div>
+            <div data-items class="flex flex-wrap gap-2">
+              <span class="text-xs text-on-surface-variant/80">正在读取最近操作...</span>
+            </div>
+          `;
+          inputPanel.insertBefore(panel, inputPanel.firstChild);
+
+          const render = prompts => {
+            const list = panel.querySelector("[data-items]");
+            if (!list) {
+              return;
+            }
+            list.innerHTML = "";
+            prompts.forEach(prompt => {
+              const button = document.createElement("button");
+              button.type = "button";
+              button.className = "max-w-full rounded-md border border-outline-variant/20 bg-surface-container-low px-3 py-1.5 text-left text-xs text-on-surface hover:bg-surface-container-highest";
+              button.textContent = prompt;
+              button.title = prompt;
+              button.addEventListener("click", () => submitChatSuggestion(prompt));
+              list.appendChild(button);
+            });
+          };
+
+          panel.querySelector("[data-refresh]").addEventListener("click", async () => {
+            chatSuggestionsPromise = null;
+            render(await loadChatSuggestions());
+          });
+          render(await loadChatSuggestions());
+        }
+
         const originalFetch = window.fetch;
         window.fetch = function (resource, init) {
           const url = typeof resource === "string" ? resource : resource && resource.url;
@@ -525,18 +730,23 @@
           header.appendChild(button);
         }
 
-        const observer = new MutationObserver(ensureButton);
+        function ensureUiEnhancements() {
+          ensureButton();
+          ensureChatSuggestions();
+        }
+
+        const observer = new MutationObserver(ensureUiEnhancements);
         observer.observe(document.body, { childList: true, subtree: true });
-        window.addEventListener("popstate", () => setTimeout(ensureButton, 0));
+        window.addEventListener("popstate", () => setTimeout(ensureUiEnhancements, 0));
         const originalPushState = history.pushState;
         history.pushState = function (...args) {
           const result = originalPushState.apply(this, args);
-          setTimeout(ensureButton, 0);
+          setTimeout(ensureUiEnhancements, 0);
           return result;
         };
-        setInterval(ensureButton, 1000);
+        setInterval(ensureUiEnhancements, 1000);
         setInterval(enhanceAgentEditModal, 500);
-        ensureButton();
+        ensureUiEnhancements();
       })();
     </script>
   </body>
