@@ -46,7 +46,7 @@ public class SpringAiLlmClient {
                             .apiKey(resolved.apiKey())
                             .baseUrl(nativeDeepSeekBaseUrl(resolved.springAiBaseUrl()))
                             .build())
-                    .defaultOptions(createDeepSeekOptions(resolved, maxTokens, temperature))
+                    .options(createDeepSeekOptions(resolved, maxTokens, temperature))
                     .build();
         }
 

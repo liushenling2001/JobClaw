@@ -36,7 +36,8 @@ class AgentLoopToolSelectionTest {
     void shouldUseBaseToolsetWhenNoExplicitAllowlist() throws Exception {
         AgentLoop loop = loopWithTools(
                 "memory", "skills", "read_pdf", "spawn", "run_command",
-                "context_ref", "manifest", "completion", "user_input", "list_dir", "read_file", "exec"
+                "context_ref", "manifest", "completion", "user_input", "list_dir", "read_file",
+                "write_file", "edit_file", "append_file", "exec"
         );
 
         ToolCallback[] selected = invokeFilter(loop, null, "解释一下上下文压缩");
@@ -49,6 +50,9 @@ class AgentLoopToolSelectionTest {
         assertTrue(names.contains("user_input"));
         assertTrue(names.contains("list_dir"));
         assertTrue(names.contains("read_file"));
+        assertTrue(names.contains("write_file"));
+        assertTrue(names.contains("edit_file"));
+        assertTrue(names.contains("append_file"));
         assertTrue(names.contains("run_command"));
         assertFalse(names.contains("memory"));
         assertFalse(names.contains("read_pdf"));
@@ -165,6 +169,30 @@ class AgentLoopToolSelectionTest {
                 "memory", "read_excel");
         assertSelectedTools(loop, "查一下今天 token 用量和 API 费用",
                 "query_token_usage");
+    }
+
+    @Test
+    void shouldCarrySelectedToolsForwardWithinSameSession() throws Exception {
+        AgentLoop loop = loopWithTools(
+                "skills", "context_ref", "manifest", "completion", "list_dir", "read_file", "run_command",
+                "write_file", "edit_file", "append_file", "read_pdf", "read_word", "read_excel", "exec"
+        );
+
+        ToolCallback[] firstTurn = invokeFilterForSession(loop, null, "读取这个 PDF 并总结", "session-pdf");
+        List<String> firstNames = names(firstTurn);
+        assertTrue(firstNames.contains("read_pdf"));
+        assertTrue(firstNames.contains("read_word"));
+
+        ToolCallback[] secondTurn = invokeFilterForSession(loop, null, "继续处理上面的内容", "session-pdf");
+        List<String> secondNames = names(secondTurn);
+        assertTrue(secondNames.contains("read_pdf"));
+        assertTrue(secondNames.contains("read_word"));
+        assertFalse(secondNames.contains("exec"));
+
+        ToolCallback[] otherSession = invokeFilterForSession(loop, null, "继续处理上面的内容", "session-other");
+        List<String> otherNames = names(otherSession);
+        assertFalse(otherNames.contains("read_pdf"));
+        assertFalse(otherNames.contains("read_word"));
     }
 
     @Test
@@ -358,6 +386,20 @@ class AgentLoopToolSelectionTest {
         );
         method.setAccessible(true);
         return (ToolCallback[]) method.invoke(loop, definition, userContent);
+    }
+
+    private ToolCallback[] invokeFilterForSession(AgentLoop loop,
+                                                  AgentDefinition definition,
+                                                  String userContent,
+                                                  String sessionKey) throws Exception {
+        Method method = AgentLoop.class.getDeclaredMethod(
+                "filterToolsByDefinition",
+                AgentDefinition.class,
+                String.class,
+                String.class
+        );
+        method.setAccessible(true);
+        return (ToolCallback[]) method.invoke(loop, definition, userContent, sessionKey);
     }
 
     private AgentLoop loopWithRegistries(ActiveSkillRegistry skillRegistry,

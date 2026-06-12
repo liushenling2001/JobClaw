@@ -68,6 +68,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -95,6 +96,9 @@ public class AgentLoop {
             "user_input",
             "list_dir",
             "read_file",
+            "write_file",
+            "edit_file",
+            "append_file",
             "run_command"
     );
     private static final Map<String, Set<String>> TOOL_PROFILE_TOOL_NAMES = Map.ofEntries(
@@ -133,6 +137,7 @@ public class AgentLoop {
     private final ActiveManifestRegistry activeManifestRegistry;
     private final UserInputRequestRegistry userInputRequestRegistry = new UserInputRequestRegistry();
     private final ResultStore resultStore;
+    private final Map<String, Set<String>> sessionToolCarryover = new ConcurrentHashMap<>();
 
     // 无工具调用的专用 ChatClient（用于摘要生成）
     private volatile ChatClient simpleChatClient;
@@ -462,7 +467,7 @@ public class AgentLoop {
                     buildSystemPromptWithDefinition(sessionKey, userContent, definition) : buildSystemPrompt(sessionKey, userContent);
 
             // 创建工具回调（支持工具过滤）
-            ToolCallback[] rawTools = filterToolsByDefinition(definition, userContent);
+            ToolCallback[] rawTools = filterToolsByDefinition(definition, userContent, sessionKey);
             ToolCallback[] tools = wrapToolCallbacks(rawTools, sessionKey, eventCallback, artifactCompletionTracker);
 
             ExecutionClientBundle executionClientBundle = createExecutionClientBundle(definition);
@@ -2559,7 +2564,7 @@ public class AgentLoop {
                         );
                     }
                     if (shouldReturnManagedManifestControl(getToolDefinition().name(), effectiveRequest, result)) {
-                        logger.info("managed manifest tool boundary reached session={} run={} tool={} request={}",
+                        AgentLoop.logger.info("managed manifest tool boundary reached session={} run={} tool={} request={}",
                                 capturedScope != null ? capturedScope.sessionKey() : sessionKey,
                                 capturedScope != null ? capturedScope.runId() : null,
                                 getToolDefinition().name(),
@@ -2591,6 +2596,10 @@ public class AgentLoop {
      * @return 过滤后的工具数组
      */
     private ToolCallback[] filterToolsByDefinition(AgentDefinition definition, String userContent) {
+        return filterToolsByDefinition(definition, userContent, null);
+    }
+
+    private ToolCallback[] filterToolsByDefinition(AgentDefinition definition, String userContent, String sessionKey) {
         if (definition != null && definition.getAllowedTools() != null && !definition.getAllowedTools().isEmpty()) {
             ToolCallback[] explicitTools = Arrays.stream(allToolCallbacks)
                     .filter(tool -> definition.isToolAllowed(tool.getToolDefinition().name()))
@@ -2599,20 +2608,35 @@ public class AgentLoop {
             return explicitTools;
         }
 
-        ToolSelection selection = resolveDeterministicToolSelection(definition, userContent);
+        ToolSelection selection = resolveDeterministicToolSelection(definition, userContent, sessionKey);
         ToolCallback[] selectedTools = Arrays.stream(allToolCallbacks)
                 .filter(tool -> selection.toolNames().contains(tool.getToolDefinition().name()))
                 .toArray(ToolCallback[]::new);
+        rememberSessionTools(sessionKey, selectedTools);
         logger.info("tool injection selected profiles={} sources={} tools={}",
                 selection.profiles(), selection.sources(), toolNames(selectedTools));
         return selectedTools;
     }
 
     private ToolSelection resolveDeterministicToolSelection(AgentDefinition definition, String userContent) {
+        return resolveDeterministicToolSelection(definition, userContent, null);
+    }
+
+    private ToolSelection resolveDeterministicToolSelection(AgentDefinition definition, String userContent, String sessionKey) {
         LinkedHashSet<String> profiles = new LinkedHashSet<>();
         LinkedHashSet<String> sources = new LinkedHashSet<>();
         LinkedHashSet<String> toolNames = new LinkedHashSet<>(BASE_TOOL_NAMES);
         sources.add("base");
+
+        Set<String> carriedTools = sessionKey != null && !sessionKey.isBlank()
+                ? sessionToolCarryover.get(sessionKey)
+                : null;
+        if (carriedTools != null && !carriedTools.isEmpty()) {
+            carriedTools.stream()
+                    .sorted()
+                    .forEach(toolNames::add);
+            sources.add("session-carryover");
+        }
 
         Collection<String> agentProfiles = readAgentToolProfiles(definition);
         if (!agentProfiles.isEmpty()) {
@@ -2647,6 +2671,22 @@ public class AgentLoop {
         }
 
         return new ToolSelection(toolNames, profiles, sources);
+    }
+
+    private void rememberSessionTools(String sessionKey, ToolCallback[] selectedTools) {
+        if (sessionKey == null || sessionKey.isBlank() || selectedTools == null || selectedTools.length == 0) {
+            return;
+        }
+        Set<String> remembered = sessionToolCarryover.computeIfAbsent(sessionKey, key -> ConcurrentHashMap.newKeySet());
+        for (ToolCallback selectedTool : selectedTools) {
+            if (selectedTool == null || selectedTool.getToolDefinition() == null) {
+                continue;
+            }
+            String toolName = selectedTool.getToolDefinition().name();
+            if (toolName != null && !toolName.isBlank() && !"exec".equals(toolName)) {
+                remembered.add(toolName);
+            }
+        }
     }
 
     private Collection<String> readAgentToolProfiles(AgentDefinition definition) {
@@ -3214,7 +3254,7 @@ public class AgentLoop {
                             .apiKey(resolvedProvider.apiKey())
                             .baseUrl(nativeDeepSeekBaseUrl(resolvedProvider.springAiBaseUrl()))
                             .build())
-                    .defaultOptions(createDeepSeekDefaultOptions(resolvedProvider))
+                    .options(createDeepSeekDefaultOptions(resolvedProvider))
                     .build();
         }
         return OpenAiChatModel.builder()
