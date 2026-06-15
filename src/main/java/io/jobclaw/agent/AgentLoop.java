@@ -311,7 +311,16 @@ public class AgentLoop {
         this.resultStore = resultStore != null ? resultStore : new NoopResultStore();
         this.modelOverride = model;
 
-        reloadDefaultClient(chatClient);
+        try {
+            reloadDefaultClient(chatClient);
+        } catch (Exception e) {
+            this.model = model != null && !model.isBlank() ? model : config.getAgent().getModel();
+            this.chatClient = null;
+            this.simpleChatClient = null;
+            this.defaultProviderConfig = null;
+            logger.warn("LLM client is not ready during AgentLoop startup; gateway will continue and retry on first use. reason={}",
+                    e.getMessage());
+        }
 
         // 初始化 ContextBuilder（需要 SkillsService）
         io.jobclaw.skills.SkillsService skillsService = null;
@@ -3157,6 +3166,7 @@ public class AgentLoop {
         if ((providerOverride == null || providerOverride.isBlank())
                 && (apiBaseOverride == null || apiBaseOverride.isBlank())
                 && (modelOverride == null || modelOverride.isBlank())) {
+            ensureDefaultClientReady();
             return new ExecutionClientBundle(chatClient, model, defaultProviderConfig.providerName());
         }
 
@@ -3169,6 +3179,20 @@ public class AgentLoop {
         ChatModel chatModel = createChatModel(resolved);
         ChatClient executionChatClient = ChatClient.builder(chatModel).build();
         return new ExecutionClientBundle(executionChatClient, resolved.model(), resolved.providerName());
+    }
+
+    private void ensureDefaultClientReady() {
+        if (chatClient != null && defaultProviderConfig != null) {
+            return;
+        }
+        try {
+            reloadDefaultClient();
+        } catch (Exception e) {
+            throw new IllegalStateException("LLM provider is not ready. Check agent.provider and providers."
+                    + config.getAgent().getProvider() + ".apiKey in "
+                    + io.jobclaw.config.ConfigLoader.getConfigPath()
+                    + ". Original error: " + e.getMessage(), e);
+        }
     }
 
     private record ExecutionClientBundle(ChatClient chatClient, String model, String providerName) {

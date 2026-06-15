@@ -37,6 +37,7 @@ public class ConfigLoader {
     public static Config load(String path) throws IOException {
         Config config = loadFromFile(path);
         applyEnvironmentOverrides(config);
+        printLoadedConfigSummary(path, config);
         return config;
     }
 
@@ -88,9 +89,9 @@ public class ConfigLoader {
             System.err.println("  2. 使用 JSON 验证工具：https://jsonlint.com/");
             System.err.println("  3. 重新生成配置：jobclaw onboard");
             System.err.println();
-            System.err.println("将使用默认配置继续启动...");
+            System.err.println("配置文件存在但无法解析，启动已中止，避免退回默认 provider 造成误判。");
             System.err.println();
-            return Config.defaultConfig();
+            throw new IOException("配置文件加载失败：" + path, e);
         }
     }
 
@@ -109,7 +110,30 @@ public class ConfigLoader {
     }
 
     public static String getConfigPath() {
+        String explicitPath = System.getProperty("jobclaw.config-path");
+        if (explicitPath == null || explicitPath.isBlank()) {
+            explicitPath = System.getenv("JOBCLAW_CONFIG_PATH");
+        }
+        if (explicitPath != null && !explicitPath.isBlank()) {
+            return expandHome(explicitPath.trim());
+        }
         return Paths.get(System.getProperty("user.home"), CONFIG_DIR, CONFIG_FILE).toString();
+    }
+
+    private static void printLoadedConfigSummary(String path, Config config) {
+        String provider = config.getAgent() != null ? config.getAgent().getProvider() : "<null>";
+        String model = config.getAgent() != null ? config.getAgent().getModel() : "<null>";
+        boolean providerKeyConfigured = false;
+        if (config.getProviders() != null && provider != null) {
+            ProvidersConfig.ProviderConfig providerConfig = config.getProviderConfigByName(provider);
+            providerKeyConfigured = providerConfig != null
+                    && providerConfig.getApiKey() != null
+                    && !providerConfig.getApiKey().isBlank();
+        }
+        System.out.println("JobClaw config loaded: path=" + new File(path).getAbsolutePath()
+                + ", agent.provider=" + provider
+                + ", agent.model=" + model
+                + ", providerApiKeyConfigured=" + providerKeyConfigured);
     }
 
     public static String expandHome(String path) {
@@ -120,7 +144,7 @@ public class ConfigLoader {
         if (path.length() == 1) {
             return home;
         }
-        if (path.charAt(1) == '/') {
+        if (path.charAt(1) == '/' || path.charAt(1) == '\\') {
             return home + path.substring(1);
         }
         return path;
