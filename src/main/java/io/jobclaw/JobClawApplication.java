@@ -30,6 +30,8 @@ public class JobClawApplication {
             if (command.equals("status") || command.equals("onboard") || command.equals("version") || command.equals("demo")) {
                 // Set property to disable web server
                 System.setProperty("spring.main.web-application-type", "none");
+                // These commands must work before an LLM provider/API key is configured.
+                System.setProperty("spring.main.lazy-initialization", "true");
             }
         }
         SpringApplication.run(JobClawApplication.class, args);
