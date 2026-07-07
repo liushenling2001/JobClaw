@@ -30,6 +30,7 @@ public class AgentConfig {
     private int contextRefTurnBudgetChars;
     private int contextRefPreviewChars;
     private int contextRefReadMaxChars;
+    private int contextRefReadTurnBudgetChars;
     private List<String> commandBlacklist;
 
     // ==================== 上下文管理配置 ====================
@@ -83,6 +84,7 @@ public class AgentConfig {
         this.contextRefTurnBudgetChars = 45_000;
         this.contextRefPreviewChars = 2_000;
         this.contextRefReadMaxChars = 12_000;
+        this.contextRefReadTurnBudgetChars = 45_000;
         this.commandBlacklist = new ArrayList<>();
         // 上下文管理默认值（参考 TinyClaw）
         this.contextWindow = 128_000;
@@ -274,6 +276,14 @@ public class AgentConfig {
 
     public void setContextRefReadMaxChars(int contextRefReadMaxChars) {
         this.contextRefReadMaxChars = contextRefReadMaxChars;
+    }
+
+    public int getContextRefReadTurnBudgetChars() {
+        return contextRefReadTurnBudgetChars;
+    }
+
+    public void setContextRefReadTurnBudgetChars(int contextRefReadTurnBudgetChars) {
+        this.contextRefReadTurnBudgetChars = contextRefReadTurnBudgetChars;
     }
 
     public List<String> getCommandBlacklist() {

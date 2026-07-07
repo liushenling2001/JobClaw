@@ -53,6 +53,7 @@ public class ProviderRuntime {
                 apiKey,
                 apiBase,
                 springAiBaseUrl,
+                providerConfig.isStreamingEnabled(),
                 fallbackUsed
         );
     }

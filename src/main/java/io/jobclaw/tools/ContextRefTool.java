@@ -11,16 +11,22 @@ import org.springframework.stereotype.Component;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 @Component
 public class ContextRefTool {
     private static final int DEFAULT_READ_MAX_CHARS = 12_000;
+    private static final int DEFAULT_READ_TURN_BUDGET_CHARS = 45_000;
+    private static final int BUDGET_EXCEEDED_SMALL_READ_CHARS = 2_000;
     private static final int DEFAULT_LIST_LIMIT = 20;
 
     private final ResultStore resultStore;
     private final Config config;
+    private final Map<String, AtomicInteger> readBudgetByRun = new ConcurrentHashMap<>();
 
     public ContextRefTool(ResultStore resultStore, Config config) {
         this.resultStore = resultStore;
@@ -53,9 +59,29 @@ public class ContextRefTool {
         }
         String content = result.get().getContent() != null ? result.get().getContent() : "";
         int safeStart = Math.max(0, Math.min(start, content.length()));
-        int safeMax = Math.max(1, maxChars);
+        int configuredMax = Math.max(1, readMaxChars());
+        int requestedMax = Math.max(1, maxChars);
+        int safeMax = Math.min(requestedMax, configuredMax);
+        ReadBudgetDecision budget = reserveReadBudget(safeMax, requestedMax);
+        if (!budget.allowed()) {
+            return "Context reference read budget exceeded for the current run.\n\n"
+                    + "refId: " + result.get().getRefId() + "\n"
+                    + "requestedChars: " + requestedMax + "\n"
+                    + "singleReadMaxChars: " + configuredMax + "\n"
+                    + "turnReadBudgetChars: " + readTurnBudgetChars() + "\n"
+                    + "usedBefore: " + budget.usedBefore() + "\n\n"
+                    + "Use context_ref(action='search', refId='" + result.get().getRefId() + "', query='...') "
+                    + "or context_ref(action='summary', refId='" + result.get().getRefId() + "') instead. "
+                    + "If exact text is still needed, request a focused read with maxChars <= "
+                    + BUDGET_EXCEEDED_SMALL_READ_CHARS + ".";
+        }
+        safeMax = budget.allowedChars();
         int end = Math.min(content.length(), safeStart + safeMax);
-        return "Context reference: " + result.get().getRefId() + "\n"
+        String warning = requestedMax > configuredMax
+                ? "Read clamped to configured single-read max of " + configuredMax + " chars.\n"
+                : "";
+        return warning
+                + "Context reference: " + result.get().getRefId() + "\n"
                 + "Source: " + nullSafe(result.get().getSourceName()) + "\n"
                 + "Range: " + safeStart + "-" + end + " of " + content.length() + "\n\n"
                 + content.substring(safeStart, end);
@@ -131,6 +157,36 @@ public class ContextRefTool {
                 : DEFAULT_READ_MAX_CHARS;
     }
 
+    private int readTurnBudgetChars() {
+        return config != null && config.getAgent() != null && config.getAgent().getContextRefReadTurnBudgetChars() > 0
+                ? config.getAgent().getContextRefReadTurnBudgetChars()
+                : DEFAULT_READ_TURN_BUDGET_CHARS;
+    }
+
+    private ReadBudgetDecision reserveReadBudget(int safeMax, int requestedMax) {
+        AgentExecutionContext.ExecutionScope scope = AgentExecutionContext.getCurrentScope();
+        if (scope == null || scope.sessionKey() == null || scope.runId() == null) {
+            return new ReadBudgetDecision(true, safeMax, 0);
+        }
+        int budget = readTurnBudgetChars();
+        if (budget <= 0) {
+            return new ReadBudgetDecision(true, safeMax, 0);
+        }
+        String key = scope.sessionKey() + ":" + scope.runId();
+        AtomicInteger used = readBudgetByRun.computeIfAbsent(key, ignored -> new AtomicInteger());
+        int before = used.get();
+        if (before + safeMax <= budget) {
+            used.addAndGet(safeMax);
+            return new ReadBudgetDecision(true, safeMax, before);
+        }
+        if (requestedMax <= BUDGET_EXCEEDED_SMALL_READ_CHARS) {
+            int focusedChars = Math.min(safeMax, BUDGET_EXCEEDED_SMALL_READ_CHARS);
+            used.addAndGet(focusedChars);
+            return new ReadBudgetDecision(true, focusedChars, before);
+        }
+        return new ReadBudgetDecision(false, 0, before);
+    }
+
     private int parseInt(String value, int fallback) {
         if (value == null || value.isBlank()) {
             return fallback;
@@ -144,5 +200,8 @@ public class ContextRefTool {
 
     private String nullSafe(String value) {
         return value != null ? value : "";
+    }
+
+    private record ReadBudgetDecision(boolean allowed, int allowedChars, int usedBefore) {
     }
 }

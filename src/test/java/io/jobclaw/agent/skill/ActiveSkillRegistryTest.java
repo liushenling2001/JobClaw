@@ -57,6 +57,65 @@ class ActiveSkillRegistryTest {
     }
 
     @Test
+    void shouldExtractArtifactCompletionRequirement() {
+        ActiveSkillRegistry registry = new ActiveSkillRegistry();
+
+        registry.activate("session-a", "run-1", "report", """
+                # Skill
+                ## Artifact Completion
+                requiresArtifact: true
+                artifactType: docx
+                artifactPathTemplate: {{finalArtifactPath}}
+                """, "E:\\skills\\report");
+
+        ActiveSkillRegistry.ArtifactCompletion completion =
+                registry.artifactCompletion("session-a", "run-1");
+
+        assertThat(completion.declared()).isTrue();
+        assertThat(completion.required()).isTrue();
+        assertThat(completion.artifactType()).isEqualTo("docx");
+        assertThat(completion.artifactPathTemplate()).isEqualTo("{{finalArtifactPath}}");
+    }
+
+    @Test
+    void shouldExtractArtifactCompletionOptOut() {
+        ActiveSkillRegistry registry = new ActiveSkillRegistry();
+
+        registry.activate("session-a", "run-1", "analysis", """
+                # Skill
+                ## 产物要求
+                需要产物: false
+                """, "E:\\skills\\analysis");
+
+        ActiveSkillRegistry.ArtifactCompletion completion =
+                registry.artifactCompletion("session-a", "run-1");
+
+        assertThat(completion.declared()).isTrue();
+        assertThat(completion.required()).isFalse();
+    }
+
+    @Test
+    void shouldTreatArtifactCompletionAutoAsDeclaredWithoutOverride() {
+        ActiveSkillRegistry registry = new ActiveSkillRegistry();
+
+        registry.activate("session-a", "run-1", "assistant", """
+                # Skill
+                ## Artifact Completion
+                requiresArtifact: auto
+                """, "E:\\skills\\assistant");
+
+        ActiveSkillRegistry.ArtifactCompletion completion =
+                registry.artifactCompletion("session-a", "run-1");
+
+        assertThat(completion.declared()).isTrue();
+        assertThat(completion.required()).isNull();
+        assertThat(completion.requiresArtifact()).isFalse();
+        assertThat(completion.disablesArtifactGuard()).isFalse();
+        assertThat(registry.get("session-a", "run-1").toToolFrame())
+                .contains("requiresArtifact=\"auto\"");
+    }
+
+    @Test
     void shouldReadManagedRunnerParallelismFromSkillOnly() {
         ActiveSkillRegistry registry = new ActiveSkillRegistry();
 

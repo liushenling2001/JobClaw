@@ -146,6 +146,9 @@ public class AgentProfileService {
         if (providerConfig != null && providerConfig.getApiBase() != null && !providerConfig.getApiBase().isBlank()) {
             modelConfig.put("apiBase", providerConfig.getApiBase());
         }
+        if (providerConfig != null) {
+            modelConfig.put("streaming", providerConfig.isStreamingEnabled());
+        }
         return Map.copyOf(modelConfig);
     }
 

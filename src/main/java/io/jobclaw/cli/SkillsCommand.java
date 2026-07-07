@@ -423,6 +423,11 @@ public class SkillsCommand extends CliCommand {
         sb.append(description).append(".").append(NEWLINE).append(NEWLINE);
         sb.append("## Usage").append(NEWLINE).append(NEWLINE);
         sb.append("This skill provides specialized capabilities for ").append(skillName).append(" related tasks.").append(NEWLINE);
+        sb.append(NEWLINE);
+        sb.append("## Artifact Completion").append(NEWLINE).append(NEWLINE);
+        sb.append("requiresArtifact: auto").append(NEWLINE);
+        sb.append(NEWLINE);
+        sb.append("Use `true` when this skill must create a file or directory artifact, `false` when it never creates artifacts, and `auto` for mixed workflows.").append(NEWLINE);
         return sb.toString();
     }
 

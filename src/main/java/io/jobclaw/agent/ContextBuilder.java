@@ -173,8 +173,8 @@ public class ContextBuilder {
         StringBuilder sb = new StringBuilder();
         sb.append("# Skills\n\n");
 
-        sb.append("Use `skills(action='search', query='...')` to find installable skills. ");
-        sb.append("Use `skills(action='invoke', name='skill-name')` to open an installed skill and get its base path.\n\n");
+        sb.append("To find installable skills, call the tool named `skills` with JSON arguments like {\"action\":\"search\",\"query\":\"...\"}. ");
+        sb.append("To open an installed skill and get its base path, call `skills` with {\"action\":\"invoke\",\"name\":\"skill-name\"}.\n\n");
 
         if (!selectedSkills.isEmpty()) {
             sb.append("## Relevant Installed Skills\n\n");
@@ -281,7 +281,7 @@ public class ContextBuilder {
         sb.append("6. To create a reusable specialized agent, use `agent_catalog` to persist the definition.\n");
         sb.append("7. To run an existing persistent agent, use `spawn(agent='agent-name', task='...')`.\n");
         sb.append("8. Do not invent a parallel agent execution flow when `spawn` already fits the task.\n");
-        sb.append("9. For batch work with independent items, use `manifest` only as an explicit ledger. If the user names a skill, first call `skills(action='invoke', name='...')` and follow that skill. Use `executionMode='managed'` only when the active skill declares a managed runner; in that mode the framework advances item state and writes intermediate item artifacts. Direct manifests are ledger-only: do not expect the framework to execute them. Use real item objects, not examples or placeholders, and do not keep the full item table in conversation.\n");
+        sb.append("9. For batch work with independent items, use `manifest` only as an explicit ledger. If the user names a skill, first call the tool named `skills` with JSON arguments {\"action\":\"invoke\",\"name\":\"...\"} and follow that skill. Use `executionMode='managed'` only when the active skill declares a managed runner; in that mode the framework advances item state and writes intermediate item artifacts. Direct manifests are ledger-only: do not expect the framework to execute them. Use real item objects, not examples or placeholders, and do not keep the full item table in conversation.\n");
         sb.append("10. For file tools, copy paths exactly from `list_dir` output or user input. Never add, remove, split, translate, or reformat spaces and Chinese characters in file names.\n");
         sb.append("11. Large tool or sub-agent results may be returned as a `refId` instead of full text. Use `context_ref(action='read'|'search'|'summary', refId='...')` to inspect only the details needed for the task.\n");
         sb.append("12. If a recent tool result is already present or referenced by `refId`, reuse it instead of repeating the same read/search call. Repeat only when arguments change or a fresh read is explicitly needed.\n");

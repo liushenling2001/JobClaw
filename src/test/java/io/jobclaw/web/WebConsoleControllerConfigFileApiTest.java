@@ -86,6 +86,7 @@ class WebConsoleControllerConfigFileApiTest {
                     "",
                     "http://localhost:11434/v1",
                     "http://localhost:11434/v1",
+                    true,
                     false
             ));
 
@@ -124,6 +125,7 @@ class WebConsoleControllerConfigFileApiTest {
                     "",
                     "http://localhost:11434/v1",
                     "http://localhost:11434/v1",
+                    true,
                     false
             ));
 

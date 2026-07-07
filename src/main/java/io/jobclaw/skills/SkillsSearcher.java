@@ -654,18 +654,18 @@ public class SkillsSearcher {
                 emptyMsg.append("Solutions:\n");
                 emptyMsg.append("- Configure GitHub Token to increase to 5000/hour\n");
                 emptyMsg.append("- Wait ~1 hour for limit to reset\n");
-                emptyMsg.append("- Manually install known repository: skills(action='install', repo='owner/repo')\n");
-                emptyMsg.append("- Create your own skill: skills(action='create', ...)");
+                emptyMsg.append("- Manually install a known repository by calling tool `skills` with {\"action\":\"install\",\"repo\":\"owner/repo\"}\n");
+                emptyMsg.append("- Create your own skill by calling tool `skills` with action=create");
             } else {
                 emptyMsg.append("Possible reasons:\n");
                 emptyMsg.append("- Keywords don't match skill directory names or SKILL.md content, try English or more general terms\n");
                 emptyMsg.append("- Trusted market source repositories may be temporarily inaccessible\n\n");
                 emptyMsg.append("Suggestions:\n");
-                emptyMsg.append("- Try different keywords, e.g.: skills(action='search', query='code review')\n");
+                emptyMsg.append("- Try different keywords by calling tool `skills` with {\"action\":\"search\",\"query\":\"code review\"}\n");
                 emptyMsg.append("- Configure GitHub Token to increase API rate limits\n");
                 emptyMsg.append("- Enable global search to expand scope (set tools.skills.allowGlobalSearch=true)\n");
-                emptyMsg.append("- Manually install known repository: skills(action='install', repo='owner/repo')\n");
-                emptyMsg.append("- Create your own skill: skills(action='create', ...)");
+                emptyMsg.append("- Manually install a known repository by calling tool `skills` with {\"action\":\"install\",\"repo\":\"owner/repo\"}\n");
+                emptyMsg.append("- Create your own skill by calling tool `skills` with action=create");
             }
             return emptyMsg.toString();
         }
@@ -707,13 +707,13 @@ public class SkillsSearcher {
             }
 
             String installCmd = result.getInstallSpecifier();
-            sb.append("   Install: skills(action='install', repo='").append(installCmd).append("')\n");
+            sb.append("   Install: call tool `skills` with {\"action\":\"install\",\"repo\":\"").append(installCmd).append("\"}\n");
             sb.append("\n");
         }
 
         sb.append("---\n");
-        sb.append("Direct install: skills(action='install', repo='owner/repo')\n");
-        sb.append("Search and install: skills(action='search_install', query='").append(query).append("')");
+        sb.append("Direct install: call tool `skills` with {\"action\":\"install\",\"repo\":\"owner/repo\"}\n");
+        sb.append("Search and install: call tool `skills` with {\"action\":\"search_install\",\"query\":\"").append(query).append("\"}");
 
         return sb.toString();
     }

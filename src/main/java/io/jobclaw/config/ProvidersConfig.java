@@ -108,15 +108,18 @@ public class ProvidersConfig {
         
         @JsonProperty("baseUrl")
         private String apiBase;
+        private Boolean streaming;
 
         public ProviderConfig() {
             this.apiKey = "";
             this.apiBase = "";
+            this.streaming = null;
         }
 
         public ProviderConfig(String defaultApiBase) {
             this.apiKey = "";
             this.apiBase = defaultApiBase;
+            this.streaming = null;
         }
 
         public String getApiKey() { return apiKey; }
@@ -125,6 +128,13 @@ public class ProvidersConfig {
         @JsonProperty("baseUrl")
         public String getApiBase() { return apiBase; }
         public void setApiBase(String apiBase) { this.apiBase = apiBase; }
+        public Boolean getStreaming() { return streaming; }
+        public void setStreaming(Boolean streaming) { this.streaming = streaming; }
+
+        @JsonIgnore
+        public boolean isStreamingEnabled() {
+            return streaming == null || streaming;
+        }
 
         @JsonIgnore
         public boolean isValid() {

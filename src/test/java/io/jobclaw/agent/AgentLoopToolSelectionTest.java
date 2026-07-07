@@ -211,6 +211,49 @@ class AgentLoopToolSelectionTest {
     }
 
     @Test
+    void artifactGuardShouldRespectSkillArtifactOptOut() throws Exception {
+        ActiveSkillRegistry skillRegistry = new ActiveSkillRegistry();
+        AgentLoop loop = loopWithRegistries(skillRegistry, new ActiveManifestRegistry(), "skills", "completion");
+        skillRegistry.activate("session-a", "run-1", "analysis", """
+                # Skill
+                ## Artifact Completion
+                requiresArtifact: false
+                """, "E:\\skills\\analysis");
+
+        String prompt = invokeArtifactCompletionGuard(loop,
+                "session-a",
+                "run-1",
+                "整理这些材料并生成报告文件",
+                "已经完成分析。",
+                false);
+
+        assertTrue(prompt.isBlank());
+    }
+
+    @Test
+    void artifactGuardShouldUseSkillDeclaredArtifactRequirement() throws Exception {
+        ActiveSkillRegistry skillRegistry = new ActiveSkillRegistry();
+        AgentLoop loop = loopWithRegistries(skillRegistry, new ActiveManifestRegistry(), "skills", "completion");
+        skillRegistry.activate("session-a", "run-1", "report", """
+                # Skill
+                ## Artifact Completion
+                requiresArtifact: true
+                artifactType: docx
+                """, "E:\\skills\\report");
+
+        String prompt = invokeArtifactCompletionGuard(loop,
+                "session-a",
+                "run-1",
+                "总结这些材料",
+                "总结完成。",
+                false);
+
+        assertTrue(prompt.contains("JOBCLAW_ARTIFACT_COMPLETION_GUARD"));
+        assertTrue(prompt.contains("activeSkillRequiresArtifact: true"));
+        assertTrue(prompt.contains("artifactType\":\"docx"));
+    }
+
+    @Test
     void shouldAddToolsDeclaredByExplicitlyNamedSkill() throws Exception {
         SkillsService skillsService = mock(SkillsService.class);
         SkillInfo skill = new SkillInfo();
@@ -454,6 +497,29 @@ class AgentLoopToolSelectionTest {
         );
         method.setAccessible(true);
         return (String) method.invoke(loop, sessionKey, runId, attemptResponse, attempts);
+    }
+
+    private String invokeArtifactCompletionGuard(AgentLoop loop,
+                                                 String sessionKey,
+                                                 String runId,
+                                                 String userContent,
+                                                 String attemptResponse,
+                                                 boolean alreadyIssued) throws Exception {
+        Class<?> trackerClass = Arrays.stream(AgentLoop.class.getDeclaredClasses())
+                .filter(type -> type.getSimpleName().equals("ArtifactCompletionTracker"))
+                .findFirst()
+                .orElseThrow();
+        Method method = AgentLoop.class.getDeclaredMethod(
+                "buildArtifactCompletionGuardPrompt",
+                String.class,
+                String.class,
+                String.class,
+                String.class,
+                trackerClass,
+                boolean.class
+        );
+        method.setAccessible(true);
+        return (String) method.invoke(loop, sessionKey, runId, userContent, attemptResponse, null, alreadyIssued);
     }
 
     @SuppressWarnings("unchecked")

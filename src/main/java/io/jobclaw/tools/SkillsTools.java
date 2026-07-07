@@ -182,7 +182,7 @@ public class SkillsTools {
 
         boolean success = skillsService.saveSkill(name, skillContent.toString());
         if (success) {
-            return "Successfully created skill: " + name;
+            return "Successfully created skill: " + name + artifactCompletionReminder(content);
         } else {
             return "Error: failed to create skill '" + name + "'";
         }
@@ -216,10 +216,18 @@ public class SkillsTools {
 
         boolean success = skillsService.saveSkill(name, skillContent.toString());
         if (success) {
-            return "Successfully edited skill: " + name;
+            return "Successfully edited skill: " + name + artifactCompletionReminder(content);
         } else {
             return "Error: failed to edit skill '" + name + "'";
         }
+    }
+
+    private String artifactCompletionReminder(String content) {
+        if (content != null && content.matches("(?ims).*^\\s*#{2,6}\\s*(Artifact Completion|Completion Contract|Artifact Contract|产物完成|产物要求|完成产物)\\s*$.*")) {
+            return "";
+        }
+        return "\nWarning: this skill does not declare an Artifact Completion section. "
+                + "Add `## Artifact Completion` with `requiresArtifact: true`, `false`, or `auto` so final artifact checks do not misfire.";
     }
 
     /**

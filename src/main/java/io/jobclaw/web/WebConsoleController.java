@@ -46,8 +46,12 @@ import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.Base64;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.ConcurrentHashMap;
 
 @RestController
 @RequestMapping("/api")
@@ -74,6 +78,8 @@ public class WebConsoleController {
     private final ExperienceMemoryService experienceMemoryService;
 
     private final ExecutorService executor = Executors.newCachedThreadPool();
+    private final Map<String, Future<?>> activeWebExecutions = new ConcurrentHashMap<>();
+    private final Map<String, String> activeWebExecutionTokens = new ConcurrentHashMap<>();
     private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd");
 
     public WebConsoleController(Config config, SessionManager sessionManager,
@@ -228,7 +234,8 @@ public class WebConsoleController {
 
             String apiBase = stringValue(modelConfig.get("apiBase"));
             String apiKey = stringValue(modelConfig.get("apiKey"));
-            if (apiBase != null || (apiKey != null && !isMaskedSecret(apiKey))) {
+            Boolean streaming = booleanValue(modelConfig.get("streaming"));
+            if (apiBase != null || (apiKey != null && !isMaskedSecret(apiKey)) || streaming != null) {
                 ProvidersConfig.ProviderConfig providerConfig =
                         getProviderConfig(config.getProviders(), agentConfig.getProvider());
                 if (providerConfig == null) {
@@ -240,6 +247,9 @@ public class WebConsoleController {
                 }
                 if (apiKey != null && !isMaskedSecret(apiKey)) {
                     providerConfig.setApiKey(apiKey);
+                }
+                if (streaming != null) {
+                    providerConfig.setStreaming(streaming);
                 }
             }
 
@@ -360,13 +370,22 @@ public class WebConsoleController {
         logger.info("Starting execution with SSE streaming for session: {}, subscriber: {}",
             sessionKey, subscriberId);
 
-        executor.submit(() -> {
+        Future<?> previous = activeWebExecutions.remove(sessionKey);
+        if (previous != null && !previous.isDone()) {
+            previous.cancel(true);
+            logger.info("Cancelled previous active web execution for session={}", sessionKey);
+        }
+
+        String executionToken = UUID.randomUUID().toString();
+        activeWebExecutionTokens.put(sessionKey, executionToken);
+
+        FutureTask<Void> future = new FutureTask<>((java.util.concurrent.Callable<Void>) () -> {
             try {
                 // 閸欐垿鈧浇绻涢幒銉р€樼拋銈勭皑娴?
                 if (!safeSend(emitter, sessionKey, subscriberId, SseEmitter.event()
                         .name("connected")
                         .data(Map.of("sessionId", sessionKey, "subscriberId", subscriberId)), "connected event")) {
-                    return;
+                    return null;
                 }
                 logger.debug("Sent connected event to client");
 
@@ -389,6 +408,19 @@ public class WebConsoleController {
                 emitter.complete();
                 logger.debug("SSE emitter completed");
 
+            } catch (CancellationException e) {
+                logger.info("Execution cancelled for session={}", sessionKey);
+                executionTraceService.publish(new ExecutionEvent(
+                        sessionKey,
+                        ExecutionEvent.EventType.ERROR,
+                        "用户已停止本次执行",
+                        Map.of("source", "web_cancel")
+                ));
+                safeSend(emitter, sessionKey, subscriberId, SseEmitter.event()
+                                .name("error")
+                                .data(Map.of("error", "用户已停止本次执行")),
+                        "execution cancel event");
+                emitter.complete();
             } catch (Exception e) {
                 logger.error("Error during execution", e);
                 safeSend(emitter, sessionKey, subscriberId, SseEmitter.event()
@@ -396,10 +428,40 @@ public class WebConsoleController {
                         .data(Map.of("error", e.getMessage())),
                         "execution error event");
                 emitter.complete();
+            } finally {
+                if (executionToken.equals(activeWebExecutionTokens.get(sessionKey))) {
+                    activeWebExecutionTokens.remove(sessionKey);
+                    activeWebExecutions.remove(sessionKey);
+                }
             }
+            return null;
         });
+        activeWebExecutions.put(sessionKey, future);
+        executor.execute(future);
 
         return ResponseEntity.ok(emitter);
+    }
+
+    @PostMapping("/execute/stream/{sessionKey}/cancel")
+    public ResponseEntity<Map<String, Object>> cancelExecution(@PathVariable String sessionKey) {
+        Map<String, Object> response = new HashMap<>();
+        Future<?> future = activeWebExecutions.remove(sessionKey);
+        activeWebExecutionTokens.remove(sessionKey);
+        boolean cancelled = false;
+        if (future != null && !future.isDone()) {
+            cancelled = future.cancel(true);
+            executionTraceService.publish(new ExecutionEvent(
+                    sessionKey,
+                    ExecutionEvent.EventType.ERROR,
+                    "用户已停止本次执行",
+                    Map.of("source", "web_cancel")
+            ));
+            logger.info("Web execution cancel requested session={} cancelled={}", sessionKey, cancelled);
+        }
+        response.put("success", true);
+        response.put("cancelled", cancelled);
+        response.put("sessionKey", sessionKey);
+        return ResponseEntity.ok(response);
     }
 
     private String appendUploadedFilePaths(String message, String sessionKey, MultipartFile[] files) {
@@ -1107,6 +1169,7 @@ public class WebConsoleController {
         Map<String, Object> info = new HashMap<>();
         info.put("name", name);
         info.put("apiBase", providerConfig.getApiBase());
+        info.put("streaming", providerConfig.isStreamingEnabled());
         String apiKey = providerConfig.getApiKey();
         if (apiKey != null && !apiKey.isEmpty()) {
             info.put("apiKey", apiKey.length() > 8 ?
@@ -1131,6 +1194,7 @@ public class WebConsoleController {
         response.put("name", name);
         response.put("apiBase", providerConfig.getApiBase());
         response.put("apiKey", maskIfPresent(providerConfig.getApiKey()));
+        response.put("streaming", providerConfig.isStreamingEnabled());
         response.put("authorized", providerConfig.isValid());
         return ResponseEntity.ok(response);
     }
@@ -1159,6 +1223,9 @@ public class WebConsoleController {
 
             if (request.getApiBase() != null && !request.getApiBase().isEmpty()) {
                 providerConfig.setApiBase(request.getApiBase());
+            }
+            if (request.getStreaming() != null) {
+                providerConfig.setStreaming(request.getStreaming());
             }
 
             ConfigLoader.save(ConfigLoader.getConfigPath(), config);
@@ -2107,6 +2174,14 @@ public class WebConsoleController {
         return text == null ? null : Double.parseDouble(text);
     }
 
+    private Boolean booleanValue(Object value) {
+        if (value instanceof Boolean bool) {
+            return bool;
+        }
+        String text = stringValue(value);
+        return text == null ? null : Boolean.parseBoolean(text);
+    }
+
     private String defaultPromptIfBlank(String displayName, String description, String systemPrompt) {
         String normalizedPrompt = normalizeText(systemPrompt);
         if (normalizedPrompt != null) {
@@ -2207,6 +2282,7 @@ public class WebConsoleController {
         private String apiKey;
         private String apiBase;
         private String baseUrl;
+        private Boolean streaming;
 
         public String getApiKey() { return apiKey; }
         public void setApiKey(String apiKey) { this.apiKey = apiKey; }
@@ -2214,6 +2290,8 @@ public class WebConsoleController {
         public void setApiBase(String apiBase) { this.apiBase = apiBase; }
         public String getBaseUrl() { return baseUrl; }
         public void setBaseUrl(String baseUrl) { this.baseUrl = baseUrl; }
+        public Boolean getStreaming() { return streaming; }
+        public void setStreaming(Boolean streaming) { this.streaming = streaming; }
     }
 
     public static class UpdateModelRequest {

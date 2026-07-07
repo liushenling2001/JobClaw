@@ -128,6 +128,7 @@ class AgentLoopExecutionOptionsTest {
                 "sk-test",
                 "https://api.deepseek.com/v1",
                 "https://api.deepseek.com/v1",
+                true,
                 false
         ));
 

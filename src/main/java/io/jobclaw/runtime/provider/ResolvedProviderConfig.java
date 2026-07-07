@@ -6,6 +6,7 @@ public record ResolvedProviderConfig(
         String apiKey,
         String apiBase,
         String springAiBaseUrl,
+        boolean streamingEnabled,
         boolean fallbackUsed
 ) {
 }

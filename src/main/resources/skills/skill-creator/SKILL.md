@@ -183,6 +183,35 @@ Write the YAML frontmatter with `name` and `description`:
 
 Write instructions for using the skill and its bundled resources.
 
+#### Artifact Completion Contract
+
+Every JobClaw skill should include an `Artifact Completion` section so the runtime knows whether the final-answer artifact guard should be strict or conservative.
+
+Use one of these patterns:
+
+```markdown
+## Artifact Completion
+requiresArtifact: true
+artifactType: docx
+artifactPathTemplate: {{finalArtifactPath}}
+```
+
+Use `requiresArtifact: true` only for skills whose successful outcome is a generated, modified, exported, or saved artifact such as `docx`, `xlsx`, `pdf`, `csv`, `jsonl`, a directory, or a project file. The final answer must include one concrete absolute artifact path.
+
+```markdown
+## Artifact Completion
+requiresArtifact: false
+```
+
+Use `requiresArtifact: false` only for pure advisory, analysis, search, planning, or interactive skills that should not be blocked by a missing file path.
+
+```markdown
+## Artifact Completion
+requiresArtifact: auto
+```
+
+Use `auto` for broad skills where some requests create artifacts and some do not. In `auto`, the runtime falls back to current-run evidence and user intent instead of forcing or suppressing the guard. Do not use `false` for broad assistant/work-partner skills unless they truly never create artifacts.
+
 ### Step 5: Packaging a Skill
 
 Once development of the skill is complete, package it for distribution.

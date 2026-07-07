@@ -32,8 +32,8 @@ import java.util.concurrent.TimeUnit;
  * - 安全警告
  *
  * 典型用例：
- * - 执行技能脚本：run_command(command='python3 {base-path}/script.py arg1')
- * - 运行系统命令：run_command(command='ls -la', workingDir='/path/to/dir')
+ * - 执行技能脚本：调用工具 run_command，参数使用 JSON，例如 {"command":"python3 script.py arg1","workingDir":"{base-path}"}
+ * - 运行系统命令：调用工具 run_command，参数使用 JSON，例如 {"command":"ls -la","workingDir":"/path/to/dir"}
  */
 @Component
 public class RunCommandTool {
@@ -79,7 +79,7 @@ public class RunCommandTool {
         this.config = config;
     }
 
-    @Tool(name = "run_command", description = "Execute a shell command and return output. Use this tool when you need to: 1) Run system commands, 2) Execute scripts (Python, Bash, etc.), 3) Invoke skill scripts. For skill scripts, follow the skill instructions exactly, set workingDir to the base-path returned by skills(action='invoke'), and set timeout for long-running jobs.")
+    @Tool(name = "run_command", description = "Execute a shell command and return output. Use this tool when you need to: 1) Run system commands, 2) Execute scripts (Python, Bash, etc.), 3) Invoke skill scripts. For skill scripts, follow the skill instructions exactly, set workingDir to the base-path returned by the skills tool, and set timeout for long-running jobs.")
     public String execute(
         @ToolParam(description = "The shell command to execute. For skill scripts, use the command entrypoint documented by the skill instead of inventing or editing implementation files.") String command,
         @ToolParam(description = "Working directory (optional, defaults to current directory). Use the base-path from skills invoke for skill scripts") String workingDir,
@@ -152,7 +152,7 @@ public class RunCommandTool {
 
         if (looksLikeSkillSourceMutation(command)) {
             return "Error: Refusing to modify skill implementation files from a runtime command. "
-                    + "Use skills(action='edit') or an explicit skill-maintenance task when the user asks to edit the skill.";
+                    + "Use the skills tool with action=edit or an explicit skill-maintenance task when the user asks to edit the skill.";
         }
 
         return null;

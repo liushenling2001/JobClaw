@@ -135,6 +135,13 @@
                   API Base
                   <input name="apiBase" value="${escapeHtml(modelConfig.apiBase || "")}" class="mt-2 w-full bg-surface-container-high px-4 py-2 rounded text-on-surface outline-none focus:ring-2 focus:ring-secondary/40" />
                 </label>
+                <label class="flex items-start gap-3 rounded border border-outline-variant/20 bg-surface-container-low px-4 py-3 text-sm text-on-surface-variant">
+                  <input name="streaming" type="checkbox" ${modelConfig.streaming === false ? "" : "checked"} class="mt-1 h-4 w-4 accent-secondary" />
+                  <span>
+                    <span class="block text-on-surface">启用流式响应</span>
+                    <span class="block text-xs mt-1">vLLM 或 OpenAI-compatible 聚合接口触发 Spring AI 流式聚合错误时，可关闭。</span>
+                  </span>
+                </label>
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <label class="block text-sm text-on-surface-variant">
                     Temperature
@@ -187,6 +194,7 @@
                   provider: inputValue(form, "provider") || undefined,
                   model: inputValue(form, "model") || undefined,
                   apiBase: inputValue(form, "apiBase") || undefined,
+                  streaming: Boolean(form.elements.streaming && form.elements.streaming.checked),
                   temperature: numberValue(form, "temperature"),
                   maxTokens: numberValue(form, "maxTokens"),
                   toolCallTimeoutSeconds: numberValue(form, "toolCallTimeoutSeconds"),
@@ -293,6 +301,7 @@
             "选择 Model"
           );
           const apiKeyInput = ensureMainAgentApiKeyInput(apiBaseInput);
+          const streamingInput = ensureMainAgentStreamingInput(apiBaseInput);
 
           function refreshProviderDerivedFields() {
             const selectedProvider = providers.find(provider => provider.name === providerSelect.value);
@@ -304,6 +313,9 @@
               apiKeyInput.placeholder = selectedProvider && selectedProvider.apiKey
                 ? `当前：${selectedProvider.apiKey}，留空不修改`
                 : "留空则不修改已有 API Key";
+            }
+            if (streamingInput && selectedAgentLooksMain()) {
+              streamingInput.checked = !selectedProvider || selectedProvider.streaming !== false;
             }
             updateSelectOptions(
               modelSelect,
@@ -361,6 +373,32 @@
           `;
           apiBaseContainer.parentElement.insertBefore(wrapper, apiBaseContainer.nextSibling);
           return document.getElementById("jobclaw-main-agent-api-key");
+        }
+
+        function ensureMainAgentStreamingInput(apiBaseInput) {
+          const existing = document.getElementById("jobclaw-main-agent-streaming");
+          if (existing) {
+            return existing;
+          }
+          const apiBaseContainer = apiBaseInput.parentElement;
+          if (!apiBaseContainer || !apiBaseContainer.parentElement) {
+            return null;
+          }
+          const wrapper = document.createElement("div");
+          wrapper.className = apiBaseContainer.className || "";
+          wrapper.innerHTML = `
+            <label class="flex items-start gap-3 rounded border border-outline-variant/20 bg-surface-container-low px-4 py-3 text-sm text-on-surface-variant">
+              <input id="jobclaw-main-agent-streaming" type="checkbox" checked class="mt-1 h-4 w-4 accent-secondary" />
+              <span>
+                <span class="block text-on-surface">启用流式响应</span>
+                <span class="block text-xs mt-1">vLLM 或 OpenAI-compatible 聚合接口异常时可关闭。</span>
+              </span>
+            </label>
+          `;
+          const apiKey = document.getElementById("jobclaw-main-agent-api-key");
+          const anchor = apiKey && apiKey.closest("div") ? apiKey.closest("div") : apiBaseContainer;
+          anchor.parentElement.insertBefore(wrapper, anchor.nextSibling);
+          return document.getElementById("jobclaw-main-agent-streaming");
         }
 
         function modelValuesForProvider(models, provider, currentValue) {
@@ -612,11 +650,17 @@
           if (method === "PUT" && url && url.includes("/api/agents/main%3Aassistant")) {
             const apiKeyInput = document.getElementById("jobclaw-main-agent-api-key");
             const apiKey = apiKeyInput && apiKeyInput.value ? apiKeyInput.value.trim() : "";
-            if (apiKey && init && init.body && typeof init.body === "string") {
+            const streamingInput = document.getElementById("jobclaw-main-agent-streaming");
+            if (init && init.body && typeof init.body === "string") {
               try {
                 const body = JSON.parse(init.body);
                 body.modelConfig = body.modelConfig || {};
-                body.modelConfig.apiKey = apiKey;
+                if (apiKey) {
+                  body.modelConfig.apiKey = apiKey;
+                }
+                if (streamingInput) {
+                  body.modelConfig.streaming = streamingInput.checked;
+                }
                 init = { ...init, body: JSON.stringify(body) };
               } catch (ignored) {
                 // Keep the original request body if it is not JSON.
@@ -637,11 +681,17 @@
           if (this.__jobclawMethod === "PUT" && this.__jobclawUrl.includes("/api/agents/main%3Aassistant")) {
             const apiKeyInput = document.getElementById("jobclaw-main-agent-api-key");
             const apiKey = apiKeyInput && apiKeyInput.value ? apiKeyInput.value.trim() : "";
-            if (apiKey && typeof body === "string") {
+            const streamingInput = document.getElementById("jobclaw-main-agent-streaming");
+            if (typeof body === "string") {
               try {
                 const parsed = JSON.parse(body);
                 parsed.modelConfig = parsed.modelConfig || {};
-                parsed.modelConfig.apiKey = apiKey;
+                if (apiKey) {
+                  parsed.modelConfig.apiKey = apiKey;
+                }
+                if (streamingInput) {
+                  parsed.modelConfig.streaming = streamingInput.checked;
+                }
                 body = JSON.stringify(parsed);
               } catch (ignored) {
                 // Keep the original request body if it is not JSON.

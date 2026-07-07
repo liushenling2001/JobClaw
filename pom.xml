@@ -33,7 +33,7 @@
         <cron-utils.version>9.2.1</cron-utils.version>
         <dotenv.version>3.0.0</dotenv.version>
         <jline.version>3.25.0</jline.version>
-        <spring-ai.version>2.0.0-RC2</spring-ai.version>
+        <spring-ai.version>2.0.1-SNAPSHOT</spring-ai.version>
         <mockito.version>5.18.0</mockito.version>
         <byte-buddy.version>1.17.8</byte-buddy.version>
         <poi.version>5.5.1</poi.version>
@@ -239,14 +239,6 @@
             <snapshots>
                 <enabled>false</enabled>
             </snapshots>
-        </repository>
-        <repository>
-            <id>spring-snapshots</id>
-            <name>Spring Snapshots</name>
-            <url>https://repo.spring.io/snapshot</url>
-            <releases>
-                <enabled>false</enabled>
-            </releases>
         </repository>
     </repositories>
 

@@ -3,6 +3,7 @@ package io.jobclaw.agent;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.core.JsonParseException;
 import io.jobclaw.agent.evolution.MemoryEvolver;
 import io.jobclaw.agent.evolution.MemoryStore;
 import io.jobclaw.agent.runtime.AgentRunIds;
@@ -67,6 +68,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -137,6 +140,7 @@ public class AgentLoop {
     private final ActiveManifestRegistry activeManifestRegistry;
     private final UserInputRequestRegistry userInputRequestRegistry = new UserInputRequestRegistry();
     private final ResultStore resultStore;
+    private final RunTrajectoryCompactor runTrajectoryCompactor;
     private final Map<String, Set<String>> sessionToolCarryover = new ConcurrentHashMap<>();
 
     // 无工具调用的专用 ChatClient（用于摘要生成）
@@ -346,6 +350,7 @@ public class AgentLoop {
                 memoryEvolver,
                 summaryService
         );
+        this.runTrajectoryCompactor = new RunTrajectoryCompactor(config.getAgent());
 
         // 初始化 THINK_STREAM 缓冲区
         this.toolExecutionExecutor = Executors.newCachedThreadPool(r -> {
@@ -502,8 +507,10 @@ public class AgentLoop {
 
             String finalResponse = "";
             while (true) {
+                ensureNotCancelled();
                 refreshActiveSkillFrame(promptMessages, scope.sessionKey(), scope.runId());
                 refreshActiveManifestFrame(promptMessages, scope.sessionKey(), scope.runId());
+                runTrajectoryCompactor.compactIfNeeded(promptMessages, scope.sessionKey(), scope.runId(), userContent);
                 String attemptResponse = runModelAttempt(
                         executionClientBundle,
                         promptMessages,
@@ -660,7 +667,7 @@ public class AgentLoop {
                     if (eventCallback != null) {
                         eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.ERROR, errorResponse));
                     }
-                    sessionManager.finalizeAssistantMessage(sessionKey, fullResponse + "\n\n" + errorResponse);
+                    sessionManager.finalizeAssistantMessage(sessionKey, partialOrErrorResponse(fullResponse, errorResponse));
                     assistantMessagePersisted = true;
                     return errorResponse;
                 }
@@ -717,18 +724,19 @@ public class AgentLoop {
                 sessionManager.addMessage(sessionKey, "user", userContent);
                 userMessagePersisted = true;
             }
-            if (containsInterruptedException(e)) {
+            if (e instanceof CancellationException || containsInterruptedException(e)) {
                 Thread.currentThread().interrupt();
                 if (!assistantMessagePersisted) {
                     sessionManager.finalizeAssistantMessage(sessionKey,
-                            partialOrErrorResponse(fullResponse, "Error: execution interrupted"));
+                            partialOrErrorResponse(fullResponse, "用户已停止本次执行"));
                     assistantMessagePersisted = true;
                 }
                 if (eventCallback != null) {
                     eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.ERROR,
-                            "Error: execution interrupted"));
+                            "用户已停止本次执行",
+                            Map.of("source", "web_cancel")));
                 }
-                return "Error: execution interrupted";
+                return "用户已停止本次执行";
             }
             String errorResponse = "Error: " + e.getMessage() + " (check network/API key)";
             if (!assistantMessagePersisted) {
@@ -916,6 +924,7 @@ public class AgentLoop {
                     sb.append("failed: ").append(state.failed()).append("\n");
                     sb.append("pending: ").append(state.pending()).append("\n");
                     sb.append("running: ").append(state.running()).append("\n\n");
+                    appendManagedCompletionProgress(sb, state);
                     String skillCard = activeSkillRegistry.renderManagedRuntime(sessionKey, runId, "finalize", state);
                     if (!skillCard.isBlank()) {
                         sb.append("Skill managed runtime card:\n");
@@ -968,6 +977,7 @@ public class AgentLoop {
                     sb.append("failed: ").append(state.failed()).append("\n");
                     sb.append("pending: ").append(state.pending()).append("\n");
                     sb.append("running: ").append(state.running()).append("\n\n");
+                    appendManagedCompletionProgress(sb, state);
                     String skillCard = activeSkillRegistry.renderManagedRuntime(sessionKey, runId, "finalize", state);
                     if (!skillCard.isBlank()) {
                         sb.append("Skill managed runtime card:\n");
@@ -981,6 +991,33 @@ public class AgentLoop {
                     return sb.toString();
                 })
                 .orElse("");
+    }
+
+    private void appendManagedCompletionProgress(StringBuilder sb, ActiveManifestRegistry.ActiveManifestState state) {
+        boolean sourceProcessingComplete = state.pending() == 0
+                && state.running() == 0
+                && state.total() > 0
+                && state.done() + state.failed() >= state.total();
+        int closed = Math.max(0, state.done() + state.failed());
+        int percent = state.total() > 0 ? Math.min(100, (int) Math.round((closed * 100.0) / state.total())) : 0;
+        sb.append("BATCH PROCESSING PROGRESS\n");
+        sb.append("sourceProcessingComplete: ").append(sourceProcessingComplete).append("\n");
+        sb.append("closedItems: ").append(closed).append(" of ").append(state.total()).append(" (").append(percent).append("%)\n");
+        sb.append("successfulItems: ").append(state.done()).append("\n");
+        sb.append("failedItems: ").append(state.failed()).append("\n");
+        if (!state.artifactPath().isBlank()) {
+            sb.append("aggregateResultPath: ").append(state.artifactPath()).append("\n");
+        }
+        if (!state.finalArtifactPath().isBlank()) {
+            sb.append("targetFinalArtifactPath: ").append(state.finalArtifactPath()).append("\n");
+        }
+        if (sourceProcessingComplete) {
+            sb.append("mainProcessState: source file reading/extraction batches are complete; continue with final synthesis based on the managed item results and aggregate result.\n");
+            sb.append("finalizationBoundary: do not restart the batch item loop or treat source files as unread. Re-read original source files only if a required managed item result is missing or corrupt.\n");
+        } else {
+            sb.append("mainProcessState: source file processing is not complete; do not produce a final answer yet.\n");
+        }
+        sb.append("\n");
     }
 
     private boolean isFinalArtifactReadyNow(ActiveManifestRegistry.ActiveManifestState state) {
@@ -1081,10 +1118,16 @@ public class AgentLoop {
         if (activeManifestRegistry.findManagedBlockingState(sessionKey, runId).isPresent()) {
             return "";
         }
+        ActiveSkillRegistry.ArtifactCompletion skillArtifactCompletion =
+                activeSkillRegistry.artifactCompletion(sessionKey, runId);
+        if (skillArtifactCompletion.declared() && skillArtifactCompletion.disablesArtifactGuard()) {
+            return "";
+        }
+        boolean skillRequiresArtifact = skillArtifactCompletion.declared() && skillArtifactCompletion.requiresArtifact();
         boolean intentSignal = hasArtifactIntent(userContent);
         boolean writeEvidence = tracker != null && tracker.hasWriteEvidence();
         boolean responsePathSignal = containsArtifactPath(attemptResponse);
-        if (!intentSignal && !writeEvidence) {
+        if (!skillRequiresArtifact && !intentSignal && !writeEvidence) {
             return "";
         }
 
@@ -1093,6 +1136,16 @@ public class AgentLoop {
         sb.append("You are about to give a final answer, but this turn has signals that a file or directory artifact may be required.\n");
         sb.append("This is a one-time finalization check. Do not restart the task from scratch.\n\n");
         sb.append("Signals:\n");
+        sb.append("- activeSkillRequiresArtifact: ").append(skillRequiresArtifact);
+        if (skillRequiresArtifact) {
+            if (!skillArtifactCompletion.artifactType().isBlank()) {
+                sb.append(" (type=").append(skillArtifactCompletion.artifactType()).append(")");
+            }
+            if (!skillArtifactCompletion.artifactPathTemplate().isBlank()) {
+                sb.append(" (pathTemplate=").append(skillArtifactCompletion.artifactPathTemplate()).append(")");
+            }
+        }
+        sb.append("\n");
         sb.append("- userArtifactIntent: ").append(intentSignal).append("\n");
         sb.append("- writeToolEvidence: ").append(writeEvidence).append("\n");
         sb.append("- finalResponsePathEvidence: ").append(responsePathSignal).append("\n");
@@ -1105,7 +1158,15 @@ public class AgentLoop {
         sb.append("- If the current user request requires a generated/modified/exported artifact and it is already complete, final answer with exactly one concrete absolute artifact path.\n");
         sb.append("- If the artifact is not complete, continue using tools to create or finish it before final answer.\n");
         sb.append("- If the current user request does not require an artifact, say briefly that no artifact is required and answer normally.\n");
-        sb.append("- If you now know the expected artifact type but not a stable path yet, call completion(action='register', checks='[{\"type\":\"artifact_expected\",\"artifactType\":\"file\"}]') before continuing.\n");
+        if (skillRequiresArtifact) {
+            sb.append("- The active skill explicitly declares that an artifact is required; prefer the skill's artifact contract over generic inference.\n");
+        }
+        String artifactType = skillRequiresArtifact && !skillArtifactCompletion.artifactType().isBlank()
+                ? skillArtifactCompletion.artifactType()
+                : "file";
+        sb.append("- If you now know the expected artifact type but not a stable path yet, call completion(action='register', checks='[{\"type\":\"artifact_expected\",\"artifactType\":\"")
+                .append(artifactType)
+                .append("\"}]') before continuing.\n");
         return sb.toString();
     }
 
@@ -1151,10 +1212,32 @@ public class AgentLoop {
     }
 
     private String partialOrErrorResponse(StringBuilder partialResponse, String errorResponse) {
-        if (partialResponse != null && !partialResponse.isEmpty()) {
-            return partialResponse.toString();
+        if (partialResponse == null || partialResponse.isEmpty()) {
+            return errorResponse;
         }
-        return errorResponse;
+        int maxChars = 6000;
+        String partial = partialResponse.toString();
+        if (partial.length() <= maxChars) {
+            return partial + "\n\n" + errorResponse;
+        }
+        return partial.substring(partial.length() - maxChars)
+                + "\n\n...[earlier intermediate output omitted from saved assistant message]\n\n"
+                + errorResponse;
+    }
+
+    private String previewForLog(String text) {
+        if (text == null) {
+            return "<null>";
+        }
+        String compact = text
+                .replace("\r", "\\r")
+                .replace("\n", "\\n")
+                .replace("\t", "\\t");
+        int maxChars = 240;
+        if (compact.length() <= maxChars) {
+            return compact;
+        }
+        return compact.substring(0, maxChars) + "...[+" + (compact.length() - maxChars) + " chars]";
     }
 
     private String emitUserInputRequired(String sessionKey,
@@ -1210,6 +1293,7 @@ public class AgentLoop {
         int attempts = 0;
         int parallelism = activeSkillRegistry.managedRunnerParallelism(sessionKey, runId);
         while (true) {
+            ensureNotCancelled();
             var blockingState = activeManifestRegistry.findManagedBlockingState(sessionKey, runId);
             if (blockingState.isEmpty() || (blockingState.get().pending() == 0 && blockingState.get().running() == 0)) {
                 break;
@@ -1258,6 +1342,7 @@ public class AgentLoop {
                     continue;
                 }
                 workers.add(CompletableFuture.supplyAsync(() -> {
+                    ensureNotCancelled();
                     StringBuilder workerResponse = new StringBuilder();
                     try {
                         List<Message> runnerMessages = buildManagedRunnerMessages(systemPrompt, originalUserContent, runnerPrompt);
@@ -2080,11 +2165,43 @@ public class AgentLoop {
                                    StringBuilder fullResponse,
                                    boolean checkpointAssistantDraft) {
         StringBuilder attemptResponse = new StringBuilder();
+        ensureNotCancelled();
         StreamDeltaNormalizer streamDeltaNormalizer = new StreamDeltaNormalizer();
         ReasoningContentFilter reasoningContentFilter = ReasoningContentFilter.forModel(
                 isReasoningSideChannelProvider(executionClientBundle.providerName(), executionClientBundle.model()));
         int fullResponseStartLength = fullResponse != null ? fullResponse.length() : 0;
-        AtomicInteger lastDraftCheckpoint = new AtomicInteger(fullResponse != null ? fullResponse.length() : 0);
+        AtomicInteger streamChunkCount = new AtomicInteger();
+        String streamSegmentId = "seg-" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+
+        logger.info("LLM call start session={} provider={} model={} apiBase={} streaming={} messages={} tools={} checkpointDraft={}",
+                sessionKey,
+                executionClientBundle.providerName(),
+                executionClientBundle.model(),
+                executionClientBundle.apiBase(),
+                executionClientBundle.streamingEnabled(),
+                promptMessages != null ? promptMessages.size() : 0,
+                tools != null ? tools.length : 0,
+                checkpointAssistantDraft);
+
+        if (!executionClientBundle.streamingEnabled()) {
+            logger.info("LLM streaming disabled by provider config; using non-stream call session={} provider={} model={} apiBase={}",
+                    sessionKey,
+                    executionClientBundle.providerName(),
+                    executionClientBundle.model(),
+                    executionClientBundle.apiBase());
+            return runNonStreamFallback(
+                    executionClientBundle,
+                    promptMessages,
+                    tools,
+                    options,
+                    sessionKey,
+                    eventCallback,
+                    fullResponse,
+                    checkpointAssistantDraft,
+                    fullResponseStartLength,
+                    reasoningContentFilter,
+                    "streaming-disabled");
+        }
 
         Flux<String> contentStream = executionClientBundle.chatClient().prompt()
                 .messages(promptMessages)
@@ -2095,31 +2212,59 @@ public class AgentLoop {
 
         try {
             contentStream.toStream().forEach(content -> {
+                ensureNotCancelled();
                 if (content != null && !content.isEmpty()) {
+                    int chunkIndex = streamChunkCount.incrementAndGet();
+                    if (chunkIndex <= 8 || chunkIndex % 25 == 0) {
+                        logger.info("LLM stream chunk session={} provider={} model={} chunk={} rawChars={} rawPreview={}",
+                                sessionKey,
+                                executionClientBundle.providerName(),
+                                executionClientBundle.model(),
+                                chunkIndex,
+                                content.length(),
+                                previewForLog(content));
+                    }
                     String delta = streamDeltaNormalizer.normalize(attemptResponse, content);
                     if (delta.isEmpty()) {
+                        if (chunkIndex <= 8 || chunkIndex % 25 == 0) {
+                            logger.info("LLM stream chunk normalized-empty session={} chunk={} accumulatedChars={}",
+                                    sessionKey,
+                                    chunkIndex,
+                                    attemptResponse.length());
+                        }
                         return;
                     }
                     delta = reasoningContentFilter.filterDelta(delta);
                     if (delta.isEmpty()) {
+                        if (chunkIndex <= 8 || chunkIndex % 25 == 0) {
+                            logger.info("LLM stream chunk filtered-empty session={} chunk={} accumulatedChars={}",
+                                    sessionKey,
+                                    chunkIndex,
+                                    attemptResponse.length());
+                        }
                         return;
+                    }
+                    if (chunkIndex <= 8 || chunkIndex % 25 == 0) {
+                        logger.info("LLM stream delta session={} chunk={} deltaChars={} deltaPreview={} accumulatedBefore={}",
+                                sessionKey,
+                                chunkIndex,
+                                delta.length(),
+                                previewForLog(delta),
+                                attemptResponse.length());
                     }
                     attemptResponse.append(delta);
                     fullResponse.append(delta);
-                    if (checkpointAssistantDraft
-                            && fullResponse.length() - lastDraftCheckpoint.get() >= ASSISTANT_DRAFT_CHECKPOINT_CHARS) {
-                        sessionManager.saveAssistantDraft(sessionKey, fullResponse.toString());
-                        lastDraftCheckpoint.set(fullResponse.length());
-                    }
                     if (eventCallback != null) {
+                        ExecutionEvent streamEvent = new ExecutionEvent(
+                                sessionKey,
+                                ExecutionEvent.EventType.THINK_STREAM,
+                                delta,
+                                Map.of("streamSegmentId", streamSegmentId)
+                        );
                         if (toolExecutionStateTracker.isExecuting(sessionKey)) {
                             toolExecutionStateTracker.bufferThink(sessionKey, delta);
                         } else {
-                            eventCallback.accept(new ExecutionEvent(
-                                    sessionKey,
-                                    ExecutionEvent.EventType.THINK_STREAM,
-                                    delta
-                            ));
+                            eventCallback.accept(streamEvent);
                         }
                     }
                 }
@@ -2129,60 +2274,61 @@ public class AgentLoop {
                 logger.info("managed manifest takeover session={} attemptChars={}", sessionKey, attemptResponse.length());
                 return attemptResponse.toString();
             }
+            if (isSpringAiStreamAggregationFailure(e)) {
+                logger.warn("Spring AI stream aggregation failed; retrying once with non-stream call session={} provider={} model={} apiBase={} chunks={} attemptChars={} error={}",
+                        sessionKey,
+                        executionClientBundle.providerName(),
+                        executionClientBundle.model(),
+                        executionClientBundle.apiBase(),
+                        streamChunkCount.get(),
+                        attemptResponse.length(),
+                        e.getMessage());
+                return runNonStreamFallback(
+                        executionClientBundle,
+                        promptMessages,
+                        tools,
+                        options,
+                        sessionKey,
+                        eventCallback,
+                        fullResponse,
+                        checkpointAssistantDraft,
+                        fullResponseStartLength,
+                        reasoningContentFilter,
+                        "spring-ai-stream-aggregation");
+            }
             WebClientResponseException responseException = findWebClientResponseException(e);
             if (responseException != null) {
-                logger.warn("LLM HTTP error session={} status={} body={}",
+                logger.warn("LLM HTTP error session={} provider={} model={} apiBase={} chunks={} attemptChars={} status={} body={}",
                         sessionKey,
+                        executionClientBundle.providerName(),
+                        executionClientBundle.model(),
+                        executionClientBundle.apiBase(),
+                        streamChunkCount.get(),
+                        attemptResponse.length(),
                         responseException.getStatusCode(),
                         responseException.getResponseBodyAsString());
             }
-            throw e;
+            throw enrichLlmRuntimeException(e, executionClientBundle);
         }
         if (attemptResponse.isEmpty()) {
-            logger.warn("LLM stream returned no visible content; retrying once with non-stream call session={} model={}",
+            logger.warn("LLM stream returned no visible content; retrying once with non-stream call session={} provider={} model={} chunks={}",
                     sessionKey,
-                    executionClientBundle.model());
-            try {
-                String fallbackContent = executionClientBundle.chatClient().prompt()
-                        .messages(promptMessages)
-                        .toolCallbacks(tools)
-                        .options(options)
-                        .call()
-                        .content();
-                String delta = reasoningContentFilter.sanitizeFinal(fallbackContent != null ? fallbackContent : "");
-                if (!delta.isEmpty()) {
-                    attemptResponse.append(delta);
-                    fullResponse.append(delta);
-                    if (checkpointAssistantDraft) {
-                        sessionManager.saveAssistantDraft(sessionKey, fullResponse.toString());
-                    }
-                    if (eventCallback != null) {
-                        eventCallback.accept(new ExecutionEvent(
-                                sessionKey,
-                                ExecutionEvent.EventType.THINK_STREAM,
-                                delta
-                        ));
-                    }
-                }
-            } catch (RuntimeException e) {
-                if (containsManagedManifestTakeoverSignal(e)) {
-                    logger.info("managed manifest takeover during non-stream fallback session={} attemptChars={}",
-                            sessionKey,
-                            attemptResponse.length());
-                    return attemptResponse.toString();
-                }
-                WebClientResponseException responseException = findWebClientResponseException(e);
-                if (responseException != null) {
-                    logger.warn("LLM HTTP error during non-stream fallback session={} status={} body={}",
-                            sessionKey,
-                            responseException.getStatusCode(),
-                            responseException.getResponseBodyAsString());
-                }
-                throw e;
-            }
-            if (attemptResponse.isEmpty()) {
-                throw new IllegalStateException("LLM returned empty content in both stream and non-stream calls");
-            }
+                    executionClientBundle.providerName(),
+                    executionClientBundle.model(),
+                    streamChunkCount.get());
+            return runNonStreamFallback(
+                    executionClientBundle,
+                    promptMessages,
+                    tools,
+                    options,
+                    sessionKey,
+                    eventCallback,
+                    fullResponse,
+                    checkpointAssistantDraft,
+                    fullResponseStartLength,
+                    reasoningContentFilter,
+                    "empty-stream",
+                    streamSegmentId);
         }
         String sanitized = reasoningContentFilter.sanitizeFinal(attemptResponse.toString());
         if (sanitized.length() != attemptResponse.length()) {
@@ -2193,7 +2339,122 @@ public class AgentLoop {
                 fullResponse.append(sanitized);
             }
         }
+        logger.info("LLM stream complete session={} provider={} model={} chunks={} responseChars={} responsePreview={}",
+                sessionKey,
+                executionClientBundle.providerName(),
+                executionClientBundle.model(),
+                streamChunkCount.get(),
+                sanitized.length(),
+                previewForLog(sanitized));
         return sanitized;
+    }
+
+    private String runNonStreamFallback(ExecutionClientBundle executionClientBundle,
+                                        List<Message> promptMessages,
+                                        ToolCallback[] tools,
+                                        ChatOptions.Builder<?> options,
+                                        String sessionKey,
+                                        Consumer<ExecutionEvent> eventCallback,
+                                        StringBuilder fullResponse,
+                                        boolean checkpointAssistantDraft,
+                                        int fullResponseStartLength,
+                                        ReasoningContentFilter reasoningContentFilter,
+                                        String reason) {
+        return runNonStreamFallback(executionClientBundle, promptMessages, tools, options, sessionKey, eventCallback,
+                fullResponse, checkpointAssistantDraft, fullResponseStartLength, reasoningContentFilter, reason,
+                "seg-" + UUID.randomUUID().toString().replace("-", "").substring(0, 12));
+    }
+
+    private String runNonStreamFallback(ExecutionClientBundle executionClientBundle,
+                                        List<Message> promptMessages,
+                                        ToolCallback[] tools,
+                                        ChatOptions.Builder<?> options,
+                                        String sessionKey,
+                                        Consumer<ExecutionEvent> eventCallback,
+                                        StringBuilder fullResponse,
+                                        boolean checkpointAssistantDraft,
+                                        int fullResponseStartLength,
+                                        ReasoningContentFilter reasoningContentFilter,
+                                        String reason,
+                                        String streamSegmentId) {
+        StringBuilder fallbackResponse = new StringBuilder();
+        ensureNotCancelled();
+        logger.info("LLM non-stream call start session={} provider={} model={} apiBase={} reason={} messages={} tools={}",
+                sessionKey,
+                executionClientBundle.providerName(),
+                executionClientBundle.model(),
+                executionClientBundle.apiBase(),
+                reason,
+                promptMessages != null ? promptMessages.size() : 0,
+                tools != null ? tools.length : 0);
+        try {
+            String fallbackContent = executionClientBundle.chatClient().prompt()
+                    .messages(promptMessages)
+                    .toolCallbacks(tools)
+                    .options(options)
+                    .call()
+                    .content();
+            ensureNotCancelled();
+            String delta = reasoningContentFilter.sanitizeFinal(fallbackContent != null ? fallbackContent : "");
+            logger.info("LLM non-stream raw response session={} provider={} model={} reason={} rawChars={} sanitizedChars={} rawPreview={} sanitizedPreview={}",
+                    sessionKey,
+                    executionClientBundle.providerName(),
+                    executionClientBundle.model(),
+                    reason,
+                    fallbackContent != null ? fallbackContent.length() : 0,
+                    delta.length(),
+                    previewForLog(fallbackContent),
+                    previewForLog(delta));
+            if (!delta.isEmpty()) {
+                fallbackResponse.append(delta);
+                if (fullResponse != null) {
+                    if ("spring-ai-stream-aggregation".equals(reason)
+                            && fullResponse.length() >= fullResponseStartLength) {
+                        fullResponse.setLength(fullResponseStartLength);
+                    }
+                    fullResponse.append(delta);
+                }
+                if (eventCallback != null) {
+                    eventCallback.accept(new ExecutionEvent(
+                            sessionKey,
+                            ExecutionEvent.EventType.THINK_STREAM,
+                            delta,
+                            Map.of("streamSegmentId", streamSegmentId)
+                    ));
+                }
+            }
+        } catch (RuntimeException e) {
+            if (containsManagedManifestTakeoverSignal(e)) {
+                logger.info("managed manifest takeover during non-stream fallback session={} reason={} chars={}",
+                        sessionKey,
+                        reason,
+                        fallbackResponse.length());
+                return fallbackResponse.toString();
+            }
+            WebClientResponseException responseException = findWebClientResponseException(e);
+            if (responseException != null) {
+                logger.warn("LLM HTTP error during non-stream fallback session={} provider={} model={} apiBase={} reason={} status={} body={}",
+                        sessionKey,
+                        executionClientBundle.providerName(),
+                        executionClientBundle.model(),
+                        executionClientBundle.apiBase(),
+                        reason,
+                        responseException.getStatusCode(),
+                        responseException.getResponseBodyAsString());
+            }
+            throw enrichLlmRuntimeException(e, executionClientBundle);
+        }
+        if (fallbackResponse.isEmpty()) {
+            throw new IllegalStateException("LLM returned empty content in non-stream fallback after " + reason);
+        }
+        logger.info("LLM non-stream complete session={} provider={} model={} reason={} responseChars={} responsePreview={}",
+                sessionKey,
+                executionClientBundle.providerName(),
+                executionClientBundle.model(),
+                reason,
+                fallbackResponse.length(),
+                previewForLog(fallbackResponse.toString()));
+        return fallbackResponse.toString();
     }
 
     private boolean containsManagedManifestTakeoverSignal(Throwable throwable) {
@@ -2201,6 +2462,26 @@ public class AgentLoop {
         while (current != null) {
             if (current instanceof ManagedManifestTakeoverSignal) {
                 return true;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    private boolean isSpringAiStreamAggregationFailure(Throwable throwable) {
+        boolean indexOutOfBounds = false;
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof IndexOutOfBoundsException) {
+                indexOutOfBounds = true;
+            }
+            for (StackTraceElement element : current.getStackTrace()) {
+                String className = element.getClassName();
+                if (className.contains("MessageAggregator")
+                        || className.contains("OpenAiChatModel$ChunkMerger")
+                        || className.contains("OpenAiChatModel.ChunkMerger")) {
+                    return indexOutOfBounds || current instanceof IndexOutOfBoundsException;
+                }
             }
             current = current.getCause();
         }
@@ -2216,6 +2497,41 @@ public class AgentLoop {
             current = current.getCause();
         }
         return null;
+    }
+
+    private RuntimeException enrichLlmRuntimeException(RuntimeException exception,
+                                                       ExecutionClientBundle executionClientBundle) {
+        JsonParseException jsonParseException = findJsonParseException(exception);
+        if (jsonParseException == null || !looksLikeNonJsonProviderResponse(jsonParseException)) {
+            return exception;
+        }
+        String message = "LLM provider returned a non-JSON response while the OpenAI-compatible client expected JSON. "
+                + "This usually means the selected model/provider/API Base combination is wrong, the API Base points "
+                + "to an HTML page instead of an OpenAI-compatible /v1 endpoint, or an upstream proxy/login/error page "
+                + "was returned. provider=" + executionClientBundle.providerName()
+                + ", model=" + executionClientBundle.model()
+                + ", apiBase=" + executionClientBundle.apiBase()
+                + ". Original parser error: " + jsonParseException.getOriginalMessage();
+        return new IllegalStateException(message, exception);
+    }
+
+    private JsonParseException findJsonParseException(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof JsonParseException jsonParseException) {
+                return jsonParseException;
+            }
+            current = current.getCause();
+        }
+        return null;
+    }
+
+    private boolean looksLikeNonJsonProviderResponse(JsonParseException exception) {
+        String message = exception.getOriginalMessage();
+        return message != null
+                && (message.contains("Unexpected character ('<'")
+                || message.contains("Unexpected character '<'")
+                || message.contains("code 60"));
     }
 
     private boolean shouldReturnManagedManifestControl(String toolName, String request, ToolExecutionResult result) {
@@ -2971,12 +3287,18 @@ public class AgentLoop {
     private boolean containsInterruptedException(Throwable throwable) {
         Throwable current = throwable;
         while (current != null) {
-            if (current instanceof InterruptedException) {
+            if (current instanceof InterruptedException || current instanceof CancellationException) {
                 return true;
             }
             current = current.getCause();
         }
         return Thread.currentThread().isInterrupted();
+    }
+
+    private void ensureNotCancelled() {
+        if (Thread.currentThread().isInterrupted()) {
+            throw new CancellationException("execution cancelled");
+        }
     }
 
     private List<String> toolNames(ToolCallback[] callbacks) {
@@ -3167,7 +3489,7 @@ public class AgentLoop {
                 && (apiBaseOverride == null || apiBaseOverride.isBlank())
                 && (modelOverride == null || modelOverride.isBlank())) {
             ensureDefaultClientReady();
-            return new ExecutionClientBundle(chatClient, model, defaultProviderConfig.providerName());
+            return new ExecutionClientBundle(chatClient, model, defaultProviderConfig.providerName(), defaultProviderConfig.apiBase(), defaultProviderConfig.streamingEnabled());
         }
 
         ResolvedProviderConfig resolved = providerRuntime.resolve(
@@ -3178,7 +3500,7 @@ public class AgentLoop {
         );
         ChatModel chatModel = createChatModel(resolved);
         ChatClient executionChatClient = ChatClient.builder(chatModel).build();
-        return new ExecutionClientBundle(executionChatClient, resolved.model(), resolved.providerName());
+        return new ExecutionClientBundle(executionChatClient, resolved.model(), resolved.providerName(), resolved.apiBase(), resolved.streamingEnabled());
     }
 
     private void ensureDefaultClientReady() {
@@ -3195,7 +3517,7 @@ public class AgentLoop {
         }
     }
 
-    private record ExecutionClientBundle(ChatClient chatClient, String model, String providerName) {
+    private record ExecutionClientBundle(ChatClient chatClient, String model, String providerName, String apiBase, boolean streamingEnabled) {
     }
 
     private boolean isReasoningSideChannelProvider(String providerName, String modelName) {

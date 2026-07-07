@@ -52,7 +52,7 @@ public class SkillsLoader {
      */
     private static final List<String> BUILTIN_SKILL_NAMES = Arrays.asList(
             "weather", "github", "summarize", "skill-creator", "tmux", "work-partner-skill-creator",
-            "experience-review"
+            "experience-review", "batch-file-task-runner"
     );
 
     /**
