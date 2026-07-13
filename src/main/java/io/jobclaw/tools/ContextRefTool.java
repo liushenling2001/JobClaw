@@ -22,6 +22,7 @@ public class ContextRefTool {
     private static final int DEFAULT_READ_MAX_CHARS = 12_000;
     private static final int DEFAULT_READ_TURN_BUDGET_CHARS = 45_000;
     private static final int BUDGET_EXCEEDED_SMALL_READ_CHARS = 2_000;
+    private static final int DEFAULT_SEARCH_MAX_CHARS = 4_000;
     private static final int DEFAULT_LIST_LIMIT = 20;
 
     private final ResultStore resultStore;
@@ -103,20 +104,37 @@ public class ContextRefTool {
         int count = 0;
         int from = 0;
         int maxMatches = Math.max(1, limit);
-        while (count < maxMatches) {
+        boolean truncated = false;
+        while (count < maxMatches && sb.length() < DEFAULT_SEARCH_MAX_CHARS) {
             int index = lowerContent.indexOf(lowerQuery, from);
             if (index < 0) {
                 break;
             }
             int start = Math.max(0, index - 160);
             int end = Math.min(content.length(), index + query.length() + 240);
-            sb.append("\nMatch ").append(count + 1).append(" at ").append(index).append(":\n");
-            sb.append(content, start, end).append("\n");
+            String match = "\nMatch " + (count + 1) + " at " + index + ":\n"
+                    + content.substring(start, end) + "\n";
+            if (sb.length() + match.length() > DEFAULT_SEARCH_MAX_CHARS) {
+                int remaining = Math.max(0, DEFAULT_SEARCH_MAX_CHARS - sb.length());
+                if (remaining > 0) {
+                    sb.append(match, 0, Math.min(remaining, match.length()));
+                }
+                truncated = true;
+                break;
+            }
+            sb.append(match);
             count++;
             from = index + Math.max(1, query.length());
         }
         if (count == 0) {
             sb.append("No matches.");
+        }
+        if (truncated || count >= maxMatches) {
+            sb.append("\n[truncated] Search output is limited to ")
+                    .append(DEFAULT_SEARCH_MAX_CHARS)
+                    .append(" chars and ")
+                    .append(maxMatches)
+                    .append(" matches. Use a more specific query or context_ref(action='read', start='...', maxChars='...') for a focused range.");
         }
         return sb.toString();
     }

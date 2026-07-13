@@ -43,4 +43,18 @@ class ContextRefToolBudgetTest {
         assertTrue(blockedRead.contains("context_ref(action='search'"));
         assertTrue(focusedRead.contains("kl"));
     }
+
+    @Test
+    void shouldLimitLargeContextRefSearchBackflow() {
+        Config config = Config.defaultConfig();
+        ResultStore resultStore = new FileResultStore(tempDir.resolve("results"), 20);
+        String content = "题目 ".repeat(5_000);
+        ContextRef ref = resultStore.save("session-1", "run-2", "tool", "read_pdf", content);
+        ContextRefTool tool = new ContextRefTool(resultStore, config);
+
+        String search = tool.contextRef("search", ref.getRefId(), "题目", null, null, "100");
+
+        assertTrue(search.length() < 4_800);
+        assertTrue(search.contains("[truncated] Search output is limited"));
+    }
 }
