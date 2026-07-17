@@ -2,15 +2,22 @@ package io.jobclaw.cli;
 
 import io.jobclaw.JobClawApplication;
 import io.jobclaw.agent.ExecutionEvent;
+import io.jobclaw.cli.render.TranscriptTuiRenderer;
+import io.jobclaw.cli.tui.FullScreenCli;
 import io.jobclaw.config.Config;
 import io.jobclaw.config.ConfigLoader;
 import io.jobclaw.run.RunRecord;
+import io.jobclaw.run.RunRequest;
 import io.jobclaw.run.RunService;
+import io.jobclaw.skills.SkillInfo;
+import io.jobclaw.skills.SkillsService;
 import org.jline.reader.EndOfFileException;
 import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;
 import org.jline.reader.UserInterruptException;
-import org.jline.reader.impl.completer.StringsCompleter;
+import org.jline.reader.Candidate;
+import org.jline.reader.Reference;
+import org.jline.keymap.KeyMap;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
 import org.springframework.context.ConfigurableApplicationContext;
@@ -23,6 +30,7 @@ import java.time.Duration;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -35,6 +43,21 @@ public final class FastShellLauncher {
     private static final String ORANGE = "\033[38;5;209m";
     private static final String DIM = "\033[2m";
     private static final String RESET = "\033[0m";
+    private static final List<ShellCommandHelp> SHELL_COMMANDS = List.of(
+            new ShellCommandHelp("/status", "show recent runs"),
+            new ShellCommandHelp("/runs", "show more recent runs"),
+            new ShellCommandHelp("/logs", "show persisted run events"),
+            new ShellCommandHelp("/tools", "list collapsed tool calls"),
+            new ShellCommandHelp("/tool", "expand a tool result"),
+            new ShellCommandHelp("/artifacts", "list run artifacts"),
+            new ShellCommandHelp("/skills", "list available skills"),
+            new ShellCommandHelp("/attach", "replay a run"),
+            new ShellCommandHelp("/resume", "choose a recent conversation"),
+            new ShellCommandHelp("/help", "show shortcuts"),
+            new ShellCommandHelp("/exit", "leave JobClaw"),
+            new ShellCommandHelp("/quit", "leave JobClaw")
+    );
+    private static volatile ShellCompletionState activeCompletionState = ShellCompletionState.empty();
     private static final DateTimeFormatter RUN_TIME_FORMAT =
             DateTimeFormatter.ofPattern("MM-dd HH:mm").withZone(ZoneId.systemDefault());
 
@@ -54,19 +77,25 @@ public final class FastShellLauncher {
                 CompletableFuture.supplyAsync(() -> startRuntime(args), runtimeExecutor);
 
         TerminalBuilder terminalBuilder = TerminalBuilder.builder().name("jobclaw").system(true);
+        if (!isWindows()) {
+            terminalBuilder.provider("exec").jna(false).jansi(false).jni(false).ffm(false).exec(true);
+        }
         if (System.console() == null) {
             terminalBuilder.dumb(true);
         }
         try (Terminal terminal = terminalBuilder.build()) {
+            if (System.console() != null) {
+                return new FullScreenCli(terminal, runtime).run();
+            }
             LineReader reader = LineReaderBuilder.builder()
                     .terminal(terminal)
                     .appName("jobclaw")
-                    .completer(new StringsCompleter(List.of(
-                            "/status", "/runs", "/attach", "/logs", "/artifacts", "/tools", "/tool",
-                            "/resume", "/help", "/exit", "/quit"
-                    )))
+                    .completer(FastShellLauncher::completeShellInput)
                     .variable(LineReader.HISTORY_FILE, historyFile())
+                    .variable(LineReader.LIST_MAX, 100)
+                    .variable(LineReader.MENU_LIST_MAX, 20)
                     .build();
+            configureCompletion(reader);
 
             renderHome(terminal, state.withStatus("loading"));
             ConfigurableApplicationContext context = waitForRuntime(terminal, runtime, state);
@@ -76,9 +105,13 @@ public final class FastShellLauncher {
 
             Config config = context.getBean(Config.class);
             state = state.withModel(config.getAgent().getModel()).withStatus("ready");
+            prewarmNativeLibraries();
             renderHome(terminal, state);
             try {
-                return inputLoop(reader, terminal, context);
+                SkillsService skillsService = context.getBean(SkillsService.class);
+                ShellCompletionState completionState = new ShellCompletionState(skillsService.listSkills());
+                activeCompletionState = completionState;
+                return inputLoop(reader, terminal, context, completionState);
             } finally {
                 context.close();
             }
@@ -93,6 +126,19 @@ public final class FastShellLauncher {
 
     private static ConfigurableApplicationContext startRuntime(String[] args) {
         return JobClawApplication.cliApplication().run(args);
+    }
+
+    private static boolean isWindows() {
+        return System.getProperty("os.name", "").toLowerCase().contains("win");
+    }
+
+    private static void prewarmNativeLibraries() {
+        try {
+            Class<?> loader = Class.forName("org.sqlite.SQLiteJDBCLoader");
+            loader.getMethod("initialize").invoke(null);
+        } catch (ReflectiveOperationException | LinkageError ignored) {
+            // Best effort: keep native-access warnings in the loading phase when sqlite-jdbc is present.
+        }
     }
 
     private static ConfigurableApplicationContext waitForRuntime(
@@ -124,9 +170,13 @@ public final class FastShellLauncher {
         }
     }
 
-    private static int inputLoop(LineReader reader, Terminal terminal, ConfigurableApplicationContext context) throws Exception {
+    private static int inputLoop(LineReader reader,
+                                 Terminal terminal,
+                                 ConfigurableApplicationContext context,
+                                 ShellCompletionState completionState) throws Exception {
         RunCommand runCommand = context.getBean(RunCommand.class);
         RunService runService = context.getBean(RunService.class);
+        Config config = context.getBean(Config.class);
         ShellSession session = new ShellSession(null);
 
         while (true) {
@@ -149,16 +199,36 @@ public final class FastShellLauncher {
             if (input.isBlank()) {
                 continue;
             }
-            if (input.startsWith("/")) {
-                if (handleSlash(input, reader, terminal, runService, session)) {
+            if ("/".equals(input)) {
+                printSlashPalette(terminal, completionState);
+                continue;
+            }
+            if (input.startsWith("/") || "?".equals(input)) {
+                if (handleSlash(input, reader, terminal, runCommand, runService, session, completionState)) {
                     return 0;
                 }
                 continue;
             }
 
-            RunRecord record = runCommand.runTask(input, false, true, session.sessionKey());
+            TranscriptTuiRenderer renderer = new TranscriptTuiRenderer(
+                    terminal,
+                    config.getAgent().getModel(),
+                    System.getProperty("user.dir")
+            );
+            renderer.renderUser(input);
+            RunRecord record = runService.startForeground(new RunRequest(
+                    input,
+                    session.sessionKey(),
+                    System.getProperty("user.dir"),
+                    System.getProperty("user.dir"),
+                    "cli",
+                    "ask",
+                    "workspace-write",
+                    null
+            ), renderer::render);
+            renderer.finish(record.getRunId());
             session.setLastRunId(record.getRunId());
-            terminal.writer().println();
+            session.setLastRenderer(renderer);
             terminal.flush();
         }
     }
@@ -166,8 +236,10 @@ public final class FastShellLauncher {
     private static boolean handleSlash(String input,
                                        LineReader reader,
                                        Terminal terminal,
+                                       RunCommand runCommand,
                                        RunService runService,
-                                       ShellSession session) throws Exception {
+                                       ShellSession session,
+                                       ShellCompletionState completionState) throws Exception {
         String[] parts = input.split("\\s+", 2);
         String command = parts[0];
         String rest = parts.length > 1 ? parts[1].trim() : "";
@@ -177,15 +249,21 @@ public final class FastShellLauncher {
             }
             case "/help", "?" -> {
                 printSection(terminal, "shortcuts");
-                terminal.writer().println("/status       show recent runs");
-                terminal.writer().println("/runs         show more recent runs");
-                terminal.writer().println("/logs <id>    show persisted run events");
-                terminal.writer().println("/tools [id]   list collapsed tool calls");
-                terminal.writer().println("/tool [id] <n> expand a tool result");
-                terminal.writer().println("/attach <id>  replay a run");
-                terminal.writer().println("/resume       choose a recent conversation");
-                terminal.writer().println("/resume <id>  attach to a previous conversation");
-                terminal.writer().println("/exit         leave");
+                terminal.writer().println("/status             show recent runs");
+                terminal.writer().println("/runs               show more recent runs");
+                terminal.writer().println("/logs <id>          show persisted run events");
+                terminal.writer().println("/tools [id]         list collapsed tool calls");
+                terminal.writer().println("/tool [id] <n>      expand a tool result");
+                terminal.writer().println("/tool <n>           expand a tool result from the last run");
+                terminal.writer().println("/skills             list available skills");
+                terminal.writer().println("/attach <id>        replay a run");
+                terminal.writer().println("/resume             choose a recent conversation");
+                terminal.writer().println("/resume <id>        attach to a previous conversation");
+                terminal.writer().println("/<skill> <task>     run a task with a specific skill");
+                terminal.writer().println("/exit               leave");
+                terminal.writer().println();
+                terminal.writer().println(dim("Tip: type / and press Tab to open the command palette."));
+                terminal.writer().println(dim("Tab cycles commands; Shift+Tab moves backward where the terminal supports it."));
                 terminal.flush();
                 return false;
             }
@@ -221,6 +299,10 @@ public final class FastShellLauncher {
                 showTool(rest, terminal, runService, session);
                 return false;
             }
+            case "/skills" -> {
+                listSkills(terminal, completionState);
+                return false;
+            }
             case "/artifacts" -> {
                 printSection(terminal, "artifacts");
                 if (rest.isBlank()) {
@@ -251,10 +333,50 @@ public final class FastShellLauncher {
                 return false;
             }
             default -> {
-                terminal.writer().println("unknown command: " + command);
+                SkillInfo skill = completionState.skillBySlashName(command);
+                if (skill != null) {
+                    if (rest.isBlank()) {
+                        terminal.writer().println("usage: " + command + " <task>");
+                        terminal.writer().println(dim(skill.getDescription()));
+                        terminal.flush();
+                        return false;
+                    }
+                    String task = "请先调用 skills 工具执行 invoke，name=`" + skill.getName()
+                            + "`，加载并遵循该技能，然后完成用户任务：\n\n" + rest;
+                    RunRecord record = runCommand.runTask(task, false, true, session.sessionKey());
+                    session.setLastRunId(record.getRunId());
+                    terminal.flush();
+                    return false;
+                }
+                printSlashSuggestions(command, terminal, completionState);
                 terminal.flush();
                 return false;
             }
+        }
+    }
+
+    private static void printSlashSuggestions(String prefix,
+                                              Terminal terminal,
+                                              ShellCompletionState completionState) {
+        List<String> suggestions = new ArrayList<>();
+        for (ShellCommandHelp command : SHELL_COMMANDS) {
+            if (command.name().startsWith(prefix)) {
+                suggestions.add("%-22s %s".formatted(command.name(), command.description()));
+            }
+        }
+        for (SkillInfo skill : completionState.skills()) {
+            String name = "/" + skill.getName();
+            if (name.startsWith(prefix)) {
+                suggestions.add("%-22s %s".formatted(name, summarize(skill.getDescription())));
+            }
+        }
+        if (suggestions.isEmpty()) {
+            terminal.writer().println("unknown command: " + prefix);
+            return;
+        }
+        printSection(terminal, "matches");
+        for (String suggestion : suggestions) {
+            terminal.writer().println("  " + suggestion);
         }
     }
 
@@ -311,6 +433,29 @@ public final class FastShellLauncher {
         terminal.flush();
     }
 
+    private static void printSlashPalette(Terminal terminal, ShellCompletionState completionState) {
+        printSection(terminal, "command palette");
+        terminal.writer().println("commands");
+        for (ShellCommandHelp command : SHELL_COMMANDS) {
+            terminal.writer().println("  %-22s %s".formatted(command.name(), command.description()));
+        }
+        terminal.writer().println();
+        terminal.writer().println("skills");
+        if (completionState.skills().isEmpty()) {
+            terminal.writer().println("  (no skills available)");
+        } else {
+            for (SkillInfo skill : completionState.skills()) {
+                terminal.writer().println("  %-22s %s".formatted(
+                        "/" + skill.getName(),
+                        summarize(skill.getDescription())
+                ));
+            }
+        }
+        terminal.writer().println();
+        terminal.writer().println(dim("Type /<command> or /<skill> <task>. Tab completion is enabled when the terminal forwards Tab to JLine."));
+        terminal.flush();
+    }
+
     private static void listTools(String runId,
                                   Terminal terminal,
                                   RunService runService,
@@ -350,6 +495,9 @@ public final class FastShellLauncher {
         if (parts.length == 1) {
             runId = session.lastRunId();
             indexText = parts[0];
+        } else if (parts.length >= 2 && "last".equalsIgnoreCase(parts[0])) {
+            runId = session.lastRunId();
+            indexText = parts[1];
         } else if (parts.length >= 2) {
             runId = parts[0];
             indexText = parts[1];
@@ -371,6 +519,11 @@ public final class FastShellLauncher {
             terminal.flush();
             return;
         }
+        if ((parts.length == 1 || (parts.length >= 2 && "last".equalsIgnoreCase(parts[0])))
+                && session.lastRenderer() != null
+                && session.lastRenderer().toggleTool(index)) {
+            return;
+        }
         List<ToolCallView> tools = toolCalls(runService, runId);
         if (index < 1 || index > tools.size()) {
             terminal.writer().println("tool index out of range: " + index);
@@ -378,16 +531,35 @@ public final class FastShellLauncher {
             return;
         }
         ToolCallView tool = tools.get(index - 1);
-        terminal.writer().println(tool.name() + "  " + tool.status());
+        terminal.writer().println("▸ " + tool.name() + "  " + tool.status());
         if (tool.request() != null && !tool.request().isBlank()) {
             terminal.writer().println();
             terminal.writer().println("request:");
-            terminal.writer().println(tool.request());
+            printBlock(terminal, tool.request());
         }
         if (tool.output() != null && !tool.output().isBlank()) {
             terminal.writer().println();
             terminal.writer().println("result:");
-            terminal.writer().println(tool.output());
+            printBlock(terminal, tool.output());
+        }
+        terminal.flush();
+    }
+
+    private static void listSkills(Terminal terminal, ShellCompletionState completionState) {
+        printSection(terminal, "skills");
+        List<SkillInfo> skills = completionState.skills();
+        if (skills.isEmpty()) {
+            terminal.writer().println("(no skills available)");
+        } else {
+            for (SkillInfo skill : skills) {
+                terminal.writer().println("%-30s %-10s %s".formatted(
+                        "/" + skill.getName(),
+                        firstNonBlank(skill.getSource(), ""),
+                        summarize(skill.getDescription())
+                ));
+            }
+            terminal.writer().println();
+            terminal.writer().println(dim("Use /<skill> <task>, for example: /weather 长沙明天天气"));
         }
         terminal.flush();
     }
@@ -559,6 +731,24 @@ public final class FastShellLauncher {
         return value.repeat(Math.max(0, count));
     }
 
+    private static void configureCompletion(LineReader reader) {
+        reader.setOpt(LineReader.Option.AUTO_MENU);
+        reader.setOpt(LineReader.Option.AUTO_LIST);
+        reader.setOpt(LineReader.Option.AUTO_MENU_LIST);
+        reader.setOpt(LineReader.Option.AUTO_GROUP);
+        reader.setOpt(LineReader.Option.LIST_PACKED);
+        reader.unsetOpt(LineReader.Option.INSERT_TAB);
+
+        String backTab = KeyMap.key(reader.getTerminal(), org.jline.utils.InfoCmp.Capability.back_tab);
+        String tab = KeyMap.ctrl('I');
+        for (var keyMap : reader.getKeyMaps().values()) {
+            keyMap.bind(new Reference(LineReader.COMPLETE_WORD), tab, "\t");
+            if (backTab != null && !backTab.isBlank()) {
+                keyMap.bind(new Reference(LineReader.REVERSE_MENU_COMPLETE), backTab);
+            }
+        }
+    }
+
     private static void printInputTop(Terminal terminal) {
         int width = Math.max(40, Math.min(terminal.getWidth(), 160));
         terminal.writer().println("╞" + "═".repeat(width - 2) + "╡");
@@ -590,6 +780,58 @@ public final class FastShellLauncher {
     private static void printSection(Terminal terminal, String name) {
         terminal.writer().println();
         terminal.writer().println("----- " + name + " " + "-".repeat(Math.max(1, 62 - name.length())));
+    }
+
+    private static void printBlock(Terminal terminal, String text) {
+        int width = Math.max(40, Math.min(terminal.getWidth(), 140));
+        int contentWidth = width - 4;
+        terminal.writer().println("╭" + "─".repeat(width - 2) + "╮");
+        for (String line : text.split("\\R", -1)) {
+            String rest = line;
+            do {
+                String part = clip(rest, contentWidth);
+                terminal.writer().println("│ " + pad(part, contentWidth) + " │");
+                rest = visibleLength(rest) > contentWidth
+                        ? rest.substring(Math.min(rest.length(), Math.max(1, contentWidth - 3)))
+                        : "";
+            } while (!rest.isEmpty());
+        }
+        terminal.writer().println("╰" + "─".repeat(width - 2) + "╯");
+    }
+
+    private static void completeShellInput(LineReader reader, org.jline.reader.ParsedLine line, List<Candidate> candidates) {
+        String word = line.word();
+        String buffer = line.line();
+        if (!buffer.startsWith("/") && !buffer.equals("?")) {
+            return;
+        }
+        for (ShellCommandHelp command : SHELL_COMMANDS) {
+            if (word == null || word.isBlank() || command.name().startsWith(word)) {
+                candidates.add(new Candidate(
+                        command.name(),
+                        command.name(),
+                        "commands",
+                        command.description(),
+                        null,
+                        null,
+                        true
+                ));
+            }
+        }
+        for (SkillInfo skill : activeCompletionState.skills()) {
+            String candidate = "/" + skill.getName();
+            if (word == null || word.isBlank() || candidate.startsWith(word)) {
+                candidates.add(new Candidate(
+                        candidate,
+                        candidate,
+                        "skills",
+                        firstNonBlank(skill.getDescription(), "skill"),
+                        null,
+                        null,
+                        true
+                ));
+            }
+        }
     }
 
     private static Path historyFile() throws Exception {
@@ -685,9 +927,39 @@ public final class FastShellLauncher {
         }
     }
 
+    private record ShellCommandHelp(String name, String description) {
+    }
+
+    private record ShellCompletionState(List<SkillInfo> skills) {
+        private ShellCompletionState {
+            skills = skills == null
+                    ? List.of()
+                    : skills.stream()
+                    .filter(skill -> skill.getName() != null && !skill.getName().isBlank())
+                    .sorted(Comparator.comparing(SkillInfo::getName))
+                    .toList();
+        }
+
+        static ShellCompletionState empty() {
+            return new ShellCompletionState(List.of());
+        }
+
+        SkillInfo skillBySlashName(String slashName) {
+            if (slashName == null || !slashName.startsWith("/")) {
+                return null;
+            }
+            String name = slashName.substring(1);
+            return skills.stream()
+                    .filter(skill -> skill.getName().equals(name))
+                    .findFirst()
+                    .orElse(null);
+        }
+    }
+
     private static final class ShellSession {
         private String sessionKey;
         private String lastRunId;
+        private TranscriptTuiRenderer lastRenderer;
 
         private ShellSession(String sessionKey) {
             this.sessionKey = sessionKey;
@@ -707,6 +979,14 @@ public final class FastShellLauncher {
 
         private void setLastRunId(String lastRunId) {
             this.lastRunId = lastRunId;
+        }
+
+        private TranscriptTuiRenderer lastRenderer() {
+            return lastRenderer;
+        }
+
+        private void setLastRenderer(TranscriptTuiRenderer lastRenderer) {
+            this.lastRenderer = lastRenderer;
         }
     }
 

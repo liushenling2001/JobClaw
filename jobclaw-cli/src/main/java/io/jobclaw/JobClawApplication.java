@@ -128,6 +128,7 @@ public class JobClawApplication {
                     || text.startsWith("WARNING: Please consider reporting this to the maintainers of class io.netty")
                     || text.startsWith("WARNING: A restricted method in java.lang.System has been called")
                     || text.startsWith("WARNING: java.lang.System::load has been called by org.sqlite.SQLiteJDBCLoader")
+                    || text.startsWith("WARNING: java.lang.System::load has been called by org.jline.nativ.JLineNativeLoader")
                     || text.startsWith("WARNING: Use --enable-native-access=ALL-UNNAMED")
                     || text.startsWith("WARNING: Restricted methods will be blocked");
         }

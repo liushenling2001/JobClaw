@@ -6,16 +6,24 @@ import org.springframework.stereotype.Component;
 
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Pattern;
 
 @Component
 public class ExperienceMemoryService {
 
+    private static final Pattern CORRECTION_PATTERN = Pattern.compile(
+            "(?i)(不是|不对|错了|不要这样|不要按|旧经验|旧路径|历史路径|又按|误导|wrong|incorrect|not this|do not reuse|old path)"
+    );
+    private static final double CONTRADICTION_CONFIDENCE_PENALTY = 0.2;
+
     private final ExperienceMemoryStore store;
+    private final Map<String, List<String>> lastInjectedBySession = new ConcurrentHashMap<>();
 
     public ExperienceMemoryService(ExperienceMemoryStore store) {
         this.store = store;
@@ -47,7 +55,121 @@ public class ExperienceMemoryService {
     public List<ExperienceMemory> listActive() {
         return store.list().stream()
                 .filter(memory -> memory.getStatus() == ExperienceMemoryStatus.ACTIVE)
+                .filter(memory -> memory.getUserState() != ExperienceMemoryUserState.FORGOTTEN)
                 .toList();
+    }
+
+    public List<ExperienceMemory> listAll() {
+        return store.list();
+    }
+
+    public Optional<ExperienceMemory> findById(String id) {
+        if (id == null || id.isBlank()) {
+            return Optional.empty();
+        }
+        return store.list().stream()
+                .filter(memory -> id.equals(memory.getId()))
+                .findFirst();
+    }
+
+    public List<ExperienceMemory> recordInjected(String sessionId, Collection<String> memoryIds) {
+        if (sessionId == null || sessionId.isBlank() || memoryIds == null || memoryIds.isEmpty()) {
+            return List.of();
+        }
+        List<String> ids = memoryIds.stream()
+                .filter(id -> id != null && !id.isBlank())
+                .distinct()
+                .toList();
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        lastInjectedBySession.put(sessionId, ids);
+        Instant now = Instant.now();
+        List<ExperienceMemory> memories = new ArrayList<>(store.list());
+        List<ExperienceMemory> updated = new ArrayList<>();
+        for (ExperienceMemory memory : memories) {
+            if (ids.contains(memory.getId())) {
+                memory.setHitCount(memory.getHitCount() + 1);
+                memory.setLastHitAt(now);
+                memory.setUpdatedAt(now);
+                updated.add(memory);
+            }
+        }
+        store.saveAll(memories);
+        return updated;
+    }
+
+    public List<ExperienceMemory> markLastInjectedContradictedIfCorrection(String sessionId, String userInput) {
+        if (sessionId == null || sessionId.isBlank() || userInput == null || userInput.isBlank()
+                || !CORRECTION_PATTERN.matcher(userInput).find()) {
+            return List.of();
+        }
+        List<String> ids = lastInjectedBySession.get(sessionId);
+        if (ids == null || ids.isEmpty()) {
+            return List.of();
+        }
+        return markContradicted(ids);
+    }
+
+    public List<ExperienceMemory> markContradicted(Collection<String> ids) {
+        if (ids == null || ids.isEmpty()) {
+            return List.of();
+        }
+        Instant now = Instant.now();
+        List<String> normalizedIds = ids.stream()
+                .filter(id -> id != null && !id.isBlank())
+                .distinct()
+                .toList();
+        List<ExperienceMemory> memories = new ArrayList<>(store.list());
+        List<ExperienceMemory> updated = new ArrayList<>();
+        for (ExperienceMemory memory : memories) {
+            if (normalizedIds.contains(memory.getId()) && memory.getUserState() != ExperienceMemoryUserState.PINNED) {
+                memory.setContradictionCount(memory.getContradictionCount() + 1);
+                memory.setLastContradictedAt(now);
+                memory.setConfidence(memory.getConfidence() - CONTRADICTION_CONFIDENCE_PENALTY);
+                if (memory.getConfidence() <= 0.2 || memory.getContradictionCount() >= 2) {
+                    memory.setStatus(ExperienceMemoryStatus.DISABLED);
+                }
+                memory.setUpdatedAt(now);
+                updated.add(memory);
+            }
+        }
+        store.saveAll(memories);
+        return updated;
+    }
+
+    public Optional<ExperienceMemory> pin(String id) {
+        return updateUserState(id, ExperienceMemoryUserState.PINNED, ExperienceMemoryStatus.ACTIVE);
+    }
+
+    public Optional<ExperienceMemory> forget(String id) {
+        return updateUserState(id, ExperienceMemoryUserState.FORGOTTEN, ExperienceMemoryStatus.DISABLED);
+    }
+
+    public Optional<ExperienceMemory> unpin(String id) {
+        return updateUserState(id, ExperienceMemoryUserState.AUTO, ExperienceMemoryStatus.ACTIVE);
+    }
+
+    private Optional<ExperienceMemory> updateUserState(String id,
+                                                       ExperienceMemoryUserState userState,
+                                                       ExperienceMemoryStatus status) {
+        if (id == null || id.isBlank()) {
+            return Optional.empty();
+        }
+        Instant now = Instant.now();
+        List<ExperienceMemory> memories = new ArrayList<>(store.list());
+        Optional<ExperienceMemory> target = Optional.empty();
+        for (ExperienceMemory memory : memories) {
+            if (id.equals(memory.getId())) {
+                memory.setUserState(userState);
+                memory.setStatus(status);
+                memory.setUpdatedAt(now);
+                target = Optional.of(memory);
+                break;
+            }
+        }
+        target.ifPresent(ignored -> store.saveAll(memories));
+        return target;
     }
 
     private ExperienceMemory newMemory(LearningCandidate candidate, ExperienceMemoryType type) {
@@ -58,12 +180,26 @@ public class ExperienceMemoryService {
         memory.setType(type);
         memory.setStatus(ExperienceMemoryStatus.ACTIVE);
         memory.setTitle(candidate.getTitle());
-        memory.setApplicability(candidate.getTaskInput());
+        String taskPattern = firstNonBlank(metadataValue(candidate, "taskPattern"), candidate.getTitle());
+        ExperienceTaskClassifier.TaskSignature signature = ExperienceTaskClassifier.classify(
+                firstNonBlank(candidate.getTaskInput(), taskPattern, candidate.getProposal())
+        );
+        memory.setTaskPattern(firstNonBlank(normalizedKnown(signature.taskPattern()), taskPattern));
+        memory.getMetadata().put("objectType", signature.objectType());
+        memory.setApplicability(sanitize(candidate.getTaskInput()));
+        memory.setMethodGuidance(sanitize(firstNonBlank(
+                metadataValue(candidate, "methodGuidance"),
+                candidate.getProposal()
+        )));
         memory.setToolSequence(extractToolSequence(candidate));
         memory.setAvoidRules(type == ExperienceMemoryType.AVOID_RULE
-                ? List.of(firstNonBlank(metadataValue(candidate, "failureReason"), candidate.getReason(), candidate.getProposal()))
+                ? List.of(sanitize(firstNonBlank(metadataValue(candidate, "failureReason"), candidate.getReason(), candidate.getProposal())))
                 : List.of());
-        memory.setProposal(candidate.getProposal());
+        memory.setAvoidGuidance(type == ExperienceMemoryType.AVOID_RULE
+                ? sanitize(firstNonBlank(metadataValue(candidate, "avoidGuidance"), candidate.getReason()))
+                : "");
+        memory.setProposal(sanitize(candidate.getProposal()));
+        memory.setRiskLevel(firstNonBlank(metadataValue(candidate, "riskLevel"), "medium"));
         memory.setConfidence(candidate.getConfidence());
         memory.setCreatedAt(now);
         memory.setUpdatedAt(now);
@@ -110,5 +246,13 @@ public class ExperienceMemoryService {
             }
         }
         return "";
+    }
+
+    private String sanitize(String value) {
+        return ExperienceMemorySanitizer.sanitize(value).text();
+    }
+
+    private String normalizedKnown(String value) {
+        return value != null && !"unknown".equals(value) ? value : "";
     }
 }

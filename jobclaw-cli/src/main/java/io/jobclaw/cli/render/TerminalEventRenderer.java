@@ -6,11 +6,16 @@ public class TerminalEventRenderer {
     private static final String RESET = "\033[0m";
     private static final String DIM = "\033[2m";
     private static final String USER_BG = "\033[48;5;238m";
+    private static final String TOOL = "\033[38;5;111m";
+    private static final String ERROR = "\033[38;5;203m";
     private final boolean ansi;
     private final boolean workingInputBox;
     private boolean statusActive;
     private boolean boxActive;
+    private boolean assistantStreaming;
+    private boolean assistantStreamPrinted;
     private int toolCount;
+    private ToolPanel currentTool;
 
     public TerminalEventRenderer() {
         this(System.console() != null, false);
@@ -31,7 +36,7 @@ public class TerminalEventRenderer {
         System.out.println();
         System.out.println(color(USER_BG, padRight(line, terminalWidth())));
         if (workingInputBox) {
-            renderWorkingInputBox("");
+            renderWorkingInputBox("thinking...");
         }
     }
 
@@ -56,35 +61,60 @@ public class TerminalEventRenderer {
         }
         switch (event.getType()) {
             case THINK_START -> {
+                assistantStreaming = false;
+                assistantStreamPrinted = false;
                 status("thinking...");
             }
             case THINK_STREAM -> {
-                // Stream chunks are persisted to run events; the terminal prints the final response once.
+                renderAssistantDelta(event.getContent());
             }
             case THINK_END -> {
+                if (assistantStreaming) {
+                    System.out.println();
+                    assistantStreaming = false;
+                }
                 status("");
             }
             case TOOL_START -> {
-                status(toolName(event) + " running");
+                assistantStreaming = false;
+                currentTool = new ToolPanel(toolName(event), stringValue(event.getMetadata().get("request")), "");
+                status("tool " + currentTool.name() + " running");
             }
             case TOOL_END -> {
                 toolCount++;
-                status("tool #" + toolCount + " " + toolName(event) + " done" + durationSuffix(event)
-                        + "  (/tool last " + toolCount + " to expand)");
+                ToolPanel finished = currentTool != null ? currentTool : new ToolPanel(toolName(event), null, event.getContent());
+                renderCollapsedTool(toolCount, finished, "done" + durationSuffix(event), false);
+                currentTool = null;
             }
-            case TOOL_ERROR, ERROR -> {
+            case TOOL_ERROR -> {
+                toolCount++;
+                ToolPanel failed = currentTool != null ? currentTool : new ToolPanel(toolName(event), null, event.getContent());
+                failed.append(event.getContent());
+                renderCollapsedTool(toolCount, failed, "error", true);
+                currentTool = null;
+            }
+            case ERROR -> {
                 clearWorkingArea();
                 System.out.println();
-                System.out.println("! " + compact(event.getContent()));
+                System.out.println(color(ERROR, "! " + compact(event.getContent())));
+                if (workingInputBox) {
+                    renderWorkingInputBox("");
+                }
             }
             case TOOL_OUTPUT -> {
-                // Keep command output discoverable through `jobclaw logs`; avoid flooding the live CLI.
+                if (currentTool == null) {
+                    currentTool = new ToolPanel(toolName(event), null, "");
+                }
+                currentTool.append(event.getContent());
             }
             case FINAL_RESPONSE -> {
-                clearWorkingArea();
-                if (!event.getContent().isBlank()) {
+                if (!assistantStreamPrinted) {
+                    clearWorkingArea();
+                }
+                if (!assistantStreamPrinted && !event.getContent().isBlank()) {
                     renderAssistant(event.getContent());
                 }
+                assistantStreaming = false;
             }
             case CUSTOM -> {
                 if ("tool_progress".equals(String.valueOf(event.getMetadata().get("label")))) {
@@ -109,7 +139,41 @@ public class TerminalEventRenderer {
         }
     }
 
+    private void renderAssistantDelta(String content) {
+        if (content == null || content.isEmpty()) {
+            return;
+        }
+        if (!assistantStreaming) {
+            clearWorkingArea();
+            System.out.println();
+            System.out.print("• ");
+            assistantStreaming = true;
+            assistantStreamPrinted = true;
+        }
+        printAssistantChunk(content);
+        System.out.flush();
+    }
+
+    private void printAssistantChunk(String content) {
+        for (int i = 0; i < content.length(); i++) {
+            char c = content.charAt(i);
+            if (c == '\r') {
+                continue;
+            }
+            if (c == '\n') {
+                System.out.println();
+                System.out.print("  ");
+                continue;
+            }
+            System.out.print(c);
+        }
+    }
+
     private void status(String text) {
+        if (text == null || text.isBlank()) {
+            clearWorkingArea();
+            return;
+        }
         String value = dim("  " + text);
         if (workingInputBox && boxActive && ansi) {
             System.out.print("\033[4A\r\033[2K" + value + "\033[4B\r");
@@ -151,10 +215,22 @@ public class TerminalEventRenderer {
     private void renderWorkingInputBox(String status) {
         int width = terminalWidth();
         System.out.println(dim(status == null ? "" : status));
-        System.out.println("─".repeat(width));
-        System.out.println("> ");
-        System.out.println("─".repeat(width));
+        System.out.println("╭" + "─".repeat(Math.max(0, width - 2)) + "╮");
+        System.out.println("│ > " + " ".repeat(Math.max(0, width - 6)) + "│");
+        System.out.println("╰" + "─".repeat(Math.max(0, width - 2)) + "╯");
         boxActive = ansi;
+    }
+
+    private void renderCollapsedTool(int index, ToolPanel tool, String status, boolean error) {
+        clearWorkingArea();
+        String marker = error ? "!" : "◇";
+        String line = marker + " tool " + index + " " + tool.name() + " " + status;
+        System.out.println();
+        System.out.println(color(error ? ERROR : TOOL, line));
+        System.out.println(dim("  collapsed; expand with /tool " + index));
+        if (workingInputBox) {
+            renderWorkingInputBox("");
+        }
     }
 
     private String toolName(ExecutionEvent event) {
@@ -175,6 +251,10 @@ public class TerminalEventRenderer {
             return " " + ms + "ms";
         }
         return " " + String.format("%.1fs", ms / 1000.0);
+    }
+
+    private String stringValue(Object value) {
+        return value != null ? String.valueOf(value) : null;
     }
 
     private String compact(String content) {
@@ -210,5 +290,38 @@ public class TerminalEventRenderer {
             }
         }
         return 100;
+    }
+
+    private static final class ToolPanel {
+        private final String name;
+        private final String request;
+        private final StringBuilder output = new StringBuilder();
+
+        private ToolPanel(String name, String request, String output) {
+            this.name = name != null && !name.isBlank() ? name : "tool";
+            this.request = request;
+            append(output);
+        }
+
+        private String name() {
+            return name;
+        }
+
+        private String request() {
+            return request;
+        }
+
+        private String output() {
+            return output.toString();
+        }
+
+        private void append(String value) {
+            if (value != null && !value.isBlank()) {
+                if (!output.isEmpty()) {
+                    output.append('\n');
+                }
+                output.append(value.strip());
+            }
+        }
     }
 }

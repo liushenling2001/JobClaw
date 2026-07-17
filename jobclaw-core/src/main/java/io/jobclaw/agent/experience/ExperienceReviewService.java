@@ -5,9 +5,7 @@ import io.jobclaw.agent.learning.LearningCandidateStatus;
 import io.jobclaw.agent.learning.LearningCandidateStore;
 import io.jobclaw.config.Config;
 import io.jobclaw.config.ExperienceConfig;
-import io.jobclaw.providers.LLMProvider;
-import io.jobclaw.providers.LLMResponse;
-import io.jobclaw.providers.Message;
+import io.jobclaw.runtime.provider.SpringAiLlmClient;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -28,17 +26,17 @@ public class ExperienceReviewService {
     private final Config config;
     private final LearningCandidateStore learningCandidateStore;
     private final ExperienceMemoryStore experienceMemoryStore;
-    private final LLMProvider llmProvider;
+    private final SpringAiLlmClient llmClient;
 
     @Autowired
     public ExperienceReviewService(Config config,
                                    LearningCandidateStore learningCandidateStore,
                                    ExperienceMemoryStore experienceMemoryStore,
-                                   LLMProvider llmProvider) {
+                                   SpringAiLlmClient llmClient) {
         this.config = config;
         this.learningCandidateStore = learningCandidateStore;
         this.experienceMemoryStore = experienceMemoryStore;
-        this.llmProvider = llmProvider;
+        this.llmClient = llmClient;
     }
 
     public ExperienceReviewService(Config config,
@@ -48,8 +46,8 @@ public class ExperienceReviewService {
 
     public ExperienceReviewService(Config config,
                                    LearningCandidateStore learningCandidateStore,
-                                   LLMProvider llmProvider) {
-        this(config, learningCandidateStore, null, llmProvider);
+                                   SpringAiLlmClient llmClient) {
+        this(config, learningCandidateStore, null, llmClient);
     }
 
     public ExperienceReviewResult reviewNow() {
@@ -87,7 +85,7 @@ public class ExperienceReviewService {
     private String appendLlmRefinementIfEnabled(String report,
                                                 List<LearningCandidate> candidates) {
         ExperienceConfig experienceConfig = config.getExperience();
-        if (llmProvider == null || experienceConfig == null || !experienceConfig.isLlmReviewEnabled()) {
+        if (llmClient == null || experienceConfig == null || !experienceConfig.isLlmReviewEnabled()) {
             return report;
         }
         int pendingCandidates = countCandidates(candidates, LearningCandidateStatus.PENDING);
@@ -131,19 +129,12 @@ public class ExperienceReviewService {
                 Evidence:
                 %s
                 """.formatted(pendingCandidateCount, boundedReport);
-        LLMProvider.LLMOptions options = LLMProvider.LLMOptions.create()
-                .withTemperature(0.2)
-                .withMaxTokens(Math.max(256, experienceConfig.getLlmReviewMaxTokens()));
-        LLMResponse response = llmProvider.chat(
-                List.of(
-                        Message.system("You refine runtime experience reports into concise, safe operational guidance."),
-                        Message.user(prompt)
-                ),
-                List.of(),
-                null,
-                options
+        return llmClient.complete(
+                "You refine runtime experience reports into concise, safe operational guidance.",
+                prompt,
+                Math.max(256, experienceConfig.getLlmReviewMaxTokens()),
+                0.2
         );
-        return response != null ? response.getContent() : "";
     }
 
     private String buildReport(Instant reviewedAt,

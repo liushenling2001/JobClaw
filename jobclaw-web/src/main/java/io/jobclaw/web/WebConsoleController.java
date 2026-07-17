@@ -32,13 +32,17 @@ import org.springframework.context.annotation.Profile;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.Base64;
@@ -154,8 +158,8 @@ public class WebConsoleController {
 
     @PutMapping("/agents/{id}")
     public ResponseEntity<?> updateAgent(@PathVariable String id, @RequestBody AgentProfileUpsertRequest request) {
-        if (id.startsWith("main:")) {
-            return ResponseEntity.badRequest().body(Map.of("error", "main assistant is managed through global config.json"));
+        if (AgentProfileService.MAIN_AGENT_ID.equals(id) || id.startsWith("main:")) {
+            return updateMainAssistant(request);
         }
         String code = extractAgentCode(id);
         if (code == null) {
@@ -176,6 +180,85 @@ public class WebConsoleController {
                 .flatMap(entry -> agentProfileService.getProfile("agent:" + entry.code()))
                 .<ResponseEntity<?>>map(ResponseEntity::ok)
                 .orElseGet(() -> ResponseEntity.notFound().build());
+    }
+
+    private ResponseEntity<?> updateMainAssistant(AgentProfileUpsertRequest request) {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            Map<String, Object> modelConfig = normalizeModelConfig(request.getModelConfig());
+            AgentConfig agentConfig = config.getAgent();
+
+            String provider = stringValue(modelConfig.get("provider"));
+            if (provider != null) {
+                if (getProviderConfig(config.getProviders(), provider) == null) {
+                    response.put("error", "Unknown provider: " + provider);
+                    return ResponseEntity.status(400).body(response);
+                }
+                agentConfig.setProvider(provider);
+            }
+
+            String model = stringValue(modelConfig.get("model"));
+            if (model != null) {
+                agentConfig.setModel(model);
+            }
+
+            Double temperature = doubleValue(modelConfig.get("temperature"));
+            if (temperature != null) {
+                agentConfig.setTemperature(temperature);
+            }
+
+            Integer maxTokens = integerValue(modelConfig.get("maxTokens"));
+            if (maxTokens != null) {
+                agentConfig.setMaxTokens(maxTokens);
+            }
+
+            Integer toolCallTimeoutSeconds = integerValue(modelConfig.get("toolCallTimeoutSeconds"));
+            if (toolCallTimeoutSeconds == null) {
+                Long timeoutMs = longValue(modelConfig.get("timeoutMs"));
+                if (timeoutMs != null) {
+                    toolCallTimeoutSeconds = (int) Math.max(1L, (timeoutMs + 999L) / 1000L);
+                }
+            }
+            if (toolCallTimeoutSeconds != null) {
+                agentConfig.setToolCallTimeoutSeconds(toolCallTimeoutSeconds);
+            }
+
+            Long childAgentTimeoutMs = longValue(modelConfig.get("childAgentTimeoutMs"));
+            if (childAgentTimeoutMs != null) {
+                agentConfig.setChildAgentTimeoutMs(childAgentTimeoutMs);
+            }
+
+            String apiBase = stringValue(modelConfig.get("apiBase"));
+            String apiKey = stringValue(modelConfig.get("apiKey"));
+            if (apiBase != null || (apiKey != null && !isMaskedSecret(apiKey))) {
+                ProvidersConfig.ProviderConfig providerConfig =
+                        getProviderConfig(config.getProviders(), agentConfig.getProvider());
+                if (providerConfig == null) {
+                    response.put("error", "Unknown provider: " + agentConfig.getProvider());
+                    return ResponseEntity.status(400).body(response);
+                }
+                if (apiBase != null) {
+                    providerConfig.setApiBase(apiBase);
+                }
+                if (apiKey != null && !isMaskedSecret(apiKey)) {
+                    providerConfig.setApiKey(apiKey);
+                }
+            }
+
+            ConfigLoader.save(ConfigLoader.getConfigPath(), config);
+            addAgentClientReloadResult(response);
+
+            return agentProfileService.getProfile(AgentProfileService.MAIN_AGENT_ID)
+                    .<ResponseEntity<?>>map(profile -> {
+                        response.put("success", true);
+                        response.put("agent", profile);
+                        return ResponseEntity.ok(response);
+                    })
+                    .orElseGet(() -> ResponseEntity.status(500).body(Map.of("error", "main assistant profile unavailable")));
+        } catch (Exception e) {
+            response.put("error", e.getMessage());
+            return ResponseEntity.status(500).body(response);
+        }
     }
 
     @PostMapping("/agents/{id}/clone")
@@ -256,9 +339,22 @@ public class WebConsoleController {
      */
     @PostMapping(value = "/execute/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public ResponseEntity<SseEmitter> executeStream(@RequestBody ChatRequest request) {
-        SseEmitter emitter = new SseEmitter(0L);
-
         String sessionKey = request.getSessionKey() != null ? request.getSessionKey() : "web:default";
+        return executeStreamInternal(sessionKey, request.getMessage());
+    }
+
+    @PostMapping(value = "/execute/stream", consumes = MediaType.MULTIPART_FORM_DATA_VALUE, produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public ResponseEntity<SseEmitter> executeStreamWithUploads(
+            @RequestParam("message") String message,
+            @RequestParam(value = "sessionKey", required = false) String sessionKey,
+            @RequestPart(value = "files", required = false) MultipartFile[] files) {
+        String resolvedSessionKey = sessionKey != null && !sessionKey.isBlank() ? sessionKey : "web:default";
+        String messageWithUploads = appendUploadedFilePaths(message, resolvedSessionKey, files);
+        return executeStreamInternal(resolvedSessionKey, messageWithUploads);
+    }
+
+    private ResponseEntity<SseEmitter> executeStreamInternal(String sessionKey, String message) {
+        SseEmitter emitter = new SseEmitter(0L);
 
         // 鐠併垽妲勯幍褑顢戞禍瀣╂
         String subscriberId = executionTraceService.subscribe(sessionKey, emitter);
@@ -277,7 +373,7 @@ public class WebConsoleController {
                 logger.debug("Sent connected event to client");
 
                 // 閹笛嗩攽娴犺濮熼敍鍫濈敨閸ョ偠鐨熼敍? 娴ｈ法鏁?orchestrator 閺€顖涘瘮婢?Agent 濡€崇础閻ㄥ嫬娲栫拫?
-                String result = orchestrator.process(sessionKey, request.getMessage(),
+                String result = orchestrator.process(sessionKey, message,
                     (ExecutionEvent event) -> {
                         try {
                             // 闁俺绻?ExecutionTraceService 閸欐垵绔锋禍瀣╂閿涘牅绱伴懛顏勫З閹恒劑鈧胶绮伴幍鈧張澶庮吂闂冨懓鈧拑绱?
@@ -305,7 +401,93 @@ public class WebConsoleController {
             }
         });
 
-        return streamingResponse(emitter);
+        return ResponseEntity.ok(emitter);
+    }
+
+    private String appendUploadedFilePaths(String message, String sessionKey, MultipartFile[] files) {
+        List<Path> savedPaths = saveUploadedFiles(sessionKey, files);
+        if (savedPaths.isEmpty()) {
+            return message;
+        }
+        StringBuilder enhanced = new StringBuilder(message != null ? message : "");
+        enhanced.append("\n\n用户上传的资料已保存到 workspace，路径如下。请优先使用这些路径读取资料：\n");
+        for (Path path : savedPaths) {
+            enhanced.append("- ").append(path.toAbsolutePath().normalize()).append("\n");
+        }
+        return enhanced.toString();
+    }
+
+    private List<Path> saveUploadedFiles(String sessionKey, MultipartFile[] files) {
+        if (files == null || files.length == 0) {
+            return List.of();
+        }
+        List<Path> saved = new ArrayList<>();
+        Path uploadDir = uploadDirectory(sessionKey);
+        try {
+            Files.createDirectories(uploadDir);
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to create upload directory: " + e.getMessage(), e);
+        }
+        for (MultipartFile file : files) {
+            if (file == null || file.isEmpty()) {
+                continue;
+            }
+            String filename = safeUploadFilename(file.getOriginalFilename());
+            Path target = uniqueUploadPath(uploadDir, filename);
+            try (InputStream input = file.getInputStream()) {
+                Files.copy(input, target, StandardCopyOption.REPLACE_EXISTING);
+                saved.add(target);
+                logger.info("Saved uploaded file for session={} path={} bytes={}",
+                        sessionKey, target.toAbsolutePath().normalize(), file.getSize());
+            } catch (IOException e) {
+                throw new IllegalStateException("Failed to save uploaded file " + filename + ": " + e.getMessage(), e);
+            }
+        }
+        return saved;
+    }
+
+    private Path uploadDirectory(String sessionKey) {
+        String safeSession = safePathSegment(sessionKey);
+        String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS"));
+        return Paths.get(config.getWorkspacePath(), "uploads", safeSession, timestamp).normalize();
+    }
+
+    private Path uniqueUploadPath(Path directory, String filename) {
+        Path target = directory.resolve(filename).normalize();
+        if (!Files.exists(target)) {
+            return target;
+        }
+        String base = filename;
+        String ext = "";
+        int dot = filename.lastIndexOf('.');
+        if (dot > 0) {
+            base = filename.substring(0, dot);
+            ext = filename.substring(dot);
+        }
+        for (int i = 1; i < 10_000; i++) {
+            target = directory.resolve(base + "-" + i + ext).normalize();
+            if (!Files.exists(target)) {
+                return target;
+            }
+        }
+        throw new IllegalStateException("Too many uploaded files with the same name: " + filename);
+    }
+
+    private String safeUploadFilename(String originalFilename) {
+        String filename = originalFilename == null || originalFilename.isBlank()
+                ? "upload.bin"
+                : Paths.get(originalFilename).getFileName().toString();
+        filename = filename.replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]", "_").trim();
+        if (filename.isBlank() || ".".equals(filename) || "..".equals(filename)) {
+            return "upload.bin";
+        }
+        return filename;
+    }
+
+    private String safePathSegment(String value) {
+        String segment = value == null || value.isBlank() ? "default" : value.trim();
+        segment = segment.replaceAll("[^A-Za-z0-9._-]", "_");
+        return segment.isBlank() ? "default" : segment;
     }
 
     /**
@@ -344,15 +526,7 @@ public class WebConsoleController {
             }
         });
 
-        return streamingResponse(emitter);
-    }
-
-    private ResponseEntity<SseEmitter> streamingResponse(SseEmitter emitter) {
-        return ResponseEntity.ok()
-                .header("Cache-Control", "no-cache, no-transform")
-                .header("Connection", "keep-alive")
-                .header("X-Accel-Buffering", "no")
-                .body(emitter);
+        return ResponseEntity.ok(emitter);
     }
 
     private boolean safeSend(SseEmitter emitter,
@@ -536,6 +710,60 @@ public class WebConsoleController {
     @GetMapping("/config")
     public ResponseEntity<Config> getConfig() {
         return ResponseEntity.ok(config);
+    }
+
+    @GetMapping("/config/file")
+    public ResponseEntity<Map<String, Object>> getConfigFileStatus() {
+        Path configPath = Paths.get(ConfigLoader.getConfigPath());
+        boolean exists = Files.exists(configPath);
+        return ResponseEntity.ok(Map.of(
+                "path", configPath.toAbsolutePath().toString(),
+                "exists", exists,
+                "canCreate", !exists
+        ));
+    }
+
+    @PostMapping("/config/file")
+    public ResponseEntity<Map<String, Object>> createConfigFile() {
+        Path configPath = Paths.get(ConfigLoader.getConfigPath());
+        if (Files.exists(configPath)) {
+            return ResponseEntity.status(409).body(Map.of(
+                    "error", "config file already exists",
+                    "path", configPath.toAbsolutePath().toString(),
+                    "exists", true,
+                    "canCreate", false
+            ));
+        }
+        try {
+            ConfigLoader.save(configPath.toString(), config);
+            return ResponseEntity.ok(Map.of(
+                    "success", true,
+                    "path", configPath.toAbsolutePath().toString(),
+                    "exists", true,
+                    "canCreate", false
+            ));
+        } catch (IOException e) {
+            logger.warn("Failed to create config file {}: {}", configPath, e.getMessage());
+            return ResponseEntity.status(500).body(Map.of(
+                    "error", "failed to create config file: " + e.getMessage(),
+                    "path", configPath.toAbsolutePath().toString(),
+                    "exists", false,
+                    "canCreate", true
+            ));
+        }
+    }
+
+    private void addAgentClientReloadResult(Map<String, Object> response) {
+        try {
+            var resolved = agentLoop.reloadDefaultClient();
+            response.put("clientReloaded", true);
+            response.put("reloadedProvider", resolved.providerName());
+            response.put("reloadedModel", resolved.model());
+        } catch (Exception e) {
+            logger.warn("Failed to hot reload main agent client: {}", e.getMessage());
+            response.put("clientReloaded", false);
+            response.put("reloadError", e.getMessage());
+        }
     }
 
     @GetMapping("/cron")
@@ -936,6 +1164,9 @@ public class WebConsoleController {
             }
 
             ConfigLoader.save(ConfigLoader.getConfigPath(), config);
+            if (name.equalsIgnoreCase(config.getAgent().getProvider())) {
+                addAgentClientReloadResult(response);
+            }
 
             response.put("success", true);
             response.put("message", "????????????");
@@ -947,7 +1178,8 @@ public class WebConsoleController {
     }
 
     private ProvidersConfig.ProviderConfig getProviderConfig(ProvidersConfig providers, String name) {
-        return switch (name) {
+        String normalizedName = name == null ? "" : name.trim().toLowerCase(Locale.ROOT);
+        return switch (normalizedName) {
             case "openrouter" -> providers.getOpenrouter();
             case "anthropic" -> providers.getAnthropic();
             case "deepseek" -> providers.getDeepseek();
@@ -1091,8 +1323,8 @@ public class WebConsoleController {
                 config.getAgent().setProvider(request.getProvider());
             }
 
-            // TODO: 鐏忓棝鍘ょ純顔藉瘮娑斿懎瀵查崚?config.json
-            // ConfigLoader.save(ConfigLoader.getConfigPath(), config);
+            ConfigLoader.save(ConfigLoader.getConfigPath(), config);
+            addAgentClientReloadResult(response);
 
             response.put("success", true);
             response.put("message", "Model updated");
@@ -1195,6 +1427,7 @@ public class WebConsoleController {
             }
 
             ConfigLoader.save(ConfigLoader.getConfigPath(), config);
+            addAgentClientReloadResult(response);
 
             response.put("success", true);
             response.put("message", "Agent config updated");
@@ -1502,8 +1735,33 @@ public class WebConsoleController {
     // ==================== Experience API ====================
 
     @GetMapping("/experience/memories")
+    public ResponseEntity<?> listExperienceMemories(@RequestParam(required = false, defaultValue = "false") boolean all) {
+        return ResponseEntity.ok(all ? experienceMemoryService.listAll() : experienceMemoryService.listActive());
+    }
+
     public ResponseEntity<?> listExperienceMemories() {
-        return ResponseEntity.ok(experienceMemoryService.listActive());
+        return listExperienceMemories(false);
+    }
+
+    @PostMapping("/experience/memories/{id}/pin")
+    public ResponseEntity<?> pinExperienceMemory(@PathVariable String id) {
+        return experienceMemoryService.pin(id)
+                .<ResponseEntity<?>>map(ResponseEntity::ok)
+                .orElse(ResponseEntity.status(404).body(Map.of("error", "Experience memory not found: " + id)));
+    }
+
+    @PostMapping("/experience/memories/{id}/unpin")
+    public ResponseEntity<?> unpinExperienceMemory(@PathVariable String id) {
+        return experienceMemoryService.unpin(id)
+                .<ResponseEntity<?>>map(ResponseEntity::ok)
+                .orElse(ResponseEntity.status(404).body(Map.of("error", "Experience memory not found: " + id)));
+    }
+
+    @PostMapping("/experience/memories/{id}/forget")
+    public ResponseEntity<?> forgetExperienceMemory(@PathVariable String id) {
+        return experienceMemoryService.forget(id)
+                .<ResponseEntity<?>>map(ResponseEntity::ok)
+                .orElse(ResponseEntity.status(404).body(Map.of("error", "Experience memory not found: " + id)));
     }
 
     @GetMapping("/experience/review/latest")
@@ -1821,6 +2079,38 @@ public class WebConsoleController {
         }
         String trimmed = value.trim();
         return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private String stringValue(Object value) {
+        if (value == null) {
+            return null;
+        }
+        String text = String.valueOf(value).trim();
+        return text.isEmpty() ? null : text;
+    }
+
+    private Integer integerValue(Object value) {
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        String text = stringValue(value);
+        return text == null ? null : Integer.parseInt(text);
+    }
+
+    private Long longValue(Object value) {
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        String text = stringValue(value);
+        return text == null ? null : Long.parseLong(text);
+    }
+
+    private Double doubleValue(Object value) {
+        if (value instanceof Number number) {
+            return number.doubleValue();
+        }
+        String text = stringValue(value);
+        return text == null ? null : Double.parseDouble(text);
     }
 
     private String defaultPromptIfBlank(String displayName, String description, String systemPrompt) {

@@ -1,6 +1,7 @@
 package io.jobclaw.runtime.provider;
 
 import io.jobclaw.config.Config;
+import io.jobclaw.config.ModelsConfig;
 import io.jobclaw.config.ProvidersConfig;
 import org.springframework.stereotype.Component;
 
@@ -18,6 +19,13 @@ public class ProviderRuntime {
         String requestedProviderName = config.getAgent() != null ? config.getAgent().getProvider() : null;
         if (explicitProviderOverride != null && !explicitProviderOverride.isBlank()) {
             requestedProviderName = explicitProviderOverride;
+        }
+        String model = explicitModelOverride != null ? explicitModelOverride : config.getAgent().getModel();
+        if (explicitProviderOverride == null || explicitProviderOverride.isBlank()) {
+            String modelProvider = providerForModel(config, model);
+            if (modelProvider != null && !modelProvider.isBlank()) {
+                requestedProviderName = modelProvider;
+            }
         }
         ProvidersConfig.ProviderConfig providerConfig = config.getProviderConfigByName(requestedProviderName);
         boolean fallbackUsed = false;
@@ -40,7 +48,6 @@ public class ProviderRuntime {
                     + effectiveProviderName + ".apiKey or choose a local provider such as ollama.");
         }
 
-        String model = explicitModelOverride != null ? explicitModelOverride : config.getAgent().getModel();
         String apiKey = providerConfig.getApiKey();
         String apiBase = explicitApiBaseOverride != null && !explicitApiBaseOverride.isBlank()
                 ? explicitApiBaseOverride
@@ -55,6 +62,21 @@ public class ProviderRuntime {
                 springAiBaseUrl,
                 fallbackUsed
         );
+    }
+
+    private String providerForModel(Config config, String modelName) {
+        if (modelName == null || modelName.isBlank() || config.getModels() == null) {
+            return null;
+        }
+        ModelsConfig.ModelDefinition definition = config.getModels().getDefinitions().get(modelName);
+        if (definition != null && "deepseek".equalsIgnoreCase(definition.getProvider())) {
+            return definition.getProvider();
+        }
+        String normalized = modelName.toLowerCase();
+        if (normalized.startsWith("deepseek-") || normalized.contains("/deepseek-")) {
+            return "deepseek";
+        }
+        return null;
     }
 
     private String resolveApiBase(String providerName, ProvidersConfig.ProviderConfig providerConfig) {

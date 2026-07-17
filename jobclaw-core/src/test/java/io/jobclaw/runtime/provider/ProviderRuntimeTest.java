@@ -60,6 +60,37 @@ class ProviderRuntimeTest {
     }
 
     @Test
+    void shouldUseDeepSeekProviderWhenModelDefinitionIsDeepSeek() {
+        Config config = Config.defaultConfig();
+        config.getAgent().setProvider("dashscope");
+        config.getAgent().setModel("deepseek-v4-flash");
+        config.getProviders().getDeepseek().setApiKey("sk-deepseek");
+
+        ResolvedProviderConfig resolved = providerRuntime.resolve(config, null);
+
+        assertEquals("deepseek", resolved.providerName());
+        assertEquals("deepseek-v4-flash", resolved.model());
+        assertEquals("https://api.deepseek.com/v1", resolved.apiBase());
+        assertEquals("https://api.deepseek.com", resolved.springAiBaseUrl());
+    }
+
+    @Test
+    void shouldKeepExplicitProviderOverrideForDeepSeekNamedModel() {
+        Config config = Config.defaultConfig();
+        config.getProviders().getOpenrouter().setApiKey("sk-openrouter");
+
+        ResolvedProviderConfig resolved = providerRuntime.resolve(
+                config,
+                "openrouter",
+                "https://openrouter.ai/api/v1",
+                "deepseek/deepseek-chat"
+        );
+
+        assertEquals("openrouter", resolved.providerName());
+        assertEquals("deepseek/deepseek-chat", resolved.model());
+    }
+
+    @Test
     void shouldRejectConfiguredRemoteProviderWithoutApiKey() {
         Config config = Config.defaultConfig();
         config.getAgent().setProvider("dashscope");

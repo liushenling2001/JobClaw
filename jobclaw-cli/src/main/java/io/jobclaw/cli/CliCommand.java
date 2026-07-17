@@ -5,7 +5,6 @@ import io.jobclaw.agent.AgentLoop;
 import io.jobclaw.bus.MessageBus;
 import io.jobclaw.config.Config;
 import io.jobclaw.config.ConfigLoader;
-import io.jobclaw.providers.LLMProvider;
 import io.jobclaw.session.SessionManager;
 
 import java.io.File;
@@ -41,13 +40,6 @@ public abstract class CliCommand {
      */
     protected AgentLoop getAgentLoop() {
         return SpringContext.getBean(AgentLoop.class);
-    }
-
-    /**
-     * Get LLMProvider bean from Spring context
-     */
-    protected LLMProvider getProvider() {
-        return SpringContext.getBean(LLMProvider.class);
     }
 
     /**

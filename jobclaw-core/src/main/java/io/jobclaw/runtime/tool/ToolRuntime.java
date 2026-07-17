@@ -125,6 +125,8 @@ public class ToolRuntime {
             String refId = externalized ? extractRefId(modelResponse) : null;
 
             if (isToolErrorResponse(response)) {
+                sessionManager.addFullMessage(executionRequest.sessionKey(),
+                        io.jobclaw.providers.Message.tool(toolId, response));
                 logger.warn("tool call error-response session={} run={} tool={} toolId={} durationMs={} request={} responseChars={} modelChars={} externalized={} refId={} error={}",
                         executionRequest.sessionKey(),
                         currentRunId(),
@@ -170,6 +172,8 @@ public class ToolRuntime {
                     truncatedRequest,
                     durationMs
             );
+            sessionManager.addFullMessage(executionRequest.sessionKey(),
+                    io.jobclaw.providers.Message.tool(toolId, modelResponse));
             eventPublisher.publishOutput(
                     executionRequest.eventCallback(),
                     executionRequest.sessionKey(),

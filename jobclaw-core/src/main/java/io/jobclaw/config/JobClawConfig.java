@@ -1,6 +1,9 @@
 package io.jobclaw.config;
 
 import io.jobclaw.agent.ContextBuilder;
+import io.jobclaw.agent.experience.ExperienceMemoryRetriever;
+import io.jobclaw.agent.experience.ExperienceMemoryStore;
+import io.jobclaw.agent.experience.FileExperienceMemoryStore;
 import io.jobclaw.bus.MessageBus;
 import io.jobclaw.conversation.ConversationStore;
 import io.jobclaw.conversation.file.FileConversationStore;
@@ -11,8 +14,6 @@ import io.jobclaw.context.DefaultContextAssembler;
 import io.jobclaw.cron.CronService;
 import io.jobclaw.heartbeat.HeartbeatService;
 import io.jobclaw.mcp.MCPService;
-import io.jobclaw.providers.HTTPProvider;
-import io.jobclaw.providers.LLMProvider;
 import io.jobclaw.retrieval.RetrievalService;
 import io.jobclaw.retrieval.SqliteRetrievalService;
 import io.jobclaw.security.SecurityGuard;
@@ -103,11 +104,21 @@ public class JobClawConfig {
     @ConditionalOnMissingBean
     public ContextAssembler contextAssembler(Config config,
                                              SessionManager sessionManager,
-                                             RetrievalService retrievalService) {
+                                             RetrievalService retrievalService,
+                                             ExperienceMemoryRetriever experienceMemoryRetriever) {
         return new DefaultContextAssembler(
                 sessionManager,
                 config.getAgent().getRecentMessagesToKeep(),
-                retrievalService
+                retrievalService,
+                experienceMemoryRetriever
+        );
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public ExperienceMemoryStore experienceMemoryStore(Config config) {
+        return new FileExperienceMemoryStore(
+                Paths.get(config.getWorkspacePath(), ".jobclaw", "experience").toString()
         );
     }
 
@@ -117,16 +128,6 @@ public class JobClawConfig {
                                                        SessionManager sessionManager,
                                                        SummaryService summaryService) {
         return new DefaultContextAssemblyPolicy(config.getAgent(), sessionManager, summaryService);
-    }
-
-    @Bean
-    @ConditionalOnMissingBean
-    public LLMProvider llmProvider(Config config) {
-        HTTPProvider provider = new HTTPProvider();
-        provider.setApiKey(config.getApiKey());
-        provider.setApiBase(config.getApiBase());
-        provider.setModel(config.getAgent().getModel());
-        return provider;
     }
 
     @Bean

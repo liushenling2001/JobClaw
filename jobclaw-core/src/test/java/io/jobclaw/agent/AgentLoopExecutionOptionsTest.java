@@ -6,6 +6,7 @@ import io.jobclaw.context.ContextAssemblyPolicy;
 import io.jobclaw.session.SessionManager;
 import io.jobclaw.summary.SummaryService;
 import org.junit.jupiter.api.Test;
+import org.springframework.ai.deepseek.DeepSeekChatOptions;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.tool.ToolCallback;
 
@@ -77,7 +78,7 @@ class AgentLoopExecutionOptionsTest {
     }
 
     @Test
-    void shouldDisableDeepSeekThinkingForToolCompatibleModels() throws Exception {
+    void shouldUseNativeDeepSeekOptionsForDeepSeekProvider() throws Exception {
         Config config = Config.defaultConfig();
         config.getAgent().setProvider("deepseek");
         config.getAgent().setModel("deepseek-v4-flash");
@@ -96,17 +97,17 @@ class AgentLoopExecutionOptionsTest {
                 AgentDefinition.class, String.class, String.class);
         method.setAccessible(true);
 
-        OpenAiChatOptions options = (OpenAiChatOptions) method.invoke(loop, null, "deepseek-v4-flash", "deepseek");
+        DeepSeekChatOptions options = (DeepSeekChatOptions) method.invoke(loop, null, "deepseek-v4-flash", "deepseek");
 
-        assertEquals(Map.of("thinking", Map.of("type", "disabled")), options.getExtraBody());
+        assertEquals("deepseek-v4-flash", options.getModel());
     }
 
     @Test
-    void shouldNotDisableThinkingForDeepSeekReasoner() throws Exception {
+    void shouldDisableDeepSeekThinkingOnlyForOpenAiCompatibleDeepSeekModels() throws Exception {
         Config config = Config.defaultConfig();
-        config.getAgent().setProvider("deepseek");
-        config.getAgent().setModel("deepseek-reasoner");
-        config.getProviders().getDeepseek().setApiKey("sk-test");
+        config.getAgent().setProvider("openrouter");
+        config.getAgent().setModel("openrouter-default");
+        config.getProviders().getOpenrouter().setApiKey("sk-test");
         AgentLoop loop = new AgentLoop(
                 config,
                 new SessionManager(),
@@ -121,8 +122,8 @@ class AgentLoopExecutionOptionsTest {
                 AgentDefinition.class, String.class, String.class);
         method.setAccessible(true);
 
-        OpenAiChatOptions options = (OpenAiChatOptions) method.invoke(loop, null, "deepseek-reasoner", "deepseek");
+        OpenAiChatOptions options = (OpenAiChatOptions) method.invoke(loop, null, "deepseek/deepseek-chat", "openrouter");
 
-        assertNull(options.getExtraBody());
+        assertEquals(Map.of("thinking", Map.of("type", "disabled")), options.getExtraBody());
     }
 }

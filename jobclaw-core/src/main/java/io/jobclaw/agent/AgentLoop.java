@@ -19,6 +19,7 @@ import io.jobclaw.context.result.NoopResultStore;
 import io.jobclaw.context.result.ResultStore;
 import io.jobclaw.runtime.provider.ProviderRuntime;
 import io.jobclaw.runtime.provider.ResolvedProviderConfig;
+import io.jobclaw.providers.DeepSeekMessageProtocolNormalizer;
 import io.jobclaw.runtime.tool.DefaultToolExecutionStateTracker;
 import io.jobclaw.runtime.tool.ToolExecutionRequest;
 import io.jobclaw.runtime.tool.ToolExecutionResult;
@@ -35,13 +36,14 @@ import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.chat.prompt.ChatOptions;
+import org.springframework.ai.deepseek.DeepSeekChatModel;
+import org.springframework.ai.deepseek.DeepSeekChatOptions;
+import org.springframework.ai.deepseek.api.DeepSeekApi;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
-import org.springframework.ai.openai.api.OpenAiApi;
 import org.springframework.ai.tool.ToolCallback;
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
-import org.springframework.http.client.ClientHttpRequestInterceptor;
-import org.springframework.web.client.RestClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Flux;
 
@@ -75,8 +77,8 @@ public class AgentLoop {
 
     private final Config config;
     private final SessionManager sessionManager;
-    private final ChatClient chatClient;
-    private final String model;
+    private volatile ChatClient chatClient;
+    private volatile String model;
     private final ToolCallback[] allToolCallbacks;
 
     // 新增组件
@@ -85,17 +87,19 @@ public class AgentLoop {
     private final ContextAssemblyPolicy contextAssemblyPolicy;
     private final SessionSummarizer sessionSummarizer;
     private final ProviderRuntime providerRuntime;
+    private final String modelOverride;
     private final ToolRuntime toolRuntime;
     private final ToolExecutionStateTracker toolExecutionStateTracker;
-    private final ResolvedProviderConfig defaultProviderConfig;
+    private volatile ResolvedProviderConfig defaultProviderConfig;
     private final ActiveExecutionRegistry activeExecutionRegistry;
     private final CompletionRegistry completionRegistry;
     private final ActiveSkillRegistry activeSkillRegistry;
     private final ActiveManifestRegistry activeManifestRegistry;
     private final ResultStore resultStore;
+    private final RunTrajectoryCompactor runTrajectoryCompactor;
 
     // 无工具调用的专用 ChatClient（用于摘要生成）
-    private final ChatClient simpleChatClient;
+    private volatile ChatClient simpleChatClient;
 
     private final ExecutorService toolExecutionExecutor;
     private static final String ACTIVE_SKILL_FRAME_MARKER = "[[JOBCLAW_ACTIVE_SKILL_FRAME]]";
@@ -252,50 +256,23 @@ public class AgentLoop {
         this.sessionManager = sessionManager;
         this.allToolCallbacks = allToolCallbacks;
         this.providerRuntime = providerRuntime;
+        this.modelOverride = model;
         this.activeExecutionRegistry = activeExecutionRegistry;
         this.completionRegistry = completionRegistry != null ? completionRegistry : new CompletionRegistry(config);
         this.activeSkillRegistry = activeSkillRegistry != null ? activeSkillRegistry : new ActiveSkillRegistry();
         this.activeManifestRegistry = activeManifestRegistry != null ? activeManifestRegistry : new ActiveManifestRegistry();
         this.resultStore = resultStore != null ? resultStore : new NoopResultStore();
 
-        ResolvedProviderConfig resolvedProvider = providerRuntime.resolve(config, model);
-        this.defaultProviderConfig = resolvedProvider;
-        this.model = resolvedProvider.model();
-
-        if (resolvedProvider.fallbackUsed()) {
-            logger.warn("requested provider not available, falling back to provider '{}'", resolvedProvider.providerName());
+        try {
+            reloadDefaultClient(chatClient);
+        } catch (Exception e) {
+            this.model = model != null && !model.isBlank() ? model : config.getAgent().getModel();
+            this.chatClient = null;
+            this.simpleChatClient = null;
+            this.defaultProviderConfig = null;
+            logger.warn("LLM client is not ready during AgentLoop startup; gateway will continue and retry on first use. reason={}",
+                    e.getMessage());
         }
-
-        logger.info("Spring AI OpenAI Compatible config - apiKey: {}***, model: {}, apiBase: {} -> using: {}",
-                resolvedProvider.apiKey() != null && resolvedProvider.apiKey().length() > 4
-                        ? resolvedProvider.apiKey().substring(0, 4)
-                        : "null",
-                this.model, resolvedProvider.apiBase(), resolvedProvider.springAiBaseUrl());
-
-        // 创建 OpenAI API 客户端（支持自定义 baseUrl，兼容 DashScope Coding Plan）
-        OpenAiApi openAiApi = createOpenAiApi(resolvedProvider);
-
-        // 创建 ChatModel（带工具调用）
-        OpenAiChatModel.Builder chatModelBuilder = OpenAiChatModel.builder()
-                .openAiApi(openAiApi);
-        OpenAiChatOptions defaultOptions = deepSeekThinkingDisabledOptions(
-                resolvedProvider.providerName(), resolvedProvider.model());
-        if (defaultOptions != null) {
-            chatModelBuilder.defaultOptions(defaultOptions);
-        }
-        OpenAiChatModel chatModel = chatModelBuilder.build();
-
-        // 创建 ChatClient（带工具调用）
-        this.chatClient = chatClient != null ? chatClient : ChatClient.builder(chatModel).build();
-
-        // 创建简单的 ChatClient（用于摘要生成，不带工具调用）
-        OpenAiChatModel.Builder simpleChatModelBuilder = OpenAiChatModel.builder()
-                .openAiApi(openAiApi);
-        if (defaultOptions != null) {
-            simpleChatModelBuilder.defaultOptions(defaultOptions);
-        }
-        OpenAiChatModel simpleChatModel = simpleChatModelBuilder.build();
-        this.simpleChatClient = ChatClient.builder(simpleChatModel).build();
 
         // 初始化 ContextBuilder（需要 SkillsService）
         io.jobclaw.skills.SkillsService skillsService = null;
@@ -321,6 +298,7 @@ public class AgentLoop {
                 memoryEvolver,
                 summaryService
         );
+        this.runTrajectoryCompactor = new RunTrajectoryCompactor(config.getAgent());
 
         // 初始化 THINK_STREAM 缓冲区
         this.toolExecutionExecutor = Executors.newCachedThreadPool(r -> {
@@ -461,14 +439,20 @@ public class AgentLoop {
             ToolCallback[] tools = wrapToolCallbacks(rawTools, sessionKey, eventCallback);
 
             ExecutionClientBundle executionClientBundle = createExecutionClientBundle(definition);
-            OpenAiChatOptions options = buildExecutionOptions(definition, executionClientBundle.model(),
+            ChatOptions options = buildExecutionOptions(definition, executionClientBundle.model(),
                     executionClientBundle.providerName());
 
             // 使用结构化上下文装配器，保留消息边界，不再拍平成单段文本
             ContextAssemblyOptions assemblyOptions = contextAssemblyPolicy.buildOptions(sessionKey, userContent);
             List<io.jobclaw.providers.Message> historyMessages =
                     contextAssembler.assemble(sessionKey, userContent, assemblyOptions);
-            List<Message> promptMessages = buildPromptMessages(systemPrompt, historyMessages, userContent);
+            List<Message> promptMessages = buildPromptMessages(
+                    systemPrompt,
+                    historyMessages,
+                    userContent,
+                    executionClientBundle.providerName(),
+                    executionClientBundle.model()
+            );
 
             // Persist the user turn before model execution so interrupted or failed
             // runs still appear in conversation history.
@@ -479,6 +463,7 @@ public class AgentLoop {
             while (true) {
                 refreshActiveSkillFrame(promptMessages, scope.sessionKey(), scope.runId());
                 refreshActiveManifestFrame(promptMessages, scope.sessionKey(), scope.runId());
+                runTrajectoryCompactor.compactIfNeeded(promptMessages, scope.sessionKey(), scope.runId(), userContent);
                 String attemptResponse = runModelAttempt(
                         executionClientBundle,
                         promptMessages,
@@ -1026,7 +1011,7 @@ public class AgentLoop {
 
     private ManagedRunnerResult runManagedSkillRunner(ExecutionClientBundle executionClientBundle,
                                                       ToolCallback[] tools,
-                                                      OpenAiChatOptions options,
+                                                      ChatOptions options,
                                                       String systemPrompt,
                                                       String originalUserContent,
                                                       String sessionKey,
@@ -1674,7 +1659,7 @@ public class AgentLoop {
     private String runModelAttempt(ExecutionClientBundle executionClientBundle,
                                    List<Message> promptMessages,
                                    ToolCallback[] tools,
-                                   OpenAiChatOptions options,
+                                   ChatOptions options,
                                    String sessionKey,
                                    Consumer<ExecutionEvent> eventCallback,
                                    StringBuilder fullResponse,
@@ -1689,7 +1674,7 @@ public class AgentLoop {
         Flux<String> contentStream = executionClientBundle.chatClient().prompt()
                 .messages(promptMessages)
                 .toolCallbacks(tools)
-                .options(options)
+                .options(options.mutate())
                 .stream()
                 .content();
 
@@ -1934,14 +1919,20 @@ public class AgentLoop {
 
     private List<Message> buildPromptMessages(String systemPrompt,
                                               List<io.jobclaw.providers.Message> historyMessages,
-                                              String currentContent) {
+                                              String currentContent,
+                                              String providerName,
+                                              String modelName) {
         List<Message> promptMessages = new ArrayList<>();
         if (systemPrompt != null && !systemPrompt.isBlank()) {
             promptMessages.add(new SystemMessage(systemPrompt));
         }
         if (historyMessages != null) {
-            for (io.jobclaw.providers.Message message : historyMessages) {
-                Message springMessage = toSpringMessage(message);
+            List<io.jobclaw.providers.Message> messagesForProvider =
+                    isReasoningSideChannelProvider(providerName, modelName)
+                            ? DeepSeekMessageProtocolNormalizer.normalize(historyMessages)
+                            : historyMessages;
+            for (io.jobclaw.providers.Message message : messagesForProvider) {
+                Message springMessage = toSpringMessage(message, providerName, modelName);
                 if (springMessage != null) {
                     promptMessages.add(springMessage);
                 }
@@ -1951,7 +1942,9 @@ public class AgentLoop {
         return promptMessages;
     }
 
-    private Message toSpringMessage(io.jobclaw.providers.Message message) {
+    private Message toSpringMessage(io.jobclaw.providers.Message message,
+                                    String providerName,
+                                    String modelName) {
         if (message == null || message.getRole() == null) {
             return null;
         }
@@ -1959,7 +1952,7 @@ public class AgentLoop {
         String role = message.getRole();
         String content = message.getContent() != null ? message.getContent() : "";
         if ("assistant".equals(message.getRole())
-                && isReasoningSideChannelProvider(defaultProviderConfig.providerName(), model)) {
+                && isReasoningSideChannelProvider(providerName, modelName)) {
             content = ReasoningContentFilter.sanitizeText(content);
         }
         return switch (role) {
@@ -2130,7 +2123,7 @@ public class AgentLoop {
                             eventCallback
                     ));
                     if (shouldReturnManagedManifestControl(getToolDefinition().name(), effectiveRequest, result)) {
-                        logger.info("managed manifest tool boundary reached session={} run={} tool={} request={}",
+                        AgentLoop.logger.info("managed manifest tool boundary reached session={} run={} tool={} request={}",
                                 capturedScope != null ? capturedScope.sessionKey() : sessionKey,
                                 capturedScope != null ? capturedScope.runId() : null,
                                 getToolDefinition().name(),
@@ -2234,11 +2227,49 @@ public class AgentLoop {
         return "Spring AI initialized (model: " + config.getAgent().getModel() + ")";
     }
 
-    private OpenAiChatOptions buildExecutionOptions(AgentDefinition definition, String baseModel) {
-        return buildExecutionOptions(definition, baseModel, defaultProviderConfig.providerName());
+    public synchronized ResolvedProviderConfig reloadDefaultClient() {
+        return reloadDefaultClient(null);
     }
 
-    private OpenAiChatOptions buildExecutionOptions(AgentDefinition definition, String baseModel, String providerName) {
+    private synchronized ResolvedProviderConfig reloadDefaultClient(ChatClient providedChatClient) {
+        ResolvedProviderConfig resolvedProvider = providerRuntime.resolve(config, modelOverride);
+        ChatClient nextChatClient;
+        ChatClient nextSimpleChatClient;
+        if (providedChatClient != null) {
+            nextChatClient = providedChatClient;
+            nextSimpleChatClient = providedChatClient;
+        } else {
+            ChatModel chatModel = createChatModel(resolvedProvider);
+            nextChatClient = ChatClient.builder(chatModel).build();
+            nextSimpleChatClient = ChatClient.builder(createChatModel(resolvedProvider)).build();
+        }
+
+        this.defaultProviderConfig = resolvedProvider;
+        this.model = resolvedProvider.model();
+        this.chatClient = nextChatClient;
+        this.simpleChatClient = nextSimpleChatClient;
+
+        if (resolvedProvider.fallbackUsed()) {
+            logger.warn("requested provider not available, falling back to provider '{}'", resolvedProvider.providerName());
+        }
+
+        logger.info("Spring AI provider config - provider: {}, apiKey: {}***, model: {}, apiBase: {} -> using: {}",
+                resolvedProvider.providerName(),
+                resolvedProvider.apiKey() != null && resolvedProvider.apiKey().length() > 4
+                        ? resolvedProvider.apiKey().substring(0, 4)
+                        : "null",
+                this.model, resolvedProvider.apiBase(), resolvedProvider.springAiBaseUrl());
+        return resolvedProvider;
+    }
+
+    private ChatOptions buildExecutionOptions(AgentDefinition definition, String baseModel) {
+        String providerName = defaultProviderConfig != null
+                ? defaultProviderConfig.providerName()
+                : config.getAgent().getProvider();
+        return buildExecutionOptions(definition, baseModel, providerName);
+    }
+
+    private ChatOptions buildExecutionOptions(AgentDefinition definition, String baseModel, String providerName) {
         String effectiveModel = baseModel != null && !baseModel.isBlank() ? baseModel : model;
         Integer effectiveMaxTokens = null;
         Double effectiveTemperature = null;
@@ -2256,6 +2287,18 @@ public class AgentLoop {
             }
         }
 
+        if (usesNativeDeepSeek(providerName)) {
+            DeepSeekChatOptions.Builder builder = DeepSeekChatOptions.builder()
+                    .model(effectiveModel);
+            if (effectiveMaxTokens != null) {
+                builder.maxTokens(effectiveMaxTokens);
+            }
+            if (effectiveTemperature != null) {
+                builder.temperature(effectiveTemperature);
+            }
+            return builder.build();
+        }
+
         OpenAiChatOptions.Builder builder = OpenAiChatOptions.builder()
                 .model(effectiveModel);
         if (effectiveMaxTokens != null) {
@@ -2271,6 +2314,9 @@ public class AgentLoop {
     }
 
     private boolean shouldDisableDeepSeekThinking(String providerName, String modelName) {
+        if (usesNativeDeepSeek(providerName)) {
+            return false;
+        }
         if (!isReasoningSideChannelProvider(providerName, modelName)) {
             return false;
         }
@@ -2297,6 +2343,7 @@ public class AgentLoop {
         if ((providerOverride == null || providerOverride.isBlank())
                 && (apiBaseOverride == null || apiBaseOverride.isBlank())
                 && (modelOverride == null || modelOverride.isBlank())) {
+            ensureDefaultClientReady();
             return new ExecutionClientBundle(chatClient, model, defaultProviderConfig.providerName());
         }
 
@@ -2306,16 +2353,23 @@ public class AgentLoop {
                 apiBaseOverride,
                 modelOverride
         );
-        OpenAiApi openAiApi = createOpenAiApi(resolved);
-        OpenAiChatModel.Builder chatModelBuilder = OpenAiChatModel.builder()
-                .openAiApi(openAiApi);
-        OpenAiChatOptions defaultOptions = deepSeekThinkingDisabledOptions(resolved.providerName(), resolved.model());
-        if (defaultOptions != null) {
-            chatModelBuilder.defaultOptions(defaultOptions);
-        }
-        OpenAiChatModel chatModel = chatModelBuilder.build();
+        ChatModel chatModel = createChatModel(resolved);
         ChatClient executionChatClient = ChatClient.builder(chatModel).build();
         return new ExecutionClientBundle(executionChatClient, resolved.model(), resolved.providerName());
+    }
+
+    private void ensureDefaultClientReady() {
+        if (chatClient != null && defaultProviderConfig != null) {
+            return;
+        }
+        try {
+            reloadDefaultClient();
+        } catch (Exception e) {
+            throw new IllegalStateException("LLM provider is not ready. Check agent.provider and providers."
+                    + config.getAgent().getProvider() + ".apiKey in "
+                    + io.jobclaw.config.ConfigLoader.getConfigPath()
+                    + ". Original error: " + e.getMessage(), e);
+        }
     }
 
     private record ExecutionClientBundle(ChatClient chatClient, String model, String providerName) {
@@ -2325,6 +2379,10 @@ public class AgentLoop {
         String provider = providerName != null ? providerName.toLowerCase() : "";
         String modelValue = modelName != null ? modelName.toLowerCase() : "";
         return provider.contains("deepseek") || modelValue.contains("deepseek");
+    }
+
+    private boolean usesNativeDeepSeek(String providerName) {
+        return providerName != null && providerName.equalsIgnoreCase("deepseek");
     }
 
     private static final class ReasoningContentFilter {
@@ -2394,44 +2452,34 @@ public class AgentLoop {
         }
     }
 
-    private OpenAiApi createOpenAiApi(ResolvedProviderConfig resolvedProvider) {
-        RestClient.Builder restClientBuilder = RestClient.builder().requestFactory(openAiRequestFactory());
-        if (shouldDisableDeepSeekThinking(resolvedProvider.providerName(), resolvedProvider.model())) {
-            restClientBuilder.requestInterceptor(deepSeekThinkingDisabledInterceptor());
+    private ChatModel createChatModel(ResolvedProviderConfig resolvedProvider) {
+        if (usesNativeDeepSeek(resolvedProvider.providerName())) {
+            DeepSeekApi deepSeekApi = DeepSeekApi.builder()
+                    .apiKey(resolvedProvider.apiKey())
+                    .baseUrl(nativeDeepSeekBaseUrl(resolvedProvider.springAiBaseUrl()))
+                    .build();
+            return DeepSeekChatModel.builder()
+                    .deepSeekApi(deepSeekApi)
+                    .options((DeepSeekChatOptions) buildExecutionOptions(null, resolvedProvider.model(),
+                            resolvedProvider.providerName()))
+                    .build();
         }
-        return OpenAiApi.builder()
-                .apiKey(resolvedProvider.apiKey())
-                .baseUrl(resolvedProvider.springAiBaseUrl())
-                .restClientBuilder(restClientBuilder)
+
+        return OpenAiChatModel.builder()
+                .options((OpenAiChatOptions) buildExecutionOptions(null, resolvedProvider.model(),
+                        resolvedProvider.providerName()))
                 .build();
     }
 
-    private ClientHttpRequestInterceptor deepSeekThinkingDisabledInterceptor() {
-        return (request, body, execution) -> {
-            byte[] patchedBody = body;
-            if (body != null && body.length > 0) {
-                try {
-                    JsonNode root = OBJECT_MAPPER.readTree(body);
-                    if (root instanceof ObjectNode objectNode && !objectNode.has("thinking")) {
-                        ObjectNode thinking = OBJECT_MAPPER.createObjectNode();
-                        thinking.put("type", "disabled");
-                        objectNode.set("thinking", thinking);
-                        patchedBody = OBJECT_MAPPER.writeValueAsBytes(objectNode);
-                    }
-                } catch (Exception e) {
-                    logger.debug("failed to inject DeepSeek thinking disabled flag: {}", e.getMessage());
-                }
-            }
-            return execution.execute(request, patchedBody);
-        };
-    }
-
-    private SimpleClientHttpRequestFactory openAiRequestFactory() {
-        int timeoutMillis = safeTimeoutMillis(config.getAgent().getLlmCallTimeoutSeconds(), 300);
-        SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
-        requestFactory.setConnectTimeout(timeoutMillis);
-        requestFactory.setReadTimeout(timeoutMillis);
-        return requestFactory;
+    private String nativeDeepSeekBaseUrl(String baseUrl) {
+        if (baseUrl == null || baseUrl.isBlank()) {
+            return "https://api.deepseek.com";
+        }
+        String trimmed = baseUrl.trim();
+        if (trimmed.endsWith("/v1")) {
+            return trimmed.substring(0, trimmed.length() - 3);
+        }
+        return trimmed;
     }
 
     private int safeTimeoutMillis(int seconds, int fallbackSeconds) {
@@ -2535,10 +2583,11 @@ public class AgentLoop {
 
     public String callLLM(String prompt, Map<String, Object> options) {
         try {
+            ensureDefaultClientReady();
             String response = simpleChatClient.prompt()
                     .system("You are a helpful assistant.")
                     .user(prompt)
-                    .options(OpenAiChatOptions.builder().model(model).build())
+                    .options(buildExecutionOptions(null, model, defaultProviderConfig.providerName()).mutate())
                     .call()
                     .content();
 

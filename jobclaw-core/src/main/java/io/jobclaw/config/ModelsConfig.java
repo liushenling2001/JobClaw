@@ -21,6 +21,7 @@ public class ModelsConfig {
         // DeepSeek 系列
         definitions.put("deepseek-chat", new ModelDefinition("deepseek", "deepseek-chat", 128000));
         definitions.put("deepseek-reasoner", new ModelDefinition("deepseek", "deepseek-reasoner", 128000));
+        definitions.put("deepseek-v4-flash", new ModelDefinition("deepseek", "deepseek-v4-flash", 128000));
 
         // Claude 系列
         definitions.put("claude-3-5-sonnet-20241022", new ModelDefinition("anthropic", "claude-3-5-sonnet-20241022", 200000));
