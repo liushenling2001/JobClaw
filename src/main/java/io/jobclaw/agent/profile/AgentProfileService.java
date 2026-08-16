@@ -6,6 +6,7 @@ import io.jobclaw.agent.catalog.AgentCatalogEntry;
 import io.jobclaw.agent.catalog.AgentCatalogService;
 import io.jobclaw.config.Config;
 import io.jobclaw.config.ProvidersConfig;
+import io.jobclaw.runtime.provider.QwenThinkingOptions;
 import org.springframework.stereotype.Service;
 
 import java.nio.file.Path;
@@ -137,6 +138,7 @@ public class AgentProfileService {
         Map<String, Object> modelConfig = new LinkedHashMap<>();
         modelConfig.put("provider", config.getAgent().getProvider());
         modelConfig.put("model", config.getAgent().getModel());
+        modelConfig.put("thinkingMode", QwenThinkingOptions.normalizeMode(config.getAgent().getThinkingMode()));
         modelConfig.put("temperature", config.getAgent().getTemperature());
         modelConfig.put("maxTokens", config.getAgent().getMaxTokens());
         modelConfig.put("timeoutMs", config.getAgent().getToolCallTimeoutSeconds() * 1000L);

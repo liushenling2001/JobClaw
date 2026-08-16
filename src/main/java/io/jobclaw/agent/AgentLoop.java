@@ -23,12 +23,15 @@ import io.jobclaw.context.result.NoopResultStore;
 import io.jobclaw.context.result.ResultStore;
 import io.jobclaw.providers.DeepSeekMessageProtocolNormalizer;
 import io.jobclaw.runtime.provider.ProviderRuntime;
+import io.jobclaw.runtime.provider.QwenThinkingOptions;
 import io.jobclaw.runtime.provider.ResolvedProviderConfig;
 import io.jobclaw.runtime.tool.DefaultToolExecutionStateTracker;
 import io.jobclaw.runtime.tool.ToolExecutionRequest;
 import io.jobclaw.runtime.tool.ToolExecutionResult;
 import io.jobclaw.runtime.tool.ToolExecutionStateTracker;
 import io.jobclaw.runtime.tool.ToolRuntime;
+import io.jobclaw.runtime.tool.discovery.ToolDiscoveryCallbacks;
+import io.jobclaw.runtime.tool.discovery.ToolDiscoveryCatalog;
 import io.jobclaw.session.Session;
 import io.jobclaw.session.SessionManager;
 import io.jobclaw.skills.SkillInfo;
@@ -350,7 +353,7 @@ public class AgentLoop {
                 memoryEvolver,
                 summaryService
         );
-        this.runTrajectoryCompactor = new RunTrajectoryCompactor(config.getAgent());
+        this.runTrajectoryCompactor = new RunTrajectoryCompactor(config.getAgent(), this.resultStore);
 
         // 初始化 THINK_STREAM 缓冲区
         this.toolExecutionExecutor = Executors.newCachedThreadPool(r -> {
@@ -482,11 +485,24 @@ public class AgentLoop {
 
             // 创建工具回调（支持工具过滤）
             ToolCallback[] rawTools = filterToolsByDefinition(definition, userContent, sessionKey);
-            ToolCallback[] tools = wrapToolCallbacks(rawTools, sessionKey, eventCallback, artifactCompletionTracker);
+            ToolCallback[] directTools = wrapToolCallbacks(
+                    rawTools,
+                    sessionKey,
+                    eventCallback,
+                    artifactCompletionTracker
+            );
+            ToolCallback[] discoveryTools = createToolDiscoveryCallbacks(
+                    definition,
+                    rawTools,
+                    sessionKey,
+                    eventCallback,
+                    artifactCompletionTracker
+            );
+            ToolCallback[] tools = concatToolCallbacks(directTools, discoveryTools);
 
             ExecutionClientBundle executionClientBundle = createExecutionClientBundle(definition);
             ChatOptions.Builder<?> options = buildExecutionOptions(definition, executionClientBundle.model(),
-                    executionClientBundle.providerName());
+                    executionClientBundle.providerName(), executionClientBundle.apiBase());
 
             // 使用结构化上下文装配器，保留消息边界，不再拍平成单段文本
             ContextAssemblyOptions assemblyOptions = contextAssemblyPolicy.buildOptions(sessionKey, userContent);
@@ -1889,6 +1905,10 @@ public class AgentLoop {
             return false;
         }
         String normalized = name.trim().toLowerCase();
+        if (ToolDiscoveryCallbacks.SEARCH_TOOL_NAME.equals(normalized)
+                || ToolDiscoveryCallbacks.USE_TOOL_NAME.equals(normalized)) {
+            return false;
+        }
         if (allowedTools != null && !allowedTools.isEmpty()) {
             return allowedTools.stream()
                     .filter(tool -> tool != null && !tool.isBlank())
@@ -2165,10 +2185,9 @@ public class AgentLoop {
                                    StringBuilder fullResponse,
                                    boolean checkpointAssistantDraft) {
         StringBuilder attemptResponse = new StringBuilder();
+        StringBuilder rawResponse = new StringBuilder();
         ensureNotCancelled();
         StreamDeltaNormalizer streamDeltaNormalizer = new StreamDeltaNormalizer();
-        ReasoningContentFilter reasoningContentFilter = ReasoningContentFilter.forModel(
-                isReasoningSideChannelProvider(executionClientBundle.providerName(), executionClientBundle.model()));
         int fullResponseStartLength = fullResponse != null ? fullResponse.length() : 0;
         AtomicInteger streamChunkCount = new AtomicInteger();
         String streamSegmentId = "seg-" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
@@ -2199,7 +2218,6 @@ public class AgentLoop {
                     fullResponse,
                     checkpointAssistantDraft,
                     fullResponseStartLength,
-                    reasoningContentFilter,
                     "streaming-disabled");
         }
 
@@ -2224,7 +2242,7 @@ public class AgentLoop {
                                 content.length(),
                                 previewForLog(content));
                     }
-                    String delta = streamDeltaNormalizer.normalize(attemptResponse, content);
+                    String delta = streamDeltaNormalizer.normalize(rawResponse, content);
                     if (delta.isEmpty()) {
                         if (chunkIndex <= 8 || chunkIndex % 25 == 0) {
                             logger.info("LLM stream chunk normalized-empty session={} chunk={} accumulatedChars={}",
@@ -2234,16 +2252,7 @@ public class AgentLoop {
                         }
                         return;
                     }
-                    delta = reasoningContentFilter.filterDelta(delta);
-                    if (delta.isEmpty()) {
-                        if (chunkIndex <= 8 || chunkIndex % 25 == 0) {
-                            logger.info("LLM stream chunk filtered-empty session={} chunk={} accumulatedChars={}",
-                                    sessionKey,
-                                    chunkIndex,
-                                    attemptResponse.length());
-                        }
-                        return;
-                    }
+                    rawResponse.append(delta);
                     if (chunkIndex <= 8 || chunkIndex % 25 == 0) {
                         logger.info("LLM stream delta session={} chunk={} deltaChars={} deltaPreview={} accumulatedBefore={}",
                                 sessionKey,
@@ -2254,19 +2263,7 @@ public class AgentLoop {
                     }
                     attemptResponse.append(delta);
                     fullResponse.append(delta);
-                    if (eventCallback != null) {
-                        ExecutionEvent streamEvent = new ExecutionEvent(
-                                sessionKey,
-                                ExecutionEvent.EventType.THINK_STREAM,
-                                delta,
-                                Map.of("streamSegmentId", streamSegmentId)
-                        );
-                        if (toolExecutionStateTracker.isExecuting(sessionKey)) {
-                            toolExecutionStateTracker.bufferThink(sessionKey, delta);
-                        } else {
-                            eventCallback.accept(streamEvent);
-                        }
-                    }
+                    emitVisibleDelta(eventCallback, sessionKey, streamSegmentId, delta);
                 }
             });
         } catch (RuntimeException e) {
@@ -2293,7 +2290,6 @@ public class AgentLoop {
                         fullResponse,
                         checkpointAssistantDraft,
                         fullResponseStartLength,
-                        reasoningContentFilter,
                         "spring-ai-stream-aggregation");
             }
             WebClientResponseException responseException = findWebClientResponseException(e);
@@ -2326,27 +2322,17 @@ public class AgentLoop {
                     fullResponse,
                     checkpointAssistantDraft,
                     fullResponseStartLength,
-                    reasoningContentFilter,
                     "empty-stream",
                     streamSegmentId);
-        }
-        String sanitized = reasoningContentFilter.sanitizeFinal(attemptResponse.toString());
-        if (sanitized.length() != attemptResponse.length()) {
-            attemptResponse.setLength(0);
-            attemptResponse.append(sanitized);
-            if (fullResponse != null && fullResponse.length() >= fullResponseStartLength) {
-                fullResponse.setLength(fullResponseStartLength);
-                fullResponse.append(sanitized);
-            }
         }
         logger.info("LLM stream complete session={} provider={} model={} chunks={} responseChars={} responsePreview={}",
                 sessionKey,
                 executionClientBundle.providerName(),
                 executionClientBundle.model(),
                 streamChunkCount.get(),
-                sanitized.length(),
-                previewForLog(sanitized));
-        return sanitized;
+                attemptResponse.length(),
+                previewForLog(attemptResponse.toString()));
+        return attemptResponse.toString();
     }
 
     private String runNonStreamFallback(ExecutionClientBundle executionClientBundle,
@@ -2358,10 +2344,9 @@ public class AgentLoop {
                                         StringBuilder fullResponse,
                                         boolean checkpointAssistantDraft,
                                         int fullResponseStartLength,
-                                        ReasoningContentFilter reasoningContentFilter,
                                         String reason) {
         return runNonStreamFallback(executionClientBundle, promptMessages, tools, options, sessionKey, eventCallback,
-                fullResponse, checkpointAssistantDraft, fullResponseStartLength, reasoningContentFilter, reason,
+                fullResponse, checkpointAssistantDraft, fullResponseStartLength, reason,
                 "seg-" + UUID.randomUUID().toString().replace("-", "").substring(0, 12));
     }
 
@@ -2374,7 +2359,6 @@ public class AgentLoop {
                                         StringBuilder fullResponse,
                                         boolean checkpointAssistantDraft,
                                         int fullResponseStartLength,
-                                        ReasoningContentFilter reasoningContentFilter,
                                         String reason,
                                         String streamSegmentId) {
         StringBuilder fallbackResponse = new StringBuilder();
@@ -2395,7 +2379,7 @@ public class AgentLoop {
                     .call()
                     .content();
             ensureNotCancelled();
-            String delta = reasoningContentFilter.sanitizeFinal(fallbackContent != null ? fallbackContent : "");
+            String delta = fallbackContent != null ? fallbackContent : "";
             logger.info("LLM non-stream raw response session={} provider={} model={} reason={} rawChars={} sanitizedChars={} rawPreview={} sanitizedPreview={}",
                     sessionKey,
                     executionClientBundle.providerName(),
@@ -2414,14 +2398,7 @@ public class AgentLoop {
                     }
                     fullResponse.append(delta);
                 }
-                if (eventCallback != null) {
-                    eventCallback.accept(new ExecutionEvent(
-                            sessionKey,
-                            ExecutionEvent.EventType.THINK_STREAM,
-                            delta,
-                            Map.of("streamSegmentId", streamSegmentId)
-                    ));
-                }
+                emitVisibleDelta(eventCallback, sessionKey, streamSegmentId, delta);
             }
         } catch (RuntimeException e) {
             if (containsManagedManifestTakeoverSignal(e)) {
@@ -2466,6 +2443,26 @@ public class AgentLoop {
             current = current.getCause();
         }
         return false;
+    }
+
+    private void emitVisibleDelta(Consumer<ExecutionEvent> eventCallback,
+                                  String sessionKey,
+                                  String streamSegmentId,
+                                  String content) {
+        if (eventCallback == null || content == null || content.isEmpty()) {
+            return;
+        }
+        ExecutionEvent streamEvent = new ExecutionEvent(
+                sessionKey,
+                ExecutionEvent.EventType.THINK_STREAM,
+                content,
+                Map.of("streamSegmentId", streamSegmentId, "reasoning", false)
+        );
+        if (toolExecutionStateTracker.isExecuting(sessionKey)) {
+            toolExecutionStateTracker.bufferThink(sessionKey, content);
+        } else {
+            eventCallback.accept(streamEvent);
+        }
     }
 
     private boolean isSpringAiStreamAggregationFailure(Throwable throwable) {
@@ -2708,10 +2705,6 @@ public class AgentLoop {
 
         String role = message.getRole();
         String content = message.getContent() != null ? message.getContent() : "";
-        if ("assistant".equals(message.getRole())
-                && isReasoningSideChannelProvider(providerName, modelName)) {
-            content = ReasoningContentFilter.sanitizeText(content);
-        }
         return switch (role) {
             case "system" -> new SystemMessage(content);
             case "assistant" -> toSpringAssistantMessage(message, content);
@@ -2841,6 +2834,64 @@ public class AgentLoop {
         return java.util.Arrays.stream(rawCallbacks)
                 .map(callback -> wrapSingleCallback(callback, sessionKey, eventCallback, artifactCompletionTracker))
                 .toArray(ToolCallback[]::new);
+    }
+
+    private ToolCallback[] createToolDiscoveryCallbacks(AgentDefinition definition,
+                                                        ToolCallback[] selectedTools,
+                                                        String sessionKey,
+                                                        Consumer<ExecutionEvent> eventCallback,
+                                                        ArtifactCompletionTracker artifactCompletionTracker) {
+        if (definition != null
+                && definition.getAllowedTools() != null
+                && !definition.getAllowedTools().isEmpty()) {
+            return new ToolCallback[0];
+        }
+        Set<String> selectedNames = Arrays.stream(selectedTools != null ? selectedTools : new ToolCallback[0])
+                .filter(callback -> callback != null && callback.getToolDefinition() != null)
+                .map(callback -> callback.getToolDefinition().name())
+                .collect(java.util.stream.Collectors.toSet());
+        List<ToolCallback> discoverableTools = Arrays.stream(allToolCallbacks)
+                .filter(callback -> callback != null && callback.getToolDefinition() != null)
+                .filter(callback -> !selectedNames.contains(callback.getToolDefinition().name()))
+                .filter(callback -> !"exec".equals(callback.getToolDefinition().name()))
+                .toList();
+        if (discoverableTools.isEmpty()) {
+            return new ToolCallback[0];
+        }
+
+        ToolDiscoveryCatalog catalog = new ToolDiscoveryCatalog(discoverableTools);
+        ToolDiscoveryCallbacks.CallbackPair callbacks = ToolDiscoveryCallbacks.create(
+                catalog,
+                (target, arguments) -> {
+                    ToolCallback wrappedTarget = wrapSingleCallback(
+                            target,
+                            sessionKey,
+                            eventCallback,
+                            artifactCompletionTracker
+                    );
+                    String response = wrappedTarget.call(arguments);
+                    rememberSessionTools(sessionKey, new ToolCallback[]{target});
+                    return response;
+                }
+        );
+        ToolCallback trackedSearch = wrapSingleCallback(
+                callbacks.search(),
+                sessionKey,
+                eventCallback,
+                artifactCompletionTracker
+        );
+        logger.info("optional tool discovery enabled catalogSize={} directTools={}",
+                catalog.size(),
+                toolNames(selectedTools));
+        return new ToolCallback[]{trackedSearch, callbacks.use()};
+    }
+
+    private ToolCallback[] concatToolCallbacks(ToolCallback[] first, ToolCallback[] second) {
+        ToolCallback[] left = first != null ? first : new ToolCallback[0];
+        ToolCallback[] right = second != null ? second : new ToolCallback[0];
+        ToolCallback[] combined = Arrays.copyOf(left, left.length + right.length);
+        System.arraycopy(right, 0, combined, left.length, right.length);
+        return combined;
     }
 
     /**
@@ -3435,13 +3486,31 @@ public class AgentLoop {
     }
 
     private ChatOptions.Builder<?> buildExecutionOptions(AgentDefinition definition, String baseModel) {
-        return buildExecutionOptions(definition, baseModel, defaultProviderConfig.providerName());
+        return buildExecutionOptions(
+                definition,
+                baseModel,
+                defaultProviderConfig != null ? defaultProviderConfig.providerName() : config.getAgent().getProvider(),
+                defaultProviderConfig != null ? defaultProviderConfig.apiBase() : null
+        );
     }
 
     private ChatOptions.Builder<?> buildExecutionOptions(AgentDefinition definition, String baseModel, String providerName) {
+        return buildExecutionOptions(
+                definition,
+                baseModel,
+                providerName,
+                defaultProviderConfig != null ? defaultProviderConfig.apiBase() : null
+        );
+    }
+
+    private ChatOptions.Builder<?> buildExecutionOptions(AgentDefinition definition,
+                                                         String baseModel,
+                                                         String providerName,
+                                                         String apiBase) {
         String effectiveModel = baseModel != null && !baseModel.isBlank() ? baseModel : model;
         Integer effectiveMaxTokens = config.getAgent().getMaxTokens() > 0 ? config.getAgent().getMaxTokens() : null;
         Double effectiveTemperature = config.getAgent().getTemperature();
+        String thinkingMode = config.getAgent().getThinkingMode();
 
         if (definition != null && definition.getConfig() != null) {
             AgentDefinition.AgentConfig definitionConfig = definition.getConfig();
@@ -3453,6 +3522,10 @@ public class AgentLoop {
             }
             if (definitionConfig.getTemperature() != null) {
                 effectiveTemperature = definitionConfig.getTemperature();
+            }
+            Object definitionThinkingMode = definitionConfig.getCustomSetting("thinkingMode");
+            if (definitionThinkingMode != null && !definitionThinkingMode.toString().isBlank()) {
+                thinkingMode = definitionThinkingMode.toString();
             }
         }
 
@@ -3475,6 +3548,15 @@ public class AgentLoop {
         }
         if (effectiveTemperature != null) {
             builder.temperature(effectiveTemperature);
+        }
+        Map<String, Object> thinkingOptions = QwenThinkingOptions.extraBody(
+                providerName,
+                effectiveModel,
+                apiBase,
+                thinkingMode
+        );
+        if (!thinkingOptions.isEmpty()) {
+            builder.extraBody(thinkingOptions);
         }
         return builder;
     }
@@ -3524,73 +3606,6 @@ public class AgentLoop {
         String provider = providerName != null ? providerName.toLowerCase() : "";
         String modelValue = modelName != null ? modelName.toLowerCase() : "";
         return provider.contains("deepseek") || modelValue.contains("deepseek");
-    }
-
-    private static final class ReasoningContentFilter {
-        private final boolean enabled;
-        private boolean inThinkBlock;
-
-        private ReasoningContentFilter(boolean enabled) {
-            this.enabled = enabled;
-        }
-
-        static ReasoningContentFilter forModel(boolean enabled) {
-            return new ReasoningContentFilter(enabled);
-        }
-
-        String filterDelta(String delta) {
-            if (!enabled || delta == null || delta.isEmpty()) {
-                return delta != null ? delta : "";
-            }
-            StringBuilder visible = new StringBuilder(delta.length());
-            int index = 0;
-            while (index < delta.length()) {
-                if (inThinkBlock) {
-                    int close = indexOfIgnoreCase(delta, "</think>", index);
-                    if (close < 0) {
-                        return visible.toString();
-                    }
-                    inThinkBlock = false;
-                    index = close + "</think>".length();
-                    continue;
-                }
-                int open = indexOfIgnoreCase(delta, "<think>", index);
-                if (open < 0) {
-                    visible.append(delta, index, delta.length());
-                    break;
-                }
-                visible.append(delta, index, open);
-                inThinkBlock = true;
-                index = open + "<think>".length();
-            }
-            return visible.toString();
-        }
-
-        String sanitizeFinal(String text) {
-            if (!enabled) {
-                return text != null ? text : "";
-            }
-            return sanitizeText(text);
-        }
-
-        static String sanitizeText(String text) {
-            if (text == null || text.isEmpty()) {
-                return "";
-            }
-            String sanitized = text.replaceAll("(?is)<think>.*?</think>", "");
-            sanitized = sanitized.replaceAll("(?im)^\\s*\"?reasoning_content\"?\\s*:\\s*\".*\"\\s*,?\\s*$", "");
-            return sanitized;
-        }
-
-        private static int indexOfIgnoreCase(String source, String target, int fromIndex) {
-            int max = source.length() - target.length();
-            for (int i = Math.max(0, fromIndex); i <= max; i++) {
-                if (source.regionMatches(true, i, target, 0, target.length())) {
-                    return i;
-                }
-            }
-            return -1;
-        }
     }
 
     private ChatModel createChatModel(ResolvedProviderConfig resolvedProvider) {

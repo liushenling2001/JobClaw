@@ -12,6 +12,7 @@ import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.tool.ToolCallback;
 
 import java.lang.reflect.Method;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -100,6 +101,40 @@ class AgentLoopExecutionOptionsTest {
         DeepSeekChatOptions options = buildDeepSeekOptions(method.invoke(loop, null, "deepseek-v4-flash", "deepseek"));
 
         assertEquals("deepseek-v4-flash", options.getModel());
+    }
+
+    @Test
+    void shouldApplyQwenThinkingModeToOpenAiCompatibleRequest() throws Exception {
+        Config config = Config.defaultConfig();
+        config.getAgent().setProvider("openrouter");
+        config.getAgent().setModel("qwen");
+        config.getAgent().setThinkingMode("auto");
+        AgentLoop loop = new AgentLoop(
+                config,
+                new SessionManager(),
+                new ToolCallback[0],
+                mock(ContextBuilder.class),
+                mock(ContextAssembler.class),
+                mock(ContextAssemblyPolicy.class),
+                mock(SummaryService.class)
+        );
+
+        Method method = AgentLoop.class.getDeclaredMethod("buildExecutionOptions",
+                AgentDefinition.class, String.class, String.class, String.class);
+        method.setAccessible(true);
+
+        OpenAiChatOptions options = buildOpenAiOptions(method.invoke(
+                loop,
+                null,
+                "qwen",
+                "openrouter",
+                "http://100.113.233.0:8000/v1"
+        ));
+
+        assertEquals(
+                Map.of("chat_template_kwargs", Map.of("enable_thinking", false)),
+                options.getExtraBody()
+        );
     }
 
     @Test

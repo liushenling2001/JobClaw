@@ -19,6 +19,7 @@
         const CHAT_SUGGESTIONS_ID = "jobclaw-chat-suggestions";
         let providerOptionsPromise = null;
         let modelOptionsPromise = null;
+        let mainAgentProfilePromise = null;
         let chatSuggestionsPromise = null;
 
         function loadProviderOptions() {
@@ -37,6 +38,15 @@
               .catch(() => []);
           }
           return modelOptionsPromise;
+        }
+
+        function loadMainAgentProfile() {
+          if (!mainAgentProfilePromise) {
+            mainAgentProfilePromise = fetch("/api/agents/main%3Aassistant")
+              .then(response => response.ok ? response.json() : null)
+              .catch(() => null);
+          }
+          return mainAgentProfilePromise;
         }
 
         async function fetchStatus(button) {
@@ -142,6 +152,14 @@
                     <span class="block text-xs mt-1">vLLM 或 OpenAI-compatible 聚合接口触发 Spring AI 流式聚合错误时，可关闭。</span>
                   </span>
                 </label>
+                <label class="block text-sm text-on-surface-variant">
+                  思考模式
+                  <select name="thinkingMode" class="mt-2 w-full bg-surface-container-high px-4 py-2 rounded text-on-surface outline-none focus:ring-2 focus:ring-secondary/40">
+                    <option value="auto" ${(modelConfig.thinkingMode || "auto") === "auto" ? "selected" : ""}>自动（Qwen 默认关闭）</option>
+                    <option value="disabled" ${modelConfig.thinkingMode === "disabled" ? "selected" : ""}>关闭</option>
+                    <option value="enabled" ${modelConfig.thinkingMode === "enabled" ? "selected" : ""}>开启</option>
+                  </select>
+                </label>
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <label class="block text-sm text-on-surface-variant">
                     Temperature
@@ -195,6 +213,7 @@
                   model: inputValue(form, "model") || undefined,
                   apiBase: inputValue(form, "apiBase") || undefined,
                   streaming: Boolean(form.elements.streaming && form.elements.streaming.checked),
+                  thinkingMode: inputValue(form, "thinkingMode") || "auto",
                   temperature: numberValue(form, "temperature"),
                   maxTokens: numberValue(form, "maxTokens"),
                   toolCallTimeoutSeconds: numberValue(form, "toolCallTimeoutSeconds"),
@@ -282,7 +301,11 @@
             return;
           }
 
-          const [providers, models] = await Promise.all([loadProviderOptions(), loadModelOptions()]);
+          const [providers, models, mainProfile] = await Promise.all([
+            loadProviderOptions(),
+            loadModelOptions(),
+            loadMainAgentProfile()
+          ]);
           if (providerInput.dataset.jobclawEnhanced === "true") {
             return;
           }
@@ -302,6 +325,10 @@
           );
           const apiKeyInput = ensureMainAgentApiKeyInput(apiBaseInput);
           const streamingInput = ensureMainAgentStreamingInput(apiBaseInput);
+          const thinkingModeInput = ensureMainAgentThinkingModeInput(
+            apiBaseInput,
+            mainProfile && mainProfile.modelConfig ? mainProfile.modelConfig.thinkingMode : "auto"
+          );
 
           function refreshProviderDerivedFields() {
             const selectedProvider = providers.find(provider => provider.name === providerSelect.value);
@@ -399,6 +426,33 @@
           const anchor = apiKey && apiKey.closest("div") ? apiKey.closest("div") : apiBaseContainer;
           anchor.parentElement.insertBefore(wrapper, anchor.nextSibling);
           return document.getElementById("jobclaw-main-agent-streaming");
+        }
+
+        function ensureMainAgentThinkingModeInput(apiBaseInput, currentMode) {
+          const existing = document.getElementById("jobclaw-main-agent-thinking-mode");
+          if (existing) {
+            return existing;
+          }
+          const apiBaseContainer = apiBaseInput.parentElement;
+          if (!apiBaseContainer || !apiBaseContainer.parentElement) {
+            return null;
+          }
+          const wrapper = document.createElement("div");
+          wrapper.className = apiBaseContainer.className || "";
+          wrapper.innerHTML = `
+            <label class="block text-sm text-on-surface-variant mb-2">思考模式</label>
+            <select id="jobclaw-main-agent-thinking-mode" class="${escapeHtml(apiBaseInput.className || "")}">
+              <option value="auto">自动（Qwen 默认关闭）</option>
+              <option value="disabled">关闭</option>
+              <option value="enabled">开启</option>
+            </select>
+          `;
+          const streaming = document.getElementById("jobclaw-main-agent-streaming");
+          const anchor = streaming && streaming.closest("div") ? streaming.closest("div") : apiBaseContainer;
+          anchor.parentElement.insertBefore(wrapper, anchor.nextSibling);
+          const select = document.getElementById("jobclaw-main-agent-thinking-mode");
+          select.value = ["auto", "disabled", "enabled"].includes(currentMode) ? currentMode : "auto";
+          return select;
         }
 
         function modelValuesForProvider(models, provider, currentValue) {
@@ -651,6 +705,7 @@
             const apiKeyInput = document.getElementById("jobclaw-main-agent-api-key");
             const apiKey = apiKeyInput && apiKeyInput.value ? apiKeyInput.value.trim() : "";
             const streamingInput = document.getElementById("jobclaw-main-agent-streaming");
+            const thinkingModeInput = document.getElementById("jobclaw-main-agent-thinking-mode");
             if (init && init.body && typeof init.body === "string") {
               try {
                 const body = JSON.parse(init.body);
@@ -660,6 +715,9 @@
                 }
                 if (streamingInput) {
                   body.modelConfig.streaming = streamingInput.checked;
+                }
+                if (thinkingModeInput) {
+                  body.modelConfig.thinkingMode = thinkingModeInput.value || "auto";
                 }
                 init = { ...init, body: JSON.stringify(body) };
               } catch (ignored) {
@@ -682,6 +740,7 @@
             const apiKeyInput = document.getElementById("jobclaw-main-agent-api-key");
             const apiKey = apiKeyInput && apiKeyInput.value ? apiKeyInput.value.trim() : "";
             const streamingInput = document.getElementById("jobclaw-main-agent-streaming");
+            const thinkingModeInput = document.getElementById("jobclaw-main-agent-thinking-mode");
             if (typeof body === "string") {
               try {
                 const parsed = JSON.parse(body);
@@ -691,6 +750,9 @@
                 }
                 if (streamingInput) {
                   parsed.modelConfig.streaming = streamingInput.checked;
+                }
+                if (thinkingModeInput) {
+                  parsed.modelConfig.thinkingMode = thinkingModeInput.value || "auto";
                 }
                 body = JSON.stringify(parsed);
               } catch (ignored) {

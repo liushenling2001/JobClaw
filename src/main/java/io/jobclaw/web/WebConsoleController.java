@@ -19,6 +19,7 @@ import io.jobclaw.mcp.MCPService;
 import io.jobclaw.retrieval.RetrievalBundle;
 import io.jobclaw.retrieval.RetrievalService;
 import io.jobclaw.retrieval.SearchQuery;
+import io.jobclaw.runtime.provider.QwenThinkingOptions;
 import io.jobclaw.security.SecurityGuard;
 import io.jobclaw.session.Session;
 import io.jobclaw.session.SessionManager;
@@ -204,6 +205,11 @@ public class WebConsoleController {
             String model = stringValue(modelConfig.get("model"));
             if (model != null) {
                 agentConfig.setModel(model);
+            }
+
+            String thinkingMode = stringValue(modelConfig.get("thinkingMode"));
+            if (thinkingMode != null) {
+                agentConfig.setThinkingMode(QwenThinkingOptions.normalizeMode(thinkingMode));
             }
 
             Double temperature = doubleValue(modelConfig.get("temperature"));

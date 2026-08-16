@@ -23,6 +23,7 @@ import java.time.Instant;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -193,6 +194,68 @@ class AgentLoopToolSelectionTest {
         List<String> otherNames = names(otherSession);
         assertFalse(otherNames.contains("read_pdf"));
         assertFalse(otherNames.contains("read_word"));
+    }
+
+    @Test
+    void shouldDiscoverInvokeAndCarryForwardAnOptionalTool() throws Exception {
+        AgentLoop loop = loopWithTools(
+                "skills", "context_ref", "manifest", "completion", "user_input",
+                "list_dir", "read_file", "write_file", "edit_file", "append_file", "run_command",
+                "web_search", "cron"
+        );
+        ToolCallback[] selected = invokeFilterForSession(
+                loop,
+                null,
+                "继续处理当前任务",
+                "session-discovery"
+        );
+        assertFalse(names(selected).contains("web_search"));
+
+        ToolCallback[] discovery = invokeDiscoveryCallbacks(
+                loop,
+                null,
+                selected,
+                "session-discovery"
+        );
+        assertEquals(List.of("tool_search", "tool_use"), names(discovery));
+
+        String searchResult = discovery[0].call("{\"query\":\"web search\",\"limit\":3}");
+        assertTrue(searchResult.contains("\"name\":\"web_search\""));
+        discovery[1].call("""
+                {"name":"web_search","arguments":{"query":"Spring AI"}}
+                """);
+
+        ToolCallback[] nextTurn = invokeFilterForSession(
+                loop,
+                null,
+                "继续",
+                "session-discovery"
+        );
+        assertTrue(names(nextTurn).contains("web_search"));
+    }
+
+    @Test
+    void shouldNotAddDiscoveryToolsToExplicitAgentAllowlist() throws Exception {
+        AgentLoop loop = loopWithTools("read_pdf", "web_search", "cron");
+        AgentDefinition definition = AgentDefinition.builder()
+                .code("pdf-only")
+                .displayName("PDF only")
+                .systemPrompt("Read PDFs")
+                .allowedTools(List.of("read_pdf"))
+                .build();
+        ToolCallback[] selected = invokeFilterForSession(
+                loop,
+                definition,
+                "读取 PDF",
+                "session-explicit"
+        );
+
+        assertEquals(0, invokeDiscoveryCallbacks(
+                loop,
+                definition,
+                selected,
+                "session-explicit"
+        ).length);
     }
 
     @Test
@@ -481,6 +544,26 @@ class AgentLoopToolSelectionTest {
                 ToolCallback[].class, String.class, String.class);
         method.setAccessible(true);
         return (ToolCallback[]) method.invoke(loop, tools, sessionKey, runId);
+    }
+
+    private ToolCallback[] invokeDiscoveryCallbacks(AgentLoop loop,
+                                                    AgentDefinition definition,
+                                                    ToolCallback[] selectedTools,
+                                                    String sessionKey) throws Exception {
+        Class<?> trackerClass = Arrays.stream(AgentLoop.class.getDeclaredClasses())
+                .filter(type -> type.getSimpleName().equals("ArtifactCompletionTracker"))
+                .findFirst()
+                .orElseThrow();
+        Method method = AgentLoop.class.getDeclaredMethod(
+                "createToolDiscoveryCallbacks",
+                AgentDefinition.class,
+                ToolCallback[].class,
+                String.class,
+                Consumer.class,
+                trackerClass
+        );
+        method.setAccessible(true);
+        return (ToolCallback[]) method.invoke(loop, definition, selectedTools, sessionKey, null, null);
     }
 
     private String invokeManagedCreateRepair(AgentLoop loop,

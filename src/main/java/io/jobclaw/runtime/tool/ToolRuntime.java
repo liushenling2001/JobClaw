@@ -53,6 +53,7 @@ public class ToolRuntime {
     private final ToolEventPublisher eventPublisher;
     private final ActiveExecutionRegistry activeExecutionRegistry;
     private final ResultStore resultStore;
+    private final ToolCallRepeatGuard repeatGuard = new ToolCallRepeatGuard();
     private final ConcurrentHashMap<String, TurnBudgetState> turnBudgetStates = new ConcurrentHashMap<>();
 
     public ToolRuntime(Config config,
@@ -91,7 +92,53 @@ public class ToolRuntime {
         String truncatedRequest = truncateToolRequest(executionRequest.request());
         String requestSummary = summarizeToolRequest(executionRequest.toolName(), executionRequest.request());
         AgentExecutionContext.ExecutionScope startScope = AgentExecutionContext.getCurrentScope();
+        String currentRunId = runId(startScope);
         Throwable throwable = null;
+
+        ToolCallRepeatGuard.Decision repeatDecision = repeatGuard.beforeCall(
+                executionRequest.sessionKey(),
+                currentRunId,
+                executionRequest.toolName(),
+                executionRequest.request(),
+                config != null && config.getAgent() != null && config.getAgent().isToolRepeatGuardEnabled(),
+                config != null && config.getAgent() != null
+                        ? config.getAgent().getToolRepeatGuardThreshold()
+                        : 3
+        );
+        if (repeatDecision.blocked()) {
+            logger.warn("tool call blocked as stable repeat session={} run={} tool={} toolId={} request={}",
+                    executionRequest.sessionKey(),
+                    currentRunId,
+                    executionRequest.toolName(),
+                    toolId,
+                    requestSummary);
+            eventPublisher.publishStart(
+                    executionRequest.eventCallback(),
+                    executionRequest.sessionKey(),
+                    executionRequest.toolName(),
+                    toolId,
+                    truncatedRequest
+            );
+            eventPublisher.publishEnd(
+                    executionRequest.eventCallback(),
+                    executionRequest.sessionKey(),
+                    executionRequest.toolName(),
+                    toolId,
+                    truncatedRequest,
+                    0L
+            );
+            eventPublisher.publishOutput(
+                    executionRequest.eventCallback(),
+                    executionRequest.sessionKey(),
+                    executionRequest.toolName(),
+                    toolId,
+                    truncatedRequest,
+                    0L,
+                    repeatDecision.response().length(),
+                    repeatDecision.response()
+            );
+            return new ToolExecutionResult(toolId, repeatDecision.response(), 0L, true, null);
+        }
 
         logger.info("tool call start session={} run={} parentRun={} tool={} toolId={} requestChars={} request={}",
                 executionRequest.sessionKey(),
@@ -120,6 +167,14 @@ public class ToolRuntime {
                     executionRequest.toolName()
             );
             String modelResponse = prepareModelResponse(executionRequest, response);
+            repeatGuard.recordResult(
+                    executionRequest.sessionKey(),
+                    currentRunId,
+                    executionRequest.toolName(),
+                    executionRequest.request(),
+                    response,
+                    modelResponse
+            );
             long durationMs = System.currentTimeMillis() - toolStartAt;
             boolean externalized = isContextReferenceResponse(modelResponse);
             String refId = externalized ? extractRefId(modelResponse) : null;
@@ -186,6 +241,14 @@ public class ToolRuntime {
             throwable = e;
             long durationMs = System.currentTimeMillis() - toolStartAt;
             String errorResponse = "Error: " + safeErrorMessage(e);
+            repeatGuard.recordResult(
+                    executionRequest.sessionKey(),
+                    currentRunId,
+                    executionRequest.toolName(),
+                    executionRequest.request(),
+                    errorResponse,
+                    errorResponse
+            );
             logger.warn("tool call exception session={} run={} tool={} toolId={} durationMs={} request={} error={}",
                     executionRequest.sessionKey(),
                     currentRunId(),
@@ -405,6 +468,7 @@ public class ToolRuntime {
     public void clearRunState(String sessionKey, String runId) {
         if (sessionKey != null && runId != null) {
             turnBudgetStates.remove(sessionKey + ":" + runId);
+            repeatGuard.clear(sessionKey, runId);
             logger.debug("tool runtime run state cleared session={} run={}", sessionKey, runId);
         }
     }

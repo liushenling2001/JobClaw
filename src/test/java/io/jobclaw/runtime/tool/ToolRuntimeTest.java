@@ -180,7 +180,7 @@ class ToolRuntimeTest {
     }
 
     @Test
-    void shouldAllowConsecutiveDuplicateToolCalls() {
+    void shouldAllowRepeatedToolCallsWhenTheirResultsKeepChanging() {
         Config config = Config.defaultConfig();
         SessionManager sessionManager = new SessionManager(tempDir.resolve("duplicate-tool-sessions").toString());
         ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -208,6 +208,90 @@ class ToolRuntimeTest {
         assertEquals("read-4", fourth.response());
         assertEquals(4, calls.get());
 
+        executor.shutdownNow();
+    }
+
+    @Test
+    void shouldBlockThirdStableRepeatedToolCallAndReusePreviousResult() {
+        Config config = Config.defaultConfig();
+        SessionManager sessionManager = new SessionManager(tempDir.resolve("stable-repeat-sessions").toString());
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        DefaultToolExecutionStateTracker tracker = new DefaultToolExecutionStateTracker();
+        ToolRuntime toolRuntime = new ToolRuntime(config, sessionManager, executor, tracker);
+        AtomicInteger calls = new AtomicInteger();
+        ToolCallback callback = new ToolCallback() {
+            private final ToolDefinition definition = ToolDefinition.builder()
+                    .name("read_file")
+                    .description("test")
+                    .inputSchema("{\"type\":\"object\",\"properties\":{}}")
+                    .build();
+
+            @Override
+            public ToolDefinition getToolDefinition() {
+                return definition;
+            }
+
+            @Override
+            public String call(String toolInput) {
+                calls.incrementAndGet();
+                return "stable file content";
+            }
+        };
+
+        ToolExecutionResult first = toolRuntime.execute(new ToolExecutionRequest(
+                "session-stable-repeat",
+                "read_file",
+                "{\"path\":\"same.txt\",\"start\":0}",
+                callback,
+                event -> {}
+        ));
+        ToolExecutionResult second = toolRuntime.execute(new ToolExecutionRequest(
+                "session-stable-repeat",
+                "read_file",
+                "{\"start\":0,\"path\":\"same.txt\"}",
+                callback,
+                event -> {}
+        ));
+        ToolExecutionResult third = toolRuntime.execute(new ToolExecutionRequest(
+                "session-stable-repeat",
+                "read_file",
+                "{\"path\":\"same.txt\",\"start\":0}",
+                callback,
+                event -> {}
+        ));
+
+        assertEquals("stable file content", first.response());
+        assertEquals("stable file content", second.response());
+        assertTrue(third.response().contains("REPETITION_DETECTED"));
+        assertTrue(third.response().contains("stable file content"));
+        assertEquals(2, calls.get());
+
+        executor.shutdownNow();
+    }
+
+    @Test
+    void shouldAllowStableRepeatedCallsWhenGuardIsDisabled() {
+        Config config = Config.defaultConfig();
+        config.getAgent().setToolRepeatGuardEnabled(false);
+        SessionManager sessionManager = new SessionManager(tempDir.resolve("repeat-disabled-sessions").toString());
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        DefaultToolExecutionStateTracker tracker = new DefaultToolExecutionStateTracker();
+        ToolRuntime toolRuntime = new ToolRuntime(config, sessionManager, executor, tracker);
+        AtomicInteger calls = new AtomicInteger();
+        ToolCallback callback = new StableCountingToolCallback("read_file", calls);
+        ToolExecutionRequest request = new ToolExecutionRequest(
+                "session-repeat-disabled",
+                "read_file",
+                "{\"path\":\"same.txt\"}",
+                callback,
+                event -> {}
+        );
+
+        toolRuntime.execute(request);
+        toolRuntime.execute(request);
+        toolRuntime.execute(request);
+
+        assertEquals(3, calls.get());
         executor.shutdownNow();
     }
 
@@ -397,6 +481,31 @@ class ToolRuntimeTest {
         @Override
         public String call(String toolInput) {
             return "read-" + calls.incrementAndGet();
+        }
+    }
+
+    private static class StableCountingToolCallback implements ToolCallback {
+        private final ToolDefinition toolDefinition;
+        private final AtomicInteger calls;
+
+        private StableCountingToolCallback(String toolName, AtomicInteger calls) {
+            this.toolDefinition = ToolDefinition.builder()
+                    .name(toolName)
+                    .description("test")
+                    .inputSchema("{\"type\":\"object\",\"properties\":{}}")
+                    .build();
+            this.calls = calls;
+        }
+
+        @Override
+        public ToolDefinition getToolDefinition() {
+            return toolDefinition;
+        }
+
+        @Override
+        public String call(String toolInput) {
+            calls.incrementAndGet();
+            return "stable";
         }
     }
 

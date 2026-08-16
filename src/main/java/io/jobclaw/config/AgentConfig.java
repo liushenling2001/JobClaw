@@ -11,6 +11,7 @@ public class AgentConfig {
     private String workspace;
     private String model;
     private String provider;
+    private String thinkingMode;
     private int maxTokens;
     private double temperature;
     private int maxToolIterations;
@@ -22,6 +23,8 @@ public class AgentConfig {
     private boolean collaborationEnabled;
     private int maxToolOutputLength;
     private int toolCallTimeoutSeconds;
+    private boolean toolRepeatGuardEnabled;
+    private int toolRepeatGuardThreshold;
     private int llmCallTimeoutSeconds;
     private long childAgentTimeoutMs;
     private int childAgentResultMaxChars;
@@ -65,6 +68,7 @@ public class AgentConfig {
         this.workspace = "~/.jobclaw/workspace";
         this.model = "qwen3.5-plus";
         this.provider = "dashscope";
+        this.thinkingMode = "auto";
         this.maxTokens = 16384;
         this.temperature = 0.7;
         this.maxToolIterations = 20;
@@ -76,6 +80,8 @@ public class AgentConfig {
         this.collaborationEnabled = true;
         this.maxToolOutputLength = 10000; // 工具结果在前端事件中的展示截断长度，不截断模型流程内容
         this.toolCallTimeoutSeconds = 300;
+        this.toolRepeatGuardEnabled = true;
+        this.toolRepeatGuardThreshold = 3;
         this.llmCallTimeoutSeconds = 300;
         this.childAgentTimeoutMs = 900_000L;
         this.childAgentResultMaxChars = 4000;
@@ -124,6 +130,14 @@ public class AgentConfig {
 
     public void setProvider(String provider) {
         this.provider = provider;
+    }
+
+    public String getThinkingMode() {
+        return thinkingMode;
+    }
+
+    public void setThinkingMode(String thinkingMode) {
+        this.thinkingMode = thinkingMode;
     }
 
     public int getMaxTokens() {
@@ -212,6 +226,22 @@ public class AgentConfig {
 
     public void setToolCallTimeoutSeconds(int toolCallTimeoutSeconds) {
         this.toolCallTimeoutSeconds = toolCallTimeoutSeconds;
+    }
+
+    public boolean isToolRepeatGuardEnabled() {
+        return toolRepeatGuardEnabled;
+    }
+
+    public void setToolRepeatGuardEnabled(boolean toolRepeatGuardEnabled) {
+        this.toolRepeatGuardEnabled = toolRepeatGuardEnabled;
+    }
+
+    public int getToolRepeatGuardThreshold() {
+        return toolRepeatGuardThreshold;
+    }
+
+    public void setToolRepeatGuardThreshold(int toolRepeatGuardThreshold) {
+        this.toolRepeatGuardThreshold = toolRepeatGuardThreshold;
     }
 
     public int getLlmCallTimeoutSeconds() {

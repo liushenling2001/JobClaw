@@ -136,6 +136,7 @@ class WebConsoleControllerConfigFileApiTest {
                     "model", "llama3.1",
                     "apiBase", "http://localhost:11434/v1",
                     "apiKey", "sk-local-test",
+                    "thinkingMode", "disabled",
                     "temperature", 0.2,
                     "maxTokens", 2048,
                     "toolCallTimeoutSeconds", 120,
@@ -152,6 +153,7 @@ class WebConsoleControllerConfigFileApiTest {
             assertEquals("llama3.1", body.get("reloadedModel"));
             assertEquals("ollama", config.getAgent().getProvider());
             assertEquals("llama3.1", config.getAgent().getModel());
+            assertEquals("disabled", config.getAgent().getThinkingMode());
             assertEquals(0.2, config.getAgent().getTemperature());
             assertEquals(2048, config.getAgent().getMaxTokens());
             assertEquals(120, config.getAgent().getToolCallTimeoutSeconds());
