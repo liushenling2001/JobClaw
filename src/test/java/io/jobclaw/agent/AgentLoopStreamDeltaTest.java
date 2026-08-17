@@ -3,6 +3,13 @@ package io.jobclaw.agent;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.model.Generation;
+import org.springframework.ai.deepseek.DeepSeekAssistantMessage;
+
+import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -75,6 +82,55 @@ class AgentLoopStreamDeltaTest {
     }
 
     @Test
+    void shouldSeparateOpenAiReasoningMetadataFromVisibleContent() {
+        AssistantMessage message = AssistantMessage.builder()
+                .content("正式回复")
+                .properties(Map.of("reasoningContent", "思考过程"))
+                .build();
+
+        AgentLoop.StreamResponseParts parts = AgentLoop.extractStreamResponseParts(response(message));
+
+        assertEquals("思考过程", parts.reasoning());
+        assertEquals("正式回复", parts.content());
+    }
+
+    @Test
+    void shouldSeparateDeepSeekReasoningFromVisibleContent() {
+        DeepSeekAssistantMessage message = DeepSeekAssistantMessage.builder()
+                .content("正式回复")
+                .reasoningContent("DeepSeek 思考")
+                .build();
+
+        AgentLoop.StreamResponseParts parts = AgentLoop.extractStreamResponseParts(response(message));
+
+        assertEquals("DeepSeek 思考", parts.reasoning());
+        assertEquals("正式回复", parts.content());
+    }
+
+    @Test
+    void shouldTreatThoughtChunksAsReasoningOnly() {
+        AssistantMessage message = AssistantMessage.builder()
+                .content("仅供思考")
+                .properties(Map.of("isThought", true))
+                .build();
+
+        AgentLoop.StreamResponseParts parts = AgentLoop.extractStreamResponseParts(response(message));
+
+        assertEquals("仅供思考", parts.reasoning());
+        assertEquals("", parts.content());
+    }
+
+    @Test
+    void shouldLeaveOrdinaryAssistantContentVisible() {
+        AssistantMessage message = new AssistantMessage("普通回复");
+
+        AgentLoop.StreamResponseParts parts = AgentLoop.extractStreamResponseParts(response(message));
+
+        assertEquals("", parts.reasoning());
+        assertEquals("普通回复", parts.content());
+    }
+
+    @Test
     void shouldExtractJsonObjectFromFencedModelReply() throws Exception {
         String extracted = AgentLoop.extractJsonObject("""
                 提取结果如下：
@@ -118,5 +174,9 @@ class AgentLoopStreamDeltaTest {
         JsonNode node = MAPPER.readTree(extracted);
         assertEquals("A", node.path("题目").asText());
         assertEquals("包含 } 字符", node.path("主要内容").asText());
+    }
+
+    private ChatResponse response(AssistantMessage message) {
+        return new ChatResponse(List.of(new Generation(message)));
     }
 }

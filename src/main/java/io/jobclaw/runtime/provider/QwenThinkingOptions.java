@@ -33,10 +33,10 @@ public final class QwenThinkingOptions {
         }
 
         String mode = normalizeMode(configuredMode);
-        boolean enabled = ENABLED.equals(mode);
         if (AUTO.equals(mode)) {
-            enabled = false;
+            return Map.of();
         }
+        boolean enabled = ENABLED.equals(mode);
 
         String provider = normalized(providerName);
         String baseUrl = normalized(apiBase);

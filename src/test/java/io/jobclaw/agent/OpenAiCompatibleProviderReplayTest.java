@@ -5,6 +5,7 @@ import okhttp3.mockwebserver.MockWebServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.tool.ToolCallback;
@@ -92,6 +93,34 @@ class OpenAiCompatibleProviderReplayTest {
         assertEquals("tool result accepted", normalize(chunks));
         assertEquals(1, calls.get());
         assertEquals(2, server.getRequestCount());
+    }
+
+    @Test
+    void shouldReplayReasoningSeparatelyFromVisibleContent() throws Exception {
+        startServer();
+        enqueueSse("harness/replays/provider/openai-compatible/reasoning-stream.sse");
+
+        List<ChatResponse> responses = client().prompt()
+                .user("think, then answer")
+                .stream()
+                .chatResponse()
+                .collectList()
+                .block(Duration.ofSeconds(10));
+
+        assertNotNull(responses);
+        AgentLoop.StreamDeltaNormalizer reasoningNormalizer = new AgentLoop.StreamDeltaNormalizer();
+        AgentLoop.StreamDeltaNormalizer contentNormalizer = new AgentLoop.StreamDeltaNormalizer();
+        StringBuilder reasoning = new StringBuilder();
+        StringBuilder content = new StringBuilder();
+        for (ChatResponse response : responses) {
+            AgentLoop.StreamResponseParts parts = AgentLoop.extractStreamResponseParts(response);
+            reasoning.append(reasoningNormalizer.normalize(reasoning, parts.reasoning()));
+            content.append(contentNormalizer.normalize(content, parts.content()));
+        }
+
+        assertEquals("先分析，再判断。", reasoning.toString());
+        assertEquals("正式答案", content.toString());
+        assertEquals(1, server.getRequestCount());
     }
 
     private void startServer() throws Exception {

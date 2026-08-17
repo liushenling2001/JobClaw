@@ -1,0 +1,9 @@
+data: {"id":"chatcmpl-reasoning","object":"chat.completion.chunk","created":3,"model":"replay-model","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"先分析，"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-reasoning","object":"chat.completion.chunk","created":3,"model":"replay-model","choices":[{"index":0,"delta":{"reasoning_content":"再判断。"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-reasoning","object":"chat.completion.chunk","created":3,"model":"replay-model","choices":[{"index":0,"delta":{"content":"正式"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-reasoning","object":"chat.completion.chunk","created":3,"model":"replay-model","choices":[{"index":0,"delta":{"content":"答案"},"finish_reason":"stop"}]}
+
+data: [DONE]

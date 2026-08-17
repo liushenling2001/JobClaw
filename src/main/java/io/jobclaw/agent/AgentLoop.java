@@ -45,8 +45,10 @@ import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.prompt.ChatOptions;
+import org.springframework.ai.deepseek.DeepSeekAssistantMessage;
 import org.springframework.ai.deepseek.DeepSeekChatModel;
 import org.springframework.ai.deepseek.DeepSeekChatOptions;
 import org.springframework.ai.deepseek.api.DeepSeekApi;
@@ -2186,10 +2188,13 @@ public class AgentLoop {
                                    boolean checkpointAssistantDraft) {
         StringBuilder attemptResponse = new StringBuilder();
         StringBuilder rawResponse = new StringBuilder();
+        StringBuilder rawReasoning = new StringBuilder();
         ensureNotCancelled();
         StreamDeltaNormalizer streamDeltaNormalizer = new StreamDeltaNormalizer();
+        StreamDeltaNormalizer reasoningDeltaNormalizer = new StreamDeltaNormalizer();
         int fullResponseStartLength = fullResponse != null ? fullResponse.length() : 0;
         AtomicInteger streamChunkCount = new AtomicInteger();
+        AtomicInteger reasoningChunkCount = new AtomicInteger();
         String streamSegmentId = "seg-" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
 
         logger.info("LLM call start session={} provider={} model={} apiBase={} streaming={} messages={} tools={} checkpointDraft={}",
@@ -2221,16 +2226,38 @@ public class AgentLoop {
                     "streaming-disabled");
         }
 
-        Flux<String> contentStream = executionClientBundle.chatClient().prompt()
+        Flux<ChatResponse> responseStream = executionClientBundle.chatClient().prompt()
                 .messages(promptMessages)
                 .toolCallbacks(tools)
                 .options(options)
                 .stream()
-                .content();
+                .chatResponse();
 
         try {
-            contentStream.toStream().forEach(content -> {
+            responseStream.toStream().forEach(chatResponse -> {
                 ensureNotCancelled();
+                StreamResponseParts responseParts = extractStreamResponseParts(chatResponse);
+                String reasoning = responseParts.reasoning();
+                if (!reasoning.isEmpty()) {
+                    String reasoningDelta = reasoningDeltaNormalizer.normalize(rawReasoning, reasoning);
+                    if (!reasoningDelta.isEmpty()) {
+                        int reasoningIndex = reasoningChunkCount.incrementAndGet();
+                        rawReasoning.append(reasoningDelta);
+                        if (reasoningIndex <= 8 || reasoningIndex % 25 == 0) {
+                            logger.info("LLM reasoning delta session={} provider={} model={} chunk={} deltaChars={} deltaPreview={} accumulatedBefore={}",
+                                    sessionKey,
+                                    executionClientBundle.providerName(),
+                                    executionClientBundle.model(),
+                                    reasoningIndex,
+                                    reasoningDelta.length(),
+                                    previewForLog(reasoningDelta),
+                                    rawReasoning.length() - reasoningDelta.length());
+                        }
+                        emitReasoningDelta(eventCallback, sessionKey, streamSegmentId, reasoningDelta);
+                    }
+                }
+
+                String content = responseParts.content();
                 if (content != null && !content.isEmpty()) {
                     int chunkIndex = streamChunkCount.incrementAndGet();
                     if (chunkIndex <= 8 || chunkIndex % 25 == 0) {
@@ -2372,23 +2399,28 @@ public class AgentLoop {
                 promptMessages != null ? promptMessages.size() : 0,
                 tools != null ? tools.length : 0);
         try {
-            String fallbackContent = executionClientBundle.chatClient().prompt()
+            ChatResponse fallbackChatResponse = executionClientBundle.chatClient().prompt()
                     .messages(promptMessages)
                     .toolCallbacks(tools)
                     .options(options)
                     .call()
-                    .content();
+                    .chatResponse();
             ensureNotCancelled();
-            String delta = fallbackContent != null ? fallbackContent : "";
-            logger.info("LLM non-stream raw response session={} provider={} model={} reason={} rawChars={} sanitizedChars={} rawPreview={} sanitizedPreview={}",
+            StreamResponseParts responseParts = extractStreamResponseParts(fallbackChatResponse);
+            String fallbackContent = responseParts.content();
+            String reasoning = responseParts.reasoning();
+            if (!reasoning.isEmpty()) {
+                emitReasoningDelta(eventCallback, sessionKey, streamSegmentId, reasoning);
+            }
+            String delta = fallbackContent;
+            logger.info("LLM non-stream raw response session={} provider={} model={} reason={} rawChars={} reasoningChars={} rawPreview={}",
                     sessionKey,
                     executionClientBundle.providerName(),
                     executionClientBundle.model(),
                     reason,
-                    fallbackContent != null ? fallbackContent.length() : 0,
-                    delta.length(),
-                    previewForLog(fallbackContent),
-                    previewForLog(delta));
+                    fallbackContent.length(),
+                    reasoning.length(),
+                    previewForLog(fallbackContent));
             if (!delta.isEmpty()) {
                 fallbackResponse.append(delta);
                 if (fullResponse != null) {
@@ -2463,6 +2495,63 @@ public class AgentLoop {
         } else {
             eventCallback.accept(streamEvent);
         }
+    }
+
+    private void emitReasoningDelta(Consumer<ExecutionEvent> eventCallback,
+                                    String sessionKey,
+                                    String streamSegmentId,
+                                    String content) {
+        if (eventCallback == null || content == null || content.isEmpty()) {
+            return;
+        }
+        eventCallback.accept(new ExecutionEvent(
+                sessionKey,
+                ExecutionEvent.EventType.THINK_STREAM,
+                content,
+                Map.of("streamSegmentId", streamSegmentId, "reasoning", true)
+        ));
+    }
+
+    static StreamResponseParts extractStreamResponseParts(ChatResponse chatResponse) {
+        if (chatResponse == null || chatResponse.getResult() == null
+                || chatResponse.getResult().getOutput() == null) {
+            return StreamResponseParts.EMPTY;
+        }
+        AssistantMessage output = chatResponse.getResult().getOutput();
+        String content = output.getText() != null ? output.getText() : "";
+        Map<String, Object> metadata = output.getMetadata();
+
+        String reasoning = "";
+        if (output instanceof DeepSeekAssistantMessage deepSeekMessage
+                && deepSeekMessage.getReasoningContent() != null) {
+            reasoning = deepSeekMessage.getReasoningContent();
+        }
+        if (reasoning.isEmpty()) {
+            reasoning = firstMetadataText(metadata, "reasoningContent", "reasoning_content", "reasoning");
+        }
+
+        Object isThought = metadata != null ? metadata.get("isThought") : null;
+        if (Boolean.parseBoolean(String.valueOf(isThought))) {
+            return new StreamResponseParts(content.isEmpty() ? reasoning : content, "");
+        }
+        return new StreamResponseParts(reasoning, content);
+    }
+
+    private static String firstMetadataText(Map<String, Object> metadata, String... keys) {
+        if (metadata == null || metadata.isEmpty()) {
+            return "";
+        }
+        for (String key : keys) {
+            Object value = metadata.get(key);
+            if (value instanceof CharSequence text && !text.isEmpty()) {
+                return text.toString();
+            }
+        }
+        return "";
+    }
+
+    record StreamResponseParts(String reasoning, String content) {
+        private static final StreamResponseParts EMPTY = new StreamResponseParts("", "");
     }
 
     private boolean isSpringAiStreamAggregationFailure(Throwable throwable) {

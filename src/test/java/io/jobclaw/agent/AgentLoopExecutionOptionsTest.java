@@ -16,6 +16,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.Mockito.mock;
 
 class AgentLoopExecutionOptionsTest {
@@ -104,7 +105,7 @@ class AgentLoopExecutionOptionsTest {
     }
 
     @Test
-    void shouldApplyQwenThinkingModeToOpenAiCompatibleRequest() throws Exception {
+    void shouldLeaveQwenThinkingUnchangedInAutoMode() throws Exception {
         Config config = Config.defaultConfig();
         config.getAgent().setProvider("openrouter");
         config.getAgent().setModel("qwen");
@@ -131,10 +132,7 @@ class AgentLoopExecutionOptionsTest {
                 "http://100.113.233.0:8000/v1"
         ));
 
-        assertEquals(
-                Map.of("chat_template_kwargs", Map.of("enable_thinking", false)),
-                options.getExtraBody()
-        );
+        assertNull(options.getExtraBody());
     }
 
     @Test

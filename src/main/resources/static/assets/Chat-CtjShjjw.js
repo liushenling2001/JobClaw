@@ -376,14 +376,11 @@ const ye = et("chat", {
         this.addMessage("assistant", e);
         return;
       }
-      const n = s.content || "";
-      if (!n.trim()) {
-        this.appendToCurrentAssistantMessage(e);
-      } else if (e.startsWith(n)) {
-        this.appendToCurrentAssistantMessage(e.slice(n.length));
-      } else if (!n.startsWith(e)) {
-        this.addMessage("assistant", e);
-      }
+      const n = _e(e);
+      (s.content = n.content),
+        (s.contentTruncated = n.contentTruncated),
+        (s.originalLength = n.originalLength),
+        this.persistLocalState();
     },
     toggleSidebar() {
       this.isSidebarOpen = !this.isSidebarOpen;

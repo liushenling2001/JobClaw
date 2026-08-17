@@ -10,7 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class QwenThinkingOptionsTest {
 
     @Test
-    void shouldDisableThinkingByDefaultForQwenOnVllmCompatibleEndpoint() {
+    void shouldLeaveQwenThinkingUnchangedInAutoMode() {
         Map<String, Object> options = QwenThinkingOptions.extraBody(
                 "openrouter",
                 "qwen",
@@ -18,7 +18,7 @@ class QwenThinkingOptionsTest {
                 "auto"
         );
 
-        assertEquals(Map.of("chat_template_kwargs", Map.of("enable_thinking", false)), options);
+        assertTrue(options.isEmpty());
     }
 
     @Test
