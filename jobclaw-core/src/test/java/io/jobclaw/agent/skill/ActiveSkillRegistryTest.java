@@ -57,6 +57,65 @@ class ActiveSkillRegistryTest {
     }
 
     @Test
+    void shouldExtractArtifactCompletionRequirement() {
+        ActiveSkillRegistry registry = new ActiveSkillRegistry();
+
+        registry.activate("session-a", "run-1", "report", """
+                # Skill
+                ## Artifact Completion
+                requiresArtifact: true
+                artifactType: docx
+                artifactPathTemplate: {{finalArtifactPath}}
+                """, "E:\\skills\\report");
+
+        ActiveSkillRegistry.ArtifactCompletion completion =
+                registry.artifactCompletion("session-a", "run-1");
+
+        assertThat(completion.declared()).isTrue();
+        assertThat(completion.required()).isTrue();
+        assertThat(completion.artifactType()).isEqualTo("docx");
+        assertThat(completion.artifactPathTemplate()).isEqualTo("{{finalArtifactPath}}");
+    }
+
+    @Test
+    void shouldExtractArtifactCompletionOptOut() {
+        ActiveSkillRegistry registry = new ActiveSkillRegistry();
+
+        registry.activate("session-a", "run-1", "analysis", """
+                # Skill
+                ## 产物要求
+                需要产物: false
+                """, "E:\\skills\\analysis");
+
+        ActiveSkillRegistry.ArtifactCompletion completion =
+                registry.artifactCompletion("session-a", "run-1");
+
+        assertThat(completion.declared()).isTrue();
+        assertThat(completion.required()).isFalse();
+    }
+
+    @Test
+    void shouldTreatArtifactCompletionAutoAsDeclaredWithoutOverride() {
+        ActiveSkillRegistry registry = new ActiveSkillRegistry();
+
+        registry.activate("session-a", "run-1", "assistant", """
+                # Skill
+                ## Artifact Completion
+                requiresArtifact: auto
+                """, "E:\\skills\\assistant");
+
+        ActiveSkillRegistry.ArtifactCompletion completion =
+                registry.artifactCompletion("session-a", "run-1");
+
+        assertThat(completion.declared()).isTrue();
+        assertThat(completion.required()).isNull();
+        assertThat(completion.requiresArtifact()).isFalse();
+        assertThat(completion.disablesArtifactGuard()).isFalse();
+        assertThat(registry.get("session-a", "run-1").toToolFrame())
+                .contains("requiresArtifact=\"auto\"");
+    }
+
+    @Test
     void shouldReadManagedRunnerParallelismFromSkillOnly() {
         ActiveSkillRegistry registry = new ActiveSkillRegistry();
 
@@ -97,9 +156,51 @@ class ActiveSkillRegistryTest {
         assertThat(registry.hasManagedRunnerRuntime("session-a", "run-1")).isTrue();
         assertThat(registry.hasManagedRunnerContract("session-a", "run-1")).isFalse();
         assertThat(registry.managedRunnerContractError("session-a", "run-1"))
-                .contains("itemResultPathTemplate")
-                .contains("aggregatePathTemplate")
                 .contains("itemOutput");
+    }
+
+    @Test
+    void shouldNotRequireItemOrAggregatePathsForContextRefOnlyRunner() {
+        ActiveSkillRegistry registry = new ActiveSkillRegistry();
+
+        registry.activate("session-a", "run-1", "notes", """
+                # Skill
+                ## Managed Runtime
+                mode: runner
+                resultSink: context_ref
+                aggregateSink: none
+                itemOutput: markdown
+                ### Item Loop
+                Return one markdown note for {{item.id}}.
+                """, "E:\\skills\\notes");
+
+        assertThat(registry.hasManagedRunnerContract("session-a", "run-1")).isTrue();
+        assertThat(registry.managedRunnerResultSink("session-a", "run-1")).isEqualTo("context_ref");
+        assertThat(registry.managedRunnerAggregateSink("session-a", "run-1")).isEqualTo("none");
+        assertThat(registry.managedRunnerWritesItemFile("session-a", "run-1")).isFalse();
+        assertThat(registry.managedRunnerWritesAggregate("session-a", "run-1")).isFalse();
+    }
+
+    @Test
+    void shouldRequireItemPathOnlyWhenSkillAsksForItemFileSink() {
+        ActiveSkillRegistry registry = new ActiveSkillRegistry();
+
+        registry.activate("session-a", "run-1", "batch", """
+                # Skill
+                ## Managed Runtime
+                mode: runner
+                resultSink: both
+                aggregateSink: jsonl
+                aggregatePathTemplate: {{artifactPath}}
+                itemOutput: json_object
+                ### Item Loop
+                Return one object for {{item.id}}.
+                """, "E:\\skills\\batch");
+
+        assertThat(registry.hasManagedRunnerContract("session-a", "run-1")).isFalse();
+        assertThat(registry.managedRunnerContractError("session-a", "run-1"))
+                .contains("itemResultPathTemplate")
+                .doesNotContain("aggregatePathTemplate");
     }
 
     @Test
@@ -130,6 +231,7 @@ class ActiveSkillRegistryTest {
                 "",
                 false,
                 item,
+                List.of(item),
                 null,
                 List.of(),
                 1,

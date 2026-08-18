@@ -1,0 +1,5 @@
+data: {"id":"chatcmpl-tool-result","object":"chat.completion.chunk","created":3,"model":"replay-model","choices":[{"index":0,"delta":{"role":"assistant","content":"tool result accepted"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-tool-result","object":"chat.completion.chunk","created":3,"model":"replay-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]

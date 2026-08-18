@@ -30,6 +30,9 @@ public class ActiveSkillRegistry {
     private static final Pattern MANAGED_RUNTIME_HEADING = Pattern.compile(
             "(?im)^(#{2,6})\\s*(Managed Runtime|Managed Runtime Protocol|托管运行|托管执行|托管运行协议)\\s*$"
     );
+    private static final Pattern ARTIFACT_COMPLETION_HEADING = Pattern.compile(
+            "(?im)^(#{2,6})\\s*(Artifact Completion|Completion Contract|Artifact Contract|产物完成|产物要求|完成产物)\\s*$"
+    );
 
     private final Map<String, ActiveSkillState> states = new ConcurrentHashMap<>();
 
@@ -39,6 +42,7 @@ public class ActiveSkillRegistry {
         }
         String runtimeFrame = extractRuntimeFrame(skillContent);
         ManagedRuntime managedRuntime = extractManagedRuntime(skillContent);
+        ArtifactCompletion artifactCompletion = extractArtifactCompletion(skillContent);
         ActiveSkillState state = new ActiveSkillState(
                 sessionKey,
                 runId,
@@ -46,6 +50,7 @@ public class ActiveSkillRegistry {
                 basePath,
                 runtimeFrame,
                 managedRuntime,
+                artifactCompletion,
                 Instant.now()
         );
         states.put(key(sessionKey, runId), state);
@@ -94,8 +99,10 @@ public class ActiveSkillRegistry {
         return state != null
                 && state.managedRuntime() != null
                 && state.managedRuntime().runnerMode()
-                && !isBlank(state.managedRuntime().itemResultPathTemplate())
-                && !isBlank(state.managedRuntime().aggregatePathTemplate())
+                && (!state.managedRuntime().writesItemFile()
+                        || !isBlank(state.managedRuntime().itemResultPathTemplate()))
+                && (!state.managedRuntime().writesAggregate()
+                        || !isBlank(state.managedRuntime().aggregatePathTemplate()))
                 && !isBlank(state.managedRuntime().itemOutput());
     }
 
@@ -106,11 +113,11 @@ public class ActiveSkillRegistry {
         }
         ManagedRuntime runtime = state.managedRuntime();
         StringBuilder sb = new StringBuilder();
-        if (isBlank(runtime.itemResultPathTemplate())) {
-            sb.append("itemResultPathTemplate is required; ");
+        if (runtime.writesItemFile() && isBlank(runtime.itemResultPathTemplate())) {
+            sb.append("itemResultPathTemplate is required when resultSink is item_file or both; ");
         }
-        if (isBlank(runtime.aggregatePathTemplate())) {
-            sb.append("aggregatePathTemplate is required; ");
+        if (runtime.writesAggregate() && isBlank(runtime.aggregatePathTemplate())) {
+            sb.append("aggregatePathTemplate is required when aggregateSink is not none; ");
         }
         if (isBlank(runtime.itemOutput())) {
             sb.append("itemOutput is required; ");
@@ -136,12 +143,46 @@ public class ActiveSkillRegistry {
         return safe(state.managedRuntime().itemOutput()).trim().toLowerCase();
     }
 
+    public String managedRunnerResultSink(String sessionKey, String runId) {
+        ActiveSkillState state = get(sessionKey, runId);
+        if (state == null || state.managedRuntime() == null) {
+            return "context_ref";
+        }
+        return state.managedRuntime().effectiveResultSink();
+    }
+
+    public String managedRunnerAggregateSink(String sessionKey, String runId) {
+        ActiveSkillState state = get(sessionKey, runId);
+        if (state == null || state.managedRuntime() == null) {
+            return "none";
+        }
+        return state.managedRuntime().effectiveAggregateSink();
+    }
+
+    public boolean managedRunnerWritesItemFile(String sessionKey, String runId) {
+        ActiveSkillState state = get(sessionKey, runId);
+        return state != null && state.managedRuntime() != null && state.managedRuntime().writesItemFile();
+    }
+
+    public boolean managedRunnerWritesAggregate(String sessionKey, String runId) {
+        ActiveSkillState state = get(sessionKey, runId);
+        return state != null && state.managedRuntime() != null && state.managedRuntime().writesAggregate();
+    }
+
     public List<String> managedRunnerAllowedTools(String sessionKey, String runId) {
         ActiveSkillState state = get(sessionKey, runId);
         if (state == null || state.managedRuntime() == null) {
             return List.of();
         }
         return state.managedRuntime().allowedTools();
+    }
+
+    public ArtifactCompletion artifactCompletion(String sessionKey, String runId) {
+        ActiveSkillState state = get(sessionKey, runId);
+        if (state == null || state.artifactCompletion() == null) {
+            return ArtifactCompletion.unspecified();
+        }
+        return state.artifactCompletion();
     }
 
     public String renderManagedRuntime(String sessionKey,
@@ -195,9 +236,50 @@ public class ActiveSkillRegistry {
         String itemResultPathTemplate = extractScalar(section, "itemResultPathTemplate|item_result_path_template|itemArtifactPathTemplate|item_artifact_path_template|单项结果路径模板");
         String aggregatePathTemplate = extractScalar(section, "aggregatePathTemplate|aggregate_path_template|JSONLPathTemplate|jsonl_path_template|聚合结果路径模板");
         String itemOutput = extractScalar(section, "itemOutput|item_output|单项输出");
+        String resultSink = extractScalar(section, "resultSink|result_sink|结果存储|结果落点");
+        String aggregateSink = extractScalar(section, "aggregateSink|aggregate_sink|聚合存储|聚合落点");
         List<String> allowedTools = extractList(section, "allowedTools|allowed_tools|tools|工具白名单|允许工具");
         return new ManagedRuntime(mode, parallelism, frameworkWrites, itemResultPathTemplate,
-                aggregatePathTemplate, itemOutput, allowedTools, itemLoop, finalizeTemplate, fallback);
+                aggregatePathTemplate, itemOutput, resultSink, aggregateSink, allowedTools,
+                itemLoop, finalizeTemplate, fallback);
+    }
+
+    static ArtifactCompletion extractArtifactCompletion(String skillContent) {
+        if (skillContent == null || skillContent.isBlank()) {
+            return ArtifactCompletion.unspecified();
+        }
+        String section = extractHeadingSection(skillContent, ARTIFACT_COMPLETION_HEADING);
+        if (section.isBlank()) {
+            return ArtifactCompletion.unspecified();
+        }
+        String requiredValue = extractScalar(section,
+                "requiresArtifact|requires_artifact|artifactRequired|artifact_required|requiredArtifact|required_artifact|产物必需|需要产物|是否需要产物");
+        Boolean required = parseBooleanPolicy(requiredValue);
+        if (required == null) {
+            required = parseBooleanPolicy(section);
+        }
+        String artifactType = extractScalar(section, "artifactType|artifact_type|type|产物类型");
+        String artifactPathTemplate = extractScalar(section,
+                "artifactPathTemplate|artifact_path_template|finalArtifactPathTemplate|final_artifact_path_template|outputPathTemplate|output_path_template|产物路径模板");
+        String note = trimFrame(section);
+        return new ArtifactCompletion(true, required, artifactType, artifactPathTemplate, note);
+    }
+
+    private static Boolean parseBooleanPolicy(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        String normalized = value.trim().toLowerCase()
+                .replace("`", "")
+                .replace("\"", "")
+                .replace("'", "");
+        if (normalized.matches("(?s).*(\\btrue\\b|\\byes\\b|\\brequired\\b|\\brequire\\b|\\bmust\\b|需要|必需|必须).*")) {
+            return true;
+        }
+        if (normalized.matches("(?s).*(\\bfalse\\b|\\bno\\b|\\bnone\\b|\\boff\\b|\\boptional\\b|不需要|无需|没有产物|无产物).*")) {
+            return false;
+        }
+        return null;
     }
 
     private static String extractMode(String section) {
@@ -425,6 +507,7 @@ public class ActiveSkillRegistry {
             String basePath,
             String runtimeFrame,
             ManagedRuntime managedRuntime,
+            ArtifactCompletion artifactCompletion,
             Instant activatedAt
     ) {
         public String toPromptFrame() {
@@ -458,6 +541,15 @@ public class ActiveSkillRegistry {
             if (managedRuntime != null && !managedRuntime.isEmpty()) {
                 sb.append("<managed-runtime>declared</managed-runtime>\n");
             }
+            if (artifactCompletion != null && artifactCompletion.declared()) {
+                sb.append("<artifact-completion requiresArtifact=\"")
+                        .append(artifactCompletion.required() != null ? artifactCompletion.required() : "auto")
+                        .append("\"");
+                if (!isBlank(artifactCompletion.artifactType())) {
+                    sb.append(" artifactType=\"").append(artifactCompletion.artifactType()).append("\"");
+                }
+                sb.append(" />\n");
+            }
             sb.append("</active-skill-frame>\n");
             return sb.toString();
         }
@@ -481,6 +573,24 @@ public class ActiveSkillRegistry {
         }
     }
 
+    public record ArtifactCompletion(boolean declared,
+                                     Boolean required,
+                                     String artifactType,
+                                     String artifactPathTemplate,
+                                     String note) {
+        static ArtifactCompletion unspecified() {
+            return new ArtifactCompletion(false, null, "", "", "");
+        }
+
+        public boolean requiresArtifact() {
+            return Boolean.TRUE.equals(required);
+        }
+
+        public boolean disablesArtifactGuard() {
+            return Boolean.FALSE.equals(required);
+        }
+    }
+
     private static String renderTemplate(String template, Map<String, String> variables) {
         if (isBlank(template)) {
             return "";
@@ -500,12 +610,14 @@ public class ActiveSkillRegistry {
                                  String itemResultPathTemplate,
                                  String aggregatePathTemplate,
                                  String itemOutput,
+                                 String resultSink,
+                                 String aggregateSink,
                                  List<String> allowedTools,
                                  String itemLoop,
                                  String finalizeTemplate,
                                  String fallback) {
         static ManagedRuntime empty() {
-            return new ManagedRuntime("", 1, "", "", "", "", List.of(), "", "", "");
+            return new ManagedRuntime("", 1, "", "", "", "", "", "", List.of(), "", "", "");
         }
 
         boolean isEmpty() {
@@ -514,6 +626,49 @@ public class ActiveSkillRegistry {
 
         boolean runnerMode() {
             return "runner".equalsIgnoreCase(mode) && !isEmpty();
+        }
+
+        String effectiveResultSink() {
+            String normalized = normalizeSink(resultSink);
+            if (!normalized.isBlank()) {
+                return normalized;
+            }
+            return isBlank(itemResultPathTemplate) ? "context_ref" : "both";
+        }
+
+        String effectiveAggregateSink() {
+            String normalized = normalizeSink(aggregateSink);
+            if (!normalized.isBlank()) {
+                return normalized;
+            }
+            return isBlank(aggregatePathTemplate) ? "none" : "jsonl";
+        }
+
+        boolean writesItemFile() {
+            String sink = effectiveResultSink();
+            return "item_file".equals(sink) || "both".equals(sink);
+        }
+
+        boolean writesAggregate() {
+            return !"none".equals(effectiveAggregateSink());
+        }
+
+        private static String normalizeSink(String value) {
+            if (value == null || value.isBlank()) {
+                return "";
+            }
+            String normalized = value.trim().toLowerCase()
+                    .replace("-", "_")
+                    .replace(" ", "_");
+            return switch (normalized) {
+                case "contextref", "context_ref", "ref" -> "context_ref";
+                case "itemfile", "item_file", "file" -> "item_file";
+                case "both", "all" -> "both";
+                case "none", "off" -> "none";
+                case "jsonl", "markdown", "md" -> normalized;
+                case "json_array", "jsonarray" -> "json_array";
+                default -> normalized;
+            };
         }
 
         String render(String phase, Map<String, String> variables) {

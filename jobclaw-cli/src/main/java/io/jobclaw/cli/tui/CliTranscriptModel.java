@@ -86,6 +86,7 @@ final class CliTranscriptModel {
     private final List<Block> blocks = new ArrayList<>();
     private final Map<String, ToolBlock> toolsById = new LinkedHashMap<>();
     private TextBlock streamingAssistant;
+    private String streamingSegmentId = "";
     private boolean turnAssistantSeen;
     private String status = "Ready";
     private int toolSequence;
@@ -124,6 +125,7 @@ final class CliTranscriptModel {
         blocks.clear();
         toolsById.clear();
         streamingAssistant = null;
+        streamingSegmentId = "";
         turnAssistantSeen = false;
         toolSequence = 0;
         status = "Ready";
@@ -136,6 +138,15 @@ final class CliTranscriptModel {
         switch (event.getType()) {
             case THINK_START -> status = "Thinking";
             case THINK_STREAM -> {
+                if (isReasoning(event)) {
+                    status = "Thinking";
+                    break;
+                }
+                String segmentId = value(event, "streamSegmentId");
+                if (!segmentId.isBlank() && !segmentId.equals(streamingSegmentId)) {
+                    closeAssistant();
+                    streamingSegmentId = segmentId;
+                }
                 if (streamingAssistant == null) {
                     streamingAssistant = new TextBlock(Kind.ASSISTANT, "");
                     blocks.add(streamingAssistant);
@@ -159,6 +170,7 @@ final class CliTranscriptModel {
             }
             case TOOL_START -> {
                 closeAssistant();
+                streamingSegmentId = "";
                 ToolBlock tool = resolveTool(event, true);
                 tool.status = "running";
                 status = tool.name + " running";
@@ -244,6 +256,11 @@ final class CliTranscriptModel {
 
     private void closeAssistant() {
         streamingAssistant = null;
+    }
+
+    private boolean isReasoning(ExecutionEvent event) {
+        Object value = event.getMetadata().get("reasoning");
+        return value instanceof Boolean flag ? flag : Boolean.parseBoolean(String.valueOf(value));
     }
 
     private String value(ExecutionEvent event, String key) {

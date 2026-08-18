@@ -1,0 +1,62 @@
+[
+  {
+    "id": "batch-run-preserves-progress-and-latest-correction",
+    "contextWindow": 8000,
+    "currentTask": "分批检查论文目录，完成后生成审查报告",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are JobClaw. Continue the current run from its recorded state.",
+        "repeat": 1
+      },
+      {
+        "role": "user",
+        "content": "分批检查论文目录，完成后生成审查报告",
+        "repeat": 1
+      },
+      {
+        "role": "assistant",
+        "content": "BATCH_A_DONE manifestId: mf-review-42 refId: ref-batch-a artifactPath: D:\\work\\review\\batch-a.jsonl\n",
+        "repeat": 500
+      },
+      {
+        "role": "user",
+        "content": "A 批次已经完成，不要重新读取；继续 B 批次。",
+        "repeat": 1
+      },
+      {
+        "role": "assistant",
+        "content": "BATCH_B_DONE refId: ref-batch-b artifactPath: D:\\work\\review\\batch-b.jsonl\n",
+        "repeat": 350
+      },
+      {
+        "role": "user",
+        "content": "框架继续推进剩余清单。",
+        "repeat": 1
+      },
+      {
+        "role": "assistant",
+        "content": "Progress checkpoint: A=done, B=done, C=pending.",
+        "repeat": 1
+      },
+      {
+        "role": "user",
+        "content": "只处理 C，完成后汇总，不要重做 A/B。",
+        "repeat": 1
+      }
+    ],
+    "expectedContains": [
+      "JOBCLAW_RUN_TRAJECTORY_SUMMARY",
+      "分批检查论文目录，完成后生成审查报告",
+      "只处理 C，完成后汇总，不要重做 A/B。",
+      "mf-review-42",
+      "ref-batch-a",
+      "D:\\work\\review\\batch-a.jsonl"
+    ],
+    "expectedArchiveContains": [
+      "BATCH_A_DONE",
+      "A 批次已经完成，不要重新读取",
+      "BATCH_B_DONE"
+    ]
+  }
+]

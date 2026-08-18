@@ -23,6 +23,8 @@ public class TranscriptTuiRenderer {
     private int toolCount;
     private boolean assistantStarted;
     private boolean assistantLineOpen;
+    private boolean turnAssistantSeen;
+    private String assistantStreamSegmentId = "";
 
     public TranscriptTuiRenderer(Terminal terminal, String model, String cwd) {
         this.terminal = terminal;
@@ -33,6 +35,8 @@ public class TranscriptTuiRenderer {
 
     public void renderUser(String task) {
         blocks.add(new TextBlock(Kind.USER, task == null ? "" : task.trim()));
+        turnAssistantSeen = false;
+        assistantStreamSegmentId = "";
         status = "thinking...";
         printUser(task);
     }
@@ -45,10 +49,22 @@ public class TranscriptTuiRenderer {
             case THINK_START -> {
                 status = "thinking...";
                 assistantStarted = false;
+                assistantStreamSegmentId = "";
             }
             case THINK_STREAM -> {
+                if (isReasoning(event)) {
+                    status = "thinking...";
+                    break;
+                }
+                String segmentId = stringValue(event.getMetadata().get("streamSegmentId"));
+                if (segmentId != null && !segmentId.isBlank() && !segmentId.equals(assistantStreamSegmentId)) {
+                    closeAssistantLine();
+                    assistantStarted = false;
+                    assistantStreamSegmentId = segmentId;
+                }
                 appendAssistant(event.getContent());
                 printAssistantDelta(event.getContent());
+                turnAssistantSeen = true;
                 status = "responding...";
                 return;
             }
@@ -59,6 +75,7 @@ public class TranscriptTuiRenderer {
             case TOOL_START -> {
                 closeAssistantLine();
                 assistantStarted = false;
+                assistantStreamSegmentId = "";
                 currentTool = new ToolBlock(++toolCount, toolName(event), stringValue(event.getMetadata().get("request")));
                 currentTool.status = "running";
                 blocks.add(currentTool);
@@ -103,9 +120,10 @@ public class TranscriptTuiRenderer {
                 return;
             }
             case FINAL_RESPONSE -> {
-                if (!assistantStarted && !hasAssistantContent() && event.getContent() != null && !event.getContent().isBlank()) {
+                if (!turnAssistantSeen && event.getContent() != null && !event.getContent().isBlank()) {
                     appendAssistant(event.getContent());
                     printAssistantDelta(event.getContent());
+                    turnAssistantSeen = true;
                 }
                 closeAssistantLine();
                 status = "";
@@ -162,15 +180,6 @@ public class TranscriptTuiRenderer {
             assistantStarted = true;
         }
         assistant.text.append(content);
-    }
-
-    private boolean hasAssistantContent() {
-        for (Block block : blocks) {
-            if (block instanceof TextBlock text && text.kind == Kind.ASSISTANT && !text.text.isEmpty()) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private void printUser(String task) {
@@ -384,6 +393,11 @@ public class TranscriptTuiRenderer {
 
     private String stringValue(Object value) {
         return value != null ? String.valueOf(value) : null;
+    }
+
+    private boolean isReasoning(ExecutionEvent event) {
+        Object value = event.getMetadata().get("reasoning");
+        return value instanceof Boolean flag ? flag : Boolean.parseBoolean(String.valueOf(value));
     }
 
     private String compact(String content) {

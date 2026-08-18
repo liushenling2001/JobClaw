@@ -3,6 +3,7 @@ package io.jobclaw.agent;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.core.JsonParseException;
 import io.jobclaw.agent.evolution.MemoryEvolver;
 import io.jobclaw.agent.evolution.MemoryStore;
 import io.jobclaw.agent.runtime.AgentRunIds;
@@ -11,22 +12,30 @@ import io.jobclaw.agent.completion.CompletionGateResult;
 import io.jobclaw.agent.completion.CompletionRegistry;
 import io.jobclaw.agent.manifest.ActiveManifestRegistry;
 import io.jobclaw.agent.skill.ActiveSkillRegistry;
+import io.jobclaw.agent.userinput.UserInputRequest;
+import io.jobclaw.agent.userinput.UserInputRequestRegistry;
 import io.jobclaw.context.ContextAssembler;
 import io.jobclaw.context.ContextAssemblyOptions;
 import io.jobclaw.context.ContextAssemblyPolicy;
 import io.jobclaw.config.Config;
+import io.jobclaw.context.result.ContextRef;
 import io.jobclaw.context.result.NoopResultStore;
 import io.jobclaw.context.result.ResultStore;
-import io.jobclaw.runtime.provider.ProviderRuntime;
-import io.jobclaw.runtime.provider.ResolvedProviderConfig;
 import io.jobclaw.providers.DeepSeekMessageProtocolNormalizer;
+import io.jobclaw.runtime.provider.ProviderRuntime;
+import io.jobclaw.runtime.provider.QwenThinkingOptions;
+import io.jobclaw.runtime.provider.ResolvedProviderConfig;
 import io.jobclaw.runtime.tool.DefaultToolExecutionStateTracker;
 import io.jobclaw.runtime.tool.ToolExecutionRequest;
 import io.jobclaw.runtime.tool.ToolExecutionResult;
 import io.jobclaw.runtime.tool.ToolExecutionStateTracker;
 import io.jobclaw.runtime.tool.ToolRuntime;
+import io.jobclaw.runtime.tool.discovery.ToolDiscoveryCallbacks;
+import io.jobclaw.runtime.tool.discovery.ToolDiscoveryCatalog;
 import io.jobclaw.session.Session;
 import io.jobclaw.session.SessionManager;
+import io.jobclaw.skills.SkillInfo;
+import io.jobclaw.skills.SkillsService;
 import io.jobclaw.summary.SummaryService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,8 +45,10 @@ import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.prompt.ChatOptions;
+import org.springframework.ai.deepseek.DeepSeekAssistantMessage;
 import org.springframework.ai.deepseek.DeepSeekChatModel;
 import org.springframework.ai.deepseek.DeepSeekChatOptions;
 import org.springframework.ai.deepseek.api.DeepSeekApi;
@@ -51,16 +62,27 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
+import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * AgentLoop - 基于 Spring AI 重构（使用 OpenAI 兼容模式支持 DashScope Coding Plan）
@@ -74,6 +96,32 @@ import java.util.function.Consumer;
 public class AgentLoop {
 
     private static final Logger logger = LoggerFactory.getLogger(AgentLoop.class);
+    private static final Set<String> BASE_TOOL_NAMES = Set.of(
+            "skills",
+            "context_ref",
+            "manifest",
+            "completion",
+            "user_input",
+            "list_dir",
+            "read_file",
+            "write_file",
+            "edit_file",
+            "append_file",
+            "run_command"
+    );
+    private static final Map<String, Set<String>> TOOL_PROFILE_TOOL_NAMES = Map.ofEntries(
+            Map.entry("code", Set.of("write_file", "edit_file", "append_file")),
+            Map.entry("document", Set.of("read_pdf", "read_word", "write_file", "append_file")),
+            Map.entry("spreadsheet", Set.of("read_excel", "write_file", "append_file")),
+            Map.entry("web", Set.of("web_search", "web_fetch")),
+            Map.entry("github", Set.of("message")),
+            Map.entry("messaging", Set.of("message")),
+            Map.entry("memory", Set.of("memory")),
+            Map.entry("agent", Set.of("spawn", "collaborate", "agent_catalog", "board_write", "board_read")),
+            Map.entry("scheduler", Set.of("cron")),
+            Map.entry("mcp", Set.of("mcp")),
+            Map.entry("usage", Set.of("query_token_usage"))
+    );
 
     private final Config config;
     private final SessionManager sessionManager;
@@ -87,16 +135,18 @@ public class AgentLoop {
     private final ContextAssemblyPolicy contextAssemblyPolicy;
     private final SessionSummarizer sessionSummarizer;
     private final ProviderRuntime providerRuntime;
-    private final String modelOverride;
     private final ToolRuntime toolRuntime;
     private final ToolExecutionStateTracker toolExecutionStateTracker;
     private volatile ResolvedProviderConfig defaultProviderConfig;
+    private final String modelOverride;
     private final ActiveExecutionRegistry activeExecutionRegistry;
     private final CompletionRegistry completionRegistry;
     private final ActiveSkillRegistry activeSkillRegistry;
     private final ActiveManifestRegistry activeManifestRegistry;
+    private final UserInputRequestRegistry userInputRequestRegistry = new UserInputRequestRegistry();
     private final ResultStore resultStore;
     private final RunTrajectoryCompactor runTrajectoryCompactor;
+    private final Map<String, Set<String>> sessionToolCarryover = new ConcurrentHashMap<>();
 
     // 无工具调用的专用 ChatClient（用于摘要生成）
     private volatile ChatClient simpleChatClient;
@@ -108,6 +158,13 @@ public class AgentLoop {
     private static final String MANAGED_MANIFEST_TAKEOVER_REASON = "managed manifest control returned to framework loop";
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final int ASSISTANT_DRAFT_CHECKPOINT_CHARS = 1000;
+    private static final Pattern WINDOWS_ABSOLUTE_PATH = Pattern.compile("[A-Za-z]:\\\\[^\\r\\n<>|?*\"]+");
+    private static final Pattern ARTIFACT_ACTION_PATTERN = Pattern.compile(
+            "(?i)(生成|新建|另存|保存|导出|写入|形成|产出|输出|修改|修订|改完|放在|存到|new\\s+file|save\\s+as|export|write\\s+(?:to|file)|generate|create)"
+    );
+    private static final Pattern ARTIFACT_OBJECT_PATTERN = Pattern.compile(
+            "(?i)(\\.docx|\\.doc|\\.xlsx|\\.xls|\\.pdf|\\.csv|\\.jsonl|\\.json|\\.md|\\.txt|\\.pptx|excel|word|pdf|文档|报告|表格|文件|当前文件夹|目录|folder|directory|document|report|spreadsheet)"
+    );
 
     public AgentLoop(Config config, SessionManager sessionManager,
                      ToolCallback[] allToolCallbacks,
@@ -256,12 +313,12 @@ public class AgentLoop {
         this.sessionManager = sessionManager;
         this.allToolCallbacks = allToolCallbacks;
         this.providerRuntime = providerRuntime;
-        this.modelOverride = model;
         this.activeExecutionRegistry = activeExecutionRegistry;
         this.completionRegistry = completionRegistry != null ? completionRegistry : new CompletionRegistry(config);
         this.activeSkillRegistry = activeSkillRegistry != null ? activeSkillRegistry : new ActiveSkillRegistry();
         this.activeManifestRegistry = activeManifestRegistry != null ? activeManifestRegistry : new ActiveManifestRegistry();
         this.resultStore = resultStore != null ? resultStore : new NoopResultStore();
+        this.modelOverride = model;
 
         try {
             reloadDefaultClient(chatClient);
@@ -298,7 +355,7 @@ public class AgentLoop {
                 memoryEvolver,
                 summaryService
         );
-        this.runTrajectoryCompactor = new RunTrajectoryCompactor(config.getAgent());
+        this.runTrajectoryCompactor = new RunTrajectoryCompactor(config.getAgent(), this.resultStore);
 
         // 初始化 THINK_STREAM 缓冲区
         this.toolExecutionExecutor = Executors.newCachedThreadPool(r -> {
@@ -371,7 +428,7 @@ public class AgentLoop {
      * @return Agent 响应
      */
     public String processWithDefinition(String sessionKey, String userContent, AgentDefinition definition) {
-        return processWithDefinition(sessionKey, userContent, definition, (Consumer<ExecutionEvent>) null);
+        return processWithDefinition(sessionKey, userContent, definition, null);
     }
 
     /**
@@ -403,6 +460,7 @@ public class AgentLoop {
                 previousScope
         );
         AgentExecutionContext.setCurrentContext(scope);
+        userInputRequestRegistry.clear(sessionKey, scope.runId());
         boolean userMessagePersisted = false;
         boolean assistantMessagePersisted = false;
         StringBuilder fullResponse = new StringBuilder();
@@ -410,6 +468,8 @@ public class AgentLoop {
         int managedManifestContinuations = 0;
         boolean managedManifestHandoffIssued = false;
         int managedCreateRepairAttempts = 0;
+        boolean artifactCompletionPromptIssued = false;
+        ArtifactCompletionTracker artifactCompletionTracker = new ArtifactCompletionTracker();
 
         try {
             Session session = sessionManager.getOrCreate(sessionKey);
@@ -435,12 +495,25 @@ public class AgentLoop {
                     buildSystemPromptWithDefinition(sessionKey, userContent, definition) : buildSystemPrompt(sessionKey, userContent);
 
             // 创建工具回调（支持工具过滤）
-            ToolCallback[] rawTools = filterToolsByDefinition(definition, userContent);
-            ToolCallback[] tools = wrapToolCallbacks(rawTools, sessionKey, eventCallback);
+            ToolCallback[] rawTools = filterToolsByDefinition(definition, userContent, sessionKey);
+            ToolCallback[] directTools = wrapToolCallbacks(
+                    rawTools,
+                    sessionKey,
+                    eventCallback,
+                    artifactCompletionTracker
+            );
+            ToolCallback[] discoveryTools = createToolDiscoveryCallbacks(
+                    definition,
+                    rawTools,
+                    sessionKey,
+                    eventCallback,
+                    artifactCompletionTracker
+            );
+            ToolCallback[] tools = concatToolCallbacks(directTools, discoveryTools);
 
             ExecutionClientBundle executionClientBundle = createExecutionClientBundle(definition);
-            ChatOptions options = buildExecutionOptions(definition, executionClientBundle.model(),
-                    executionClientBundle.providerName());
+            ChatOptions.Builder<?> options = buildExecutionOptions(definition, executionClientBundle.model(),
+                    executionClientBundle.providerName(), executionClientBundle.apiBase());
 
             // 使用结构化上下文装配器，保留消息边界，不再拍平成单段文本
             ContextAssemblyOptions assemblyOptions = contextAssemblyPolicy.buildOptions(sessionKey, userContent);
@@ -461,6 +534,7 @@ public class AgentLoop {
 
             String finalResponse = "";
             while (true) {
+                ensureNotCancelled();
                 refreshActiveSkillFrame(promptMessages, scope.sessionKey(), scope.runId());
                 refreshActiveManifestFrame(promptMessages, scope.sessionKey(), scope.runId());
                 runTrajectoryCompactor.compactIfNeeded(promptMessages, scope.sessionKey(), scope.runId(), userContent);
@@ -474,6 +548,14 @@ public class AgentLoop {
                         fullResponse,
                         true
                 );
+
+                Optional<UserInputRequest> pendingUserInput = userInputRequestRegistry.getPending(scope.sessionKey(), scope.runId());
+                if (pendingUserInput.isPresent()) {
+                    String waitingResponse = emitUserInputRequired(sessionKey, pendingUserInput.get(), eventCallback, startTime);
+                    sessionManager.finalizeAssistantMessage(sessionKey, waitingResponse);
+                    assistantMessagePersisted = true;
+                    return waitingResponse;
+                }
 
                 String createRepairPrompt = buildManagedCreateRepairPrompt(
                         scope.sessionKey(),
@@ -536,6 +618,15 @@ public class AgentLoop {
                             assistantMessagePersisted = true;
                             return runnerResult.message();
                         }
+                        if (runnerResult.waitingForUserInput()) {
+                            Optional<UserInputRequest> pendingRunnerInput = userInputRequestRegistry.getPending(scope.sessionKey(), scope.runId());
+                            String waitingResponse = pendingRunnerInput
+                                    .map(request -> emitUserInputRequired(sessionKey, request, eventCallback, startTime))
+                                    .orElse(runnerResult.message());
+                            sessionManager.finalizeAssistantMessage(sessionKey, waitingResponse);
+                            assistantMessagePersisted = true;
+                            return waitingResponse;
+                        }
                         if (!runnerResult.message().isBlank()) {
                             managedManifestHandoffIssued = true;
                             promptMessages.add(new AssistantMessage(attemptResponse));
@@ -564,6 +655,27 @@ public class AgentLoop {
                     }
                 }
 
+                String artifactGuardPrompt = buildArtifactCompletionGuardPrompt(
+                        scope.sessionKey(),
+                        scope.runId(),
+                        userContent,
+                        attemptResponse,
+                        artifactCompletionTracker,
+                        artifactCompletionPromptIssued
+                );
+                if (!artifactGuardPrompt.isBlank()) {
+                    artifactCompletionPromptIssued = true;
+                    logger.info("artifact completion guard retry session={} run={} promptChars={} candidateChars={} writeEvidence={}",
+                            sessionKey,
+                            scope.runId(),
+                            artifactGuardPrompt.length(),
+                            attemptResponse != null ? attemptResponse.length() : 0,
+                            artifactCompletionTracker.hasWriteEvidence());
+                    promptMessages.add(new AssistantMessage(attemptResponse));
+                    promptMessages.add(new UserMessage(artifactGuardPrompt));
+                    continue;
+                }
+
                 CompletionGateResult gateResult = completionRegistry.evaluateForFinal(sessionKey, scope.runId(), attemptResponse);
                 if (gateResult.passed()) {
                     finalResponse = attemptResponse;
@@ -582,7 +694,7 @@ public class AgentLoop {
                     if (eventCallback != null) {
                         eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.ERROR, errorResponse));
                     }
-                    sessionManager.finalizeAssistantMessage(sessionKey, fullResponse + "\n\n" + errorResponse);
+                    sessionManager.finalizeAssistantMessage(sessionKey, partialOrErrorResponse(fullResponse, errorResponse));
                     assistantMessagePersisted = true;
                     return errorResponse;
                 }
@@ -639,18 +751,19 @@ public class AgentLoop {
                 sessionManager.addMessage(sessionKey, "user", userContent);
                 userMessagePersisted = true;
             }
-            if (containsInterruptedException(e)) {
+            if (e instanceof CancellationException || containsInterruptedException(e)) {
                 Thread.currentThread().interrupt();
                 if (!assistantMessagePersisted) {
                     sessionManager.finalizeAssistantMessage(sessionKey,
-                            partialOrErrorResponse(fullResponse, "Error: execution interrupted"));
+                            partialOrErrorResponse(fullResponse, "用户已停止本次执行"));
                     assistantMessagePersisted = true;
                 }
                 if (eventCallback != null) {
                     eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.ERROR,
-                            "Error: execution interrupted"));
+                            "用户已停止本次执行",
+                            Map.of("source", "web_cancel")));
                 }
-                return "Error: execution interrupted";
+                return "用户已停止本次执行";
             }
             String errorResponse = "Error: " + e.getMessage() + " (check network/API key)";
             if (!assistantMessagePersisted) {
@@ -838,6 +951,7 @@ public class AgentLoop {
                     sb.append("failed: ").append(state.failed()).append("\n");
                     sb.append("pending: ").append(state.pending()).append("\n");
                     sb.append("running: ").append(state.running()).append("\n\n");
+                    appendManagedCompletionProgress(sb, state);
                     String skillCard = activeSkillRegistry.renderManagedRuntime(sessionKey, runId, "finalize", state);
                     if (!skillCard.isBlank()) {
                         sb.append("Skill managed runtime card:\n");
@@ -890,6 +1004,7 @@ public class AgentLoop {
                     sb.append("failed: ").append(state.failed()).append("\n");
                     sb.append("pending: ").append(state.pending()).append("\n");
                     sb.append("running: ").append(state.running()).append("\n\n");
+                    appendManagedCompletionProgress(sb, state);
                     String skillCard = activeSkillRegistry.renderManagedRuntime(sessionKey, runId, "finalize", state);
                     if (!skillCard.isBlank()) {
                         sb.append("Skill managed runtime card:\n");
@@ -903,6 +1018,33 @@ public class AgentLoop {
                     return sb.toString();
                 })
                 .orElse("");
+    }
+
+    private void appendManagedCompletionProgress(StringBuilder sb, ActiveManifestRegistry.ActiveManifestState state) {
+        boolean sourceProcessingComplete = state.pending() == 0
+                && state.running() == 0
+                && state.total() > 0
+                && state.done() + state.failed() >= state.total();
+        int closed = Math.max(0, state.done() + state.failed());
+        int percent = state.total() > 0 ? Math.min(100, (int) Math.round((closed * 100.0) / state.total())) : 0;
+        sb.append("BATCH PROCESSING PROGRESS\n");
+        sb.append("sourceProcessingComplete: ").append(sourceProcessingComplete).append("\n");
+        sb.append("closedItems: ").append(closed).append(" of ").append(state.total()).append(" (").append(percent).append("%)\n");
+        sb.append("successfulItems: ").append(state.done()).append("\n");
+        sb.append("failedItems: ").append(state.failed()).append("\n");
+        if (!state.artifactPath().isBlank()) {
+            sb.append("aggregateResultPath: ").append(state.artifactPath()).append("\n");
+        }
+        if (!state.finalArtifactPath().isBlank()) {
+            sb.append("targetFinalArtifactPath: ").append(state.finalArtifactPath()).append("\n");
+        }
+        if (sourceProcessingComplete) {
+            sb.append("mainProcessState: source file reading/extraction batches are complete; continue with final synthesis based on the managed item results and aggregate result.\n");
+            sb.append("finalizationBoundary: do not restart the batch item loop or treat source files as unread. Re-read original source files only if a required managed item result is missing or corrupt.\n");
+        } else {
+            sb.append("mainProcessState: source file processing is not complete; do not produce a final answer yet.\n");
+        }
+        sb.append("\n");
     }
 
     private boolean isFinalArtifactReadyNow(ActiveManifestRegistry.ActiveManifestState state) {
@@ -991,6 +1133,100 @@ public class AgentLoop {
         return sb.toString();
     }
 
+    private String buildArtifactCompletionGuardPrompt(String sessionKey,
+                                                      String runId,
+                                                      String userContent,
+                                                      String attemptResponse,
+                                                      ArtifactCompletionTracker tracker,
+                                                      boolean alreadyIssued) {
+        if (alreadyIssued || completionRegistry.hasContract(sessionKey, runId)) {
+            return "";
+        }
+        if (activeManifestRegistry.findManagedBlockingState(sessionKey, runId).isPresent()) {
+            return "";
+        }
+        ActiveSkillRegistry.ArtifactCompletion skillArtifactCompletion =
+                activeSkillRegistry.artifactCompletion(sessionKey, runId);
+        if (skillArtifactCompletion.declared() && skillArtifactCompletion.disablesArtifactGuard()) {
+            return "";
+        }
+        boolean skillRequiresArtifact = skillArtifactCompletion.declared() && skillArtifactCompletion.requiresArtifact();
+        boolean intentSignal = hasArtifactIntent(userContent);
+        boolean writeEvidence = tracker != null && tracker.hasWriteEvidence();
+        boolean responsePathSignal = containsArtifactPath(attemptResponse);
+        if (!skillRequiresArtifact && !intentSignal && !writeEvidence) {
+            return "";
+        }
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("JOBCLAW_ARTIFACT_COMPLETION_GUARD\n");
+        sb.append("You are about to give a final answer, but this turn has signals that a file or directory artifact may be required.\n");
+        sb.append("This is a one-time finalization check. Do not restart the task from scratch.\n\n");
+        sb.append("Signals:\n");
+        sb.append("- activeSkillRequiresArtifact: ").append(skillRequiresArtifact);
+        if (skillRequiresArtifact) {
+            if (!skillArtifactCompletion.artifactType().isBlank()) {
+                sb.append(" (type=").append(skillArtifactCompletion.artifactType()).append(")");
+            }
+            if (!skillArtifactCompletion.artifactPathTemplate().isBlank()) {
+                sb.append(" (pathTemplate=").append(skillArtifactCompletion.artifactPathTemplate()).append(")");
+            }
+        }
+        sb.append("\n");
+        sb.append("- userArtifactIntent: ").append(intentSignal).append("\n");
+        sb.append("- writeToolEvidence: ").append(writeEvidence).append("\n");
+        sb.append("- finalResponsePathEvidence: ").append(responsePathSignal).append("\n");
+        List<String> paths = tracker != null ? tracker.artifactPaths() : List.of();
+        if (!paths.isEmpty()) {
+            sb.append("- toolArtifactPathCandidates:\n");
+            paths.stream().limit(8).forEach(path -> sb.append("  - ").append(path).append("\n"));
+        }
+        sb.append("\nRequired response behavior:\n");
+        sb.append("- If the current user request requires a generated/modified/exported artifact and it is already complete, final answer with exactly one concrete absolute artifact path.\n");
+        sb.append("- If the artifact is not complete, continue using tools to create or finish it before final answer.\n");
+        sb.append("- If the current user request does not require an artifact, say briefly that no artifact is required and answer normally.\n");
+        if (skillRequiresArtifact) {
+            sb.append("- The active skill explicitly declares that an artifact is required; prefer the skill's artifact contract over generic inference.\n");
+        }
+        String artifactType = skillRequiresArtifact && !skillArtifactCompletion.artifactType().isBlank()
+                ? skillArtifactCompletion.artifactType()
+                : "file";
+        sb.append("- If you now know the expected artifact type but not a stable path yet, call completion(action='register', checks='[{\"type\":\"artifact_expected\",\"artifactType\":\"")
+                .append(artifactType)
+                .append("\"}]') before continuing.\n");
+        return sb.toString();
+    }
+
+    static boolean hasArtifactIntent(String text) {
+        if (text == null || text.isBlank()) {
+            return false;
+        }
+        return ARTIFACT_ACTION_PATTERN.matcher(text).find()
+                && ARTIFACT_OBJECT_PATTERN.matcher(text).find();
+    }
+
+    static boolean containsArtifactPath(String text) {
+        if (text == null || text.isBlank()) {
+            return false;
+        }
+        Matcher matcher = WINDOWS_ABSOLUTE_PATH.matcher(text);
+        while (matcher.find()) {
+            String path = trimArtifactPathCandidate(matcher.group());
+            if (!path.isBlank()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String trimArtifactPathCandidate(String value) {
+        String result = value == null ? "" : value.trim();
+        while (!result.isEmpty() && ".,;，。；、)）]】'\"`".indexOf(result.charAt(result.length() - 1)) >= 0) {
+            result = result.substring(0, result.length() - 1).trim();
+        }
+        return result;
+    }
+
     private String truncateForCompletionRecovery(String text) {
         int maxChars = 6000;
         if (text.length() <= maxChars) {
@@ -1003,15 +1239,77 @@ public class AgentLoop {
     }
 
     private String partialOrErrorResponse(StringBuilder partialResponse, String errorResponse) {
-        if (partialResponse != null && !partialResponse.isEmpty()) {
-            return partialResponse.toString();
+        if (partialResponse == null || partialResponse.isEmpty()) {
+            return errorResponse;
         }
-        return errorResponse;
+        int maxChars = 6000;
+        String partial = partialResponse.toString();
+        if (partial.length() <= maxChars) {
+            return partial + "\n\n" + errorResponse;
+        }
+        return partial.substring(partial.length() - maxChars)
+                + "\n\n...[earlier intermediate output omitted from saved assistant message]\n\n"
+                + errorResponse;
+    }
+
+    private String previewForLog(String text) {
+        if (text == null) {
+            return "<null>";
+        }
+        String compact = text
+                .replace("\r", "\\r")
+                .replace("\n", "\\n")
+                .replace("\t", "\\t");
+        int maxChars = 240;
+        if (compact.length() <= maxChars) {
+            return compact;
+        }
+        return compact.substring(0, maxChars) + "...[+" + (compact.length() - maxChars) + " chars]";
+    }
+
+    private String emitUserInputRequired(String sessionKey,
+                                         UserInputRequest request,
+                                         Consumer<ExecutionEvent> eventCallback,
+                                         long startTime) {
+        String response = formatUserInputResponse(request);
+        logger.info("agent run waiting for user input session={} run={} requestId={} requiredFor={}",
+                sessionKey, request.runId(), request.requestId(), request.requiredFor());
+        if (eventCallback != null) {
+            Map<String, Object> metadata = new LinkedHashMap<>();
+            metadata.put("source", "user_input");
+            metadata.put("status", "waiting_user_input");
+            metadata.put("requestId", request.requestId());
+            metadata.put("runId", request.runId());
+            metadata.put("requiredFor", request.requiredFor());
+            metadata.put("resumeKey", request.resumeKey());
+            metadata.put("reason", request.reason());
+            metadata.put("options", request.options());
+            eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.CUSTOM, response, metadata));
+            eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.THINK_END,
+                    "等待用户反馈，耗时：" + (System.currentTimeMillis() - startTime) + "ms"));
+            eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.FINAL_RESPONSE, response, metadata));
+        }
+        return response;
+    }
+
+    private String formatUserInputResponse(UserInputRequest request) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(request.question());
+        if (!request.options().isEmpty()) {
+            sb.append("\n\n可选项：");
+            for (int i = 0; i < request.options().size(); i++) {
+                sb.append("\n").append(i + 1).append(". ").append(request.options().get(i));
+            }
+        }
+        if (request.reason() != null && !request.reason().isBlank()) {
+            sb.append("\n\n原因：").append(request.reason());
+        }
+        return sb.toString();
     }
 
     private ManagedRunnerResult runManagedSkillRunner(ExecutionClientBundle executionClientBundle,
                                                       ToolCallback[] tools,
-                                                      ChatOptions options,
+                                                      ChatOptions.Builder<?> options,
                                                       String systemPrompt,
                                                       String originalUserContent,
                                                       String sessionKey,
@@ -1022,6 +1320,7 @@ public class AgentLoop {
         int attempts = 0;
         int parallelism = activeSkillRegistry.managedRunnerParallelism(sessionKey, runId);
         while (true) {
+            ensureNotCancelled();
             var blockingState = activeManifestRegistry.findManagedBlockingState(sessionKey, runId);
             if (blockingState.isEmpty() || (blockingState.get().pending() == 0 && blockingState.get().running() == 0)) {
                 break;
@@ -1065,10 +1364,12 @@ public class AgentLoop {
                     itemArtifactPath = extractManagedItemArtifactPath(runnerPrompt);
                 }
                 String resolvedItemArtifactPath = itemArtifactPath;
-                if (reuseExistingManagedItemArtifact(sessionKey, runId, eventCallback, itemId, resolvedItemArtifactPath)) {
+                if (activeSkillRegistry.managedRunnerWritesItemFile(sessionKey, runId)
+                        && reuseExistingManagedItemArtifact(sessionKey, runId, eventCallback, itemId, resolvedItemArtifactPath)) {
                     continue;
                 }
                 workers.add(CompletableFuture.supplyAsync(() -> {
+                    ensureNotCancelled();
                     StringBuilder workerResponse = new StringBuilder();
                     try {
                         List<Message> runnerMessages = buildManagedRunnerMessages(systemPrompt, originalUserContent, runnerPrompt);
@@ -1082,18 +1383,28 @@ public class AgentLoop {
                                 workerResponse,
                                 false
                         );
+                        if (userInputRequestRegistry.getPending(sessionKey, runId).isPresent()) {
+                            return workerResponse.toString();
+                        }
                         closeManagedItemFromModelResult(sessionKey, runId, itemId, resolvedItemArtifactPath,
                                 workerResponse.toString(), eventCallback);
                     } catch (Exception e) {
                         logger.warn("managed runner item failed session={} run={} itemId={} error={}",
                                 sessionKey, runId, itemId, e.getMessage());
-                        writeFailedManagedItem(sessionKey, runId, itemId, resolvedItemArtifactPath, e.getMessage(), eventCallback);
+                        writeFailedManagedItem(sessionKey, runId, itemId, resolvedItemArtifactPath, "",
+                                e.getMessage(), eventCallback);
                     }
                     return workerResponse.toString();
                 }, toolExecutionExecutor));
             }
             for (CompletableFuture<String> worker : workers) {
                 worker.join();
+            }
+            Optional<UserInputRequest> pendingUserInput = userInputRequestRegistry.getPending(sessionKey, runId);
+            if (pendingUserInput.isPresent()) {
+                logger.info("managed skill runner paused for user input session={} run={} requestId={}",
+                        sessionKey, runId, pendingUserInput.get().requestId());
+                return new ManagedRunnerResult(formatUserInputResponse(pendingUserInput.get()), false, true);
             }
         }
 
@@ -1112,7 +1423,28 @@ public class AgentLoop {
         if (state == null) {
             return List.of();
         }
-        return List.of(state);
+        int limit = Math.max(1, Math.min(configuredParallelism, 8));
+        List<ActiveManifestRegistry.ActiveManifestState> selected = new ArrayList<>();
+        for (ActiveManifestRegistry.ActiveManifestItem item : state.runningQueue()) {
+            if (item == null || item.id().isBlank()) {
+                continue;
+            }
+            selected.add(state.withRunningItem(item));
+            if (selected.size() >= limit) {
+                return selected;
+            }
+        }
+        for (ActiveManifestRegistry.ActiveManifestItem item : state.pendingQueue()) {
+            if (item == null || item.id().isBlank()) {
+                continue;
+            }
+            selected.add(state.withNextPendingItem(item));
+            if (selected.size() >= limit) {
+                return selected;
+            }
+        }
+        ActiveManifestRegistry.ActiveManifestItem item = managedRunnerItem(state);
+        return item == null || item.id().isBlank() ? List.of() : List.of(state);
     }
 
     private ActiveManifestRegistry.ActiveManifestItem managedRunnerItem(ActiveManifestRegistry.ActiveManifestState state) {
@@ -1129,7 +1461,8 @@ public class AgentLoop {
         if (item == null || item.id().isBlank() || "running".equalsIgnoreCase(item.status())) {
             return;
         }
-        callFrameworkManifest(sessionKey, runId, eventCallback, "start", item.id(), null, null, "managed runner started item");
+        callFrameworkManifest(sessionKey, runId, eventCallback, "start", item.id(), null, null, null,
+                "managed runner started item");
     }
 
     private void closeManagedItemFromDeclaredArtifact(String sessionKey,
@@ -1153,6 +1486,7 @@ public class AgentLoop {
                     itemId,
                     null,
                     itemArtifactPath,
+                    null,
                     "managed runner item artifact ready"
             );
             return;
@@ -1168,6 +1502,7 @@ public class AgentLoop {
                 itemId,
                 reason,
                 itemArtifactPath,
+                null,
                 null
         );
     }
@@ -1181,15 +1516,17 @@ public class AgentLoop {
         if (itemId == null || itemId.isBlank()) {
             return;
         }
-        if (itemArtifactPath == null || itemArtifactPath.isBlank()) {
-            writeFailedManagedItem(sessionKey, runId, itemId, itemArtifactPath,
+        String resultRefId = saveManagedRunnerRawResult(sessionKey, runId, itemId, modelResult);
+        if (activeSkillRegistry.managedRunnerWritesItemFile(sessionKey, runId)
+                && (itemArtifactPath == null || itemArtifactPath.isBlank())) {
+            writeFailedManagedItem(sessionKey, runId, itemId, itemArtifactPath, resultRefId,
                     "managed runner itemResultPathTemplate did not render a path", eventCallback);
             return;
         }
         ManagedItemOutput output = ManagedItemOutput.from(activeSkillRegistry.managedRunnerItemOutput(sessionKey, runId));
         String content = extractManagedItemContent(output, modelResult);
         if (content.isBlank()) {
-            writeFailedManagedItem(sessionKey, runId, itemId, itemArtifactPath,
+            writeFailedManagedItem(sessionKey, runId, itemId, itemArtifactPath, resultRefId,
                     "managed runner model did not return " + output.contractName() + " content", eventCallback);
             return;
         }
@@ -1197,25 +1534,41 @@ public class AgentLoop {
             try {
                 JsonNode parsed = OBJECT_MAPPER.readTree(content);
                 if (!parsed.isObject()) {
-                    writeFailedManagedItem(sessionKey, runId, itemId, itemArtifactPath,
+                    writeFailedManagedItem(sessionKey, runId, itemId, itemArtifactPath, resultRefId,
                             "managed runner model returned non-object JSON", eventCallback);
                     return;
                 }
                 List<String> missingColumns = missingSchemaColumns(sessionKey, runId, parsed);
                 if (!missingColumns.isEmpty()) {
-                    writeFailedManagedItem(sessionKey, runId, itemId, itemArtifactPath,
+                    writeFailedManagedItem(sessionKey, runId, itemId, itemArtifactPath, resultRefId,
                             "managed runner JSON missing required schema field(s): " + String.join(", ", missingColumns),
                             eventCallback);
                     return;
                 }
                 content = OBJECT_MAPPER.writeValueAsString(parsed);
             } catch (Exception e) {
-                writeFailedManagedItem(sessionKey, runId, itemId, itemArtifactPath,
+                writeFailedManagedItem(sessionKey, runId, itemId, itemArtifactPath, resultRefId,
                         "managed runner returned invalid JSON: " + e.getMessage(), eventCallback);
                 return;
             }
         }
-        writeManagedItemArtifacts(sessionKey, runId, itemId, itemArtifactPath, output, content, eventCallback, true, "");
+        writeManagedItemArtifacts(sessionKey, runId, itemId, itemArtifactPath, resultRefId, output, content,
+                eventCallback, true, "");
+    }
+
+    private String saveManagedRunnerRawResult(String sessionKey, String runId, String itemId, String modelResult) {
+        String raw = modelResult == null ? "" : modelResult;
+        if (raw.isBlank() || resultStore instanceof NoopResultStore) {
+            return "";
+        }
+        try {
+            ContextRef ref = resultStore.save(sessionKey, runId, "managed_item", itemId, raw);
+            return ref != null && ref.getRefId() != null ? ref.getRefId() : "";
+        } catch (Exception e) {
+            logger.warn("managed runner failed to save raw item result session={} run={} itemId={} error={}",
+                    sessionKey, runId, itemId, e.getMessage());
+            return "";
+        }
     }
 
     private String extractManagedItemContent(ManagedItemOutput output, String modelResult) {
@@ -1310,6 +1663,7 @@ public class AgentLoop {
                     itemId,
                     null,
                     itemArtifactPath,
+                    "",
                     "managed runner reused existing item artifact"
             );
             return true;
@@ -1324,6 +1678,7 @@ public class AgentLoop {
                                         String runId,
                                         String itemId,
                                         String itemArtifactPath,
+                                        String resultRefId,
                                         String error,
                                         Consumer<ExecutionEvent> eventCallback) {
         String json;
@@ -1333,20 +1688,22 @@ public class AgentLoop {
             json = "{\"itemId\":\"" + safeJson(itemId) + "\",\"status\":\"failed\",\"error\":\"" + safeJson(error) + "\"}";
         }
         writeManagedItemArtifacts(sessionKey, runId, itemId, itemArtifactPath,
-                ManagedItemOutput.JSON_OBJECT, json, eventCallback, false, error);
+                resultRefId, ManagedItemOutput.JSON_OBJECT, json, eventCallback, false, error);
     }
 
     private void writeManagedItemArtifacts(String sessionKey,
                                            String runId,
                                            String itemId,
                                            String itemArtifactPath,
+                                           String resultRefId,
                                            ManagedItemOutput output,
                                            String json,
                                            Consumer<ExecutionEvent> eventCallback,
                                            boolean success,
                                            String error) {
         try {
-            if (itemArtifactPath != null && !itemArtifactPath.isBlank()) {
+            if (activeSkillRegistry.managedRunnerWritesItemFile(sessionKey, runId)
+                    && itemArtifactPath != null && !itemArtifactPath.isBlank()) {
                 Path itemPath = Path.of(itemArtifactPath.trim());
                 if (itemPath.getParent() != null) {
                     Files.createDirectories(itemPath.getParent());
@@ -1362,6 +1719,7 @@ public class AgentLoop {
                     itemId,
                     success ? null : error,
                     itemArtifactPath,
+                    resultRefId,
                     success ? "managed runner wrote item result" : "managed runner wrote failed item result"
             );
         } catch (Exception e) {
@@ -1375,30 +1733,61 @@ public class AgentLoop {
                     itemId,
                     e.getMessage(),
                     itemArtifactPath,
+                    resultRefId,
                     null
             );
         }
     }
 
-    private void writeManagedAggregate(String sessionKey,
-                                       String runId,
-                                       String itemId,
-                                       String itemArtifactPath,
-                                       ManagedItemOutput output,
-                                       String content,
-                                       boolean success,
-                                       String error) throws IOException {
+    private synchronized void writeManagedAggregate(String sessionKey,
+                                                    String runId,
+                                                    String itemId,
+                                                    String itemArtifactPath,
+                                                    ManagedItemOutput output,
+                                                    String content,
+                                                    boolean success,
+                                                    String error) throws IOException {
         var state = activeManifestRegistry.findManagedBlockingState(sessionKey, runId).orElse(null);
-        if (state == null || state.artifactPath().isBlank()) {
+        if (state == null
+                || state.artifactPath().isBlank()
+                || !activeSkillRegistry.managedRunnerWritesAggregate(sessionKey, runId)) {
             return;
         }
         Path aggregate = Path.of(state.artifactPath().trim());
         if (aggregate.getParent() != null) {
             Files.createDirectories(aggregate.getParent());
         }
+        String aggregateSink = activeSkillRegistry.managedRunnerAggregateSink(sessionKey, runId);
+        Object row = output == ManagedItemOutput.JSON_OBJECT && success
+                ? OBJECT_MAPPER.readValue(content, Object.class)
+                : buildManagedAggregateIndexRow(itemId, itemArtifactPath, output, success, error);
+        if ("json_array".equals(aggregateSink) || "jsonarray".equals(aggregateSink)) {
+            List<Object> rows = new ArrayList<>();
+            if (Files.isRegularFile(aggregate) && Files.size(aggregate) > 0) {
+                JsonNode existing = OBJECT_MAPPER.readTree(aggregate.toFile());
+                if (existing.isArray()) {
+                    existing.forEach(node -> rows.add(OBJECT_MAPPER.convertValue(node, Object.class)));
+                }
+            }
+            rows.add(row);
+            Files.writeString(aggregate,
+                    OBJECT_MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(rows) + System.lineSeparator(),
+                    StandardCharsets.UTF_8,
+                    java.nio.file.StandardOpenOption.CREATE,
+                    java.nio.file.StandardOpenOption.TRUNCATE_EXISTING);
+            return;
+        }
+        if ("markdown".equals(aggregateSink) || "md".equals(aggregateSink)) {
+            Files.writeString(aggregate,
+                    "\n\n## " + itemId + "\n\n" + content.strip() + System.lineSeparator(),
+                    StandardCharsets.UTF_8,
+                    java.nio.file.StandardOpenOption.CREATE,
+                    java.nio.file.StandardOpenOption.APPEND);
+            return;
+        }
         String line = output == ManagedItemOutput.JSON_OBJECT && success
                 ? content
-                : OBJECT_MAPPER.writeValueAsString(buildManagedAggregateIndexRow(itemId, itemArtifactPath, output, success, error));
+                : OBJECT_MAPPER.writeValueAsString(row);
         Files.writeString(aggregate, line + System.lineSeparator(), StandardCharsets.UTF_8,
                 java.nio.file.StandardOpenOption.CREATE,
                 java.nio.file.StandardOpenOption.APPEND);
@@ -1527,6 +1916,10 @@ public class AgentLoop {
             return false;
         }
         String normalized = name.trim().toLowerCase();
+        if (ToolDiscoveryCallbacks.SEARCH_TOOL_NAME.equals(normalized)
+                || ToolDiscoveryCallbacks.USE_TOOL_NAME.equals(normalized)) {
+            return false;
+        }
         if (allowedTools != null && !allowedTools.isEmpty()) {
             return allowedTools.stream()
                     .filter(tool -> tool != null && !tool.isBlank())
@@ -1536,26 +1929,157 @@ public class AgentLoop {
         return normalized.startsWith("read_")
                 || "list_dir".equals(normalized)
                 || "context_ref".equals(normalized)
+                || "user_input".equals(normalized)
                 || "web_fetch".equals(normalized)
                 || "web_search".equals(normalized);
     }
 
-    private String extractJsonObject(String text) {
+    static String extractJsonObject(String text) {
         if (text == null || text.isBlank()) {
             return "";
         }
-        String stripped = text.strip();
-        if (stripped.startsWith("```")) {
-            stripped = stripped.replaceFirst("(?s)^```(?:json)?\\s*", "")
-                    .replaceFirst("(?s)\\s*```\\s*$", "")
-                    .strip();
+        String stripped = stripJsonFence(text.strip());
+        Optional<String> candidate = firstParseableJsonObject(stripped);
+        if (candidate.isPresent()) {
+            return candidate.get();
         }
-        int start = stripped.indexOf('{');
-        int end = stripped.lastIndexOf('}');
-        if (start < 0 || end <= start) {
+
+        String repaired = repairCommonJson(stripped);
+        if (!repaired.equals(stripped)) {
+            return firstParseableJsonObject(repaired)
+                    .orElse("");
+        }
+        return "";
+    }
+
+    private static String stripJsonFence(String text) {
+        String value = text == null ? "" : text.trim();
+        if (!value.startsWith("```")) {
+            return value;
+        }
+        int firstNewline = value.indexOf('\n');
+        int lastFence = value.lastIndexOf("```");
+        if (firstNewline >= 0 && lastFence > firstNewline) {
+            return value.substring(firstNewline + 1, lastFence).trim();
+        }
+        return value.replaceFirst("(?s)^```(?:json)?\\s*", "")
+                .replaceFirst("(?s)\\s*```\\s*$", "")
+                .trim();
+    }
+
+    private static Optional<String> firstParseableJsonObject(String text) {
+        for (String candidate : balancedJsonObjects(text)) {
+            String repaired = repairCommonJson(candidate);
+            try {
+                JsonNode node = OBJECT_MAPPER.readTree(repaired);
+                if (node.isObject()) {
+                    return Optional.of(repaired);
+                }
+            } catch (Exception ignored) {
+                // Try the next balanced object in the model response.
+            }
+        }
+        return Optional.empty();
+    }
+
+    private static List<String> balancedJsonObjects(String text) {
+        if (text == null || text.isBlank()) {
+            return List.of();
+        }
+        List<String> candidates = new ArrayList<>();
+        int searchFrom = 0;
+        while (searchFrom < text.length()) {
+            int start = text.indexOf('{', searchFrom);
+            if (start < 0) {
+                break;
+            }
+            Optional<String> candidate = balancedJsonObjectAt(text, start);
+            candidate.ifPresent(candidates::add);
+            searchFrom = start + 1;
+        }
+        return candidates;
+    }
+
+    private static Optional<String> balancedJsonObjectAt(String text, int start) {
+        boolean inString = false;
+        boolean escaped = false;
+        int depth = 0;
+        for (int i = start; i < text.length(); i++) {
+            char ch = text.charAt(i);
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (ch == '\\' && inString) {
+                escaped = true;
+                continue;
+            }
+            if (ch == '"') {
+                inString = !inString;
+                continue;
+            }
+            if (inString) {
+                continue;
+            }
+            if (ch == '{') {
+                depth++;
+            } else if (ch == '}') {
+                depth--;
+                if (depth == 0) {
+                    return Optional.of(text.substring(start, i + 1).trim());
+                }
+            }
+        }
+        return Optional.empty();
+    }
+
+    private static String repairCommonJson(String raw) {
+        if (raw == null || raw.isBlank()) {
             return "";
         }
-        return stripped.substring(start, end + 1).strip();
+        String normalized = raw
+                .replace('\uFEFF', ' ')
+                .replace('“', '"')
+                .replace('”', '"')
+                .replace('‘', '\'')
+                .replace('’', '\'')
+                .replaceAll("[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F]", "")
+                .replaceAll(",\\s*([}\\]])", "$1");
+        return escapeJsonStringLineBreaks(normalized);
+    }
+
+    private static String escapeJsonStringLineBreaks(String raw) {
+        StringBuilder sb = new StringBuilder(raw.length());
+        boolean inString = false;
+        boolean escaped = false;
+        for (int i = 0; i < raw.length(); i++) {
+            char ch = raw.charAt(i);
+            if (escaped) {
+                sb.append(ch);
+                escaped = false;
+                continue;
+            }
+            if (ch == '\\' && inString) {
+                sb.append(ch);
+                escaped = true;
+                continue;
+            }
+            if (ch == '"') {
+                inString = !inString;
+                sb.append(ch);
+                continue;
+            }
+            if (inString && ch == '\n') {
+                sb.append("\\n");
+            } else if (inString && ch == '\r') {
+                sb.append("\\r");
+            } else if (inString && ch == '\t') {
+                sb.append("\\t");
+            } else {
+                sb.append(ch);
+            }
+        }
+        return sb.toString();
     }
 
     private String safeJson(String value) {
@@ -1572,6 +2096,7 @@ public class AgentLoop {
                                        String itemId,
                                        String error,
                                        String artifactPath,
+                                       String resultRefId,
                                        String note) {
         ToolCallback manifestCallback = Arrays.stream(allToolCallbacks)
                 .filter(callback -> callback != null
@@ -1607,6 +2132,9 @@ public class AgentLoop {
             }
             if (artifactPath != null && !artifactPath.isBlank()) {
                 request.put("artifactPath", artifactPath);
+            }
+            if (resultRefId != null && !resultRefId.isBlank()) {
+                request.put("resultRefId", resultRefId);
             }
             if (note != null && !note.isBlank()) {
                 request.put("note", note);
@@ -1653,60 +2181,125 @@ public class AgentLoop {
         return messages;
     }
 
-    private record ManagedRunnerResult(String message, boolean error) {
+    private record ManagedRunnerResult(String message, boolean error, boolean waitingForUserInput) {
+        private ManagedRunnerResult(String message, boolean error) {
+            this(message, error, false);
+        }
     }
 
     private String runModelAttempt(ExecutionClientBundle executionClientBundle,
                                    List<Message> promptMessages,
                                    ToolCallback[] tools,
-                                   ChatOptions options,
+                                   ChatOptions.Builder<?> options,
                                    String sessionKey,
                                    Consumer<ExecutionEvent> eventCallback,
                                    StringBuilder fullResponse,
                                    boolean checkpointAssistantDraft) {
         StringBuilder attemptResponse = new StringBuilder();
+        StringBuilder rawResponse = new StringBuilder();
+        StringBuilder rawReasoning = new StringBuilder();
+        ensureNotCancelled();
         StreamDeltaNormalizer streamDeltaNormalizer = new StreamDeltaNormalizer();
-        ReasoningContentFilter reasoningContentFilter = ReasoningContentFilter.forModel(
-                isReasoningSideChannelProvider(executionClientBundle.providerName(), executionClientBundle.model()));
+        StreamDeltaNormalizer reasoningDeltaNormalizer = new StreamDeltaNormalizer();
         int fullResponseStartLength = fullResponse != null ? fullResponse.length() : 0;
-        AtomicInteger lastDraftCheckpoint = new AtomicInteger(fullResponse != null ? fullResponse.length() : 0);
+        AtomicInteger streamChunkCount = new AtomicInteger();
+        AtomicInteger reasoningChunkCount = new AtomicInteger();
+        String streamSegmentId = "seg-" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
 
-        Flux<String> contentStream = executionClientBundle.chatClient().prompt()
+        logger.info("LLM call start session={} provider={} model={} apiBase={} streaming={} messages={} tools={} checkpointDraft={}",
+                sessionKey,
+                executionClientBundle.providerName(),
+                executionClientBundle.model(),
+                executionClientBundle.apiBase(),
+                executionClientBundle.streamingEnabled(),
+                promptMessages != null ? promptMessages.size() : 0,
+                tools != null ? tools.length : 0,
+                checkpointAssistantDraft);
+
+        if (!executionClientBundle.streamingEnabled()) {
+            logger.info("LLM streaming disabled by provider config; using non-stream call session={} provider={} model={} apiBase={}",
+                    sessionKey,
+                    executionClientBundle.providerName(),
+                    executionClientBundle.model(),
+                    executionClientBundle.apiBase());
+            return runNonStreamFallback(
+                    executionClientBundle,
+                    promptMessages,
+                    tools,
+                    options,
+                    sessionKey,
+                    eventCallback,
+                    fullResponse,
+                    checkpointAssistantDraft,
+                    fullResponseStartLength,
+                    "streaming-disabled");
+        }
+
+        Flux<ChatResponse> responseStream = executionClientBundle.chatClient().prompt()
                 .messages(promptMessages)
                 .toolCallbacks(tools)
-                .options(options.mutate())
+                .options(options)
                 .stream()
-                .content();
+                .chatResponse();
 
         try {
-            contentStream.toStream().forEach(content -> {
+            responseStream.toStream().forEach(chatResponse -> {
+                ensureNotCancelled();
+                StreamResponseParts responseParts = extractStreamResponseParts(chatResponse);
+                String reasoning = responseParts.reasoning();
+                if (!reasoning.isEmpty()) {
+                    String reasoningDelta = reasoningDeltaNormalizer.normalize(rawReasoning, reasoning);
+                    if (!reasoningDelta.isEmpty()) {
+                        int reasoningIndex = reasoningChunkCount.incrementAndGet();
+                        rawReasoning.append(reasoningDelta);
+                        if (reasoningIndex <= 8 || reasoningIndex % 25 == 0) {
+                            logger.info("LLM reasoning delta session={} provider={} model={} chunk={} deltaChars={} deltaPreview={} accumulatedBefore={}",
+                                    sessionKey,
+                                    executionClientBundle.providerName(),
+                                    executionClientBundle.model(),
+                                    reasoningIndex,
+                                    reasoningDelta.length(),
+                                    previewForLog(reasoningDelta),
+                                    rawReasoning.length() - reasoningDelta.length());
+                        }
+                        emitReasoningDelta(eventCallback, sessionKey, streamSegmentId, reasoningDelta);
+                    }
+                }
+
+                String content = responseParts.content();
                 if (content != null && !content.isEmpty()) {
-                    String delta = streamDeltaNormalizer.normalize(attemptResponse, content);
+                    int chunkIndex = streamChunkCount.incrementAndGet();
+                    if (chunkIndex <= 8 || chunkIndex % 25 == 0) {
+                        logger.info("LLM stream chunk session={} provider={} model={} chunk={} rawChars={} rawPreview={}",
+                                sessionKey,
+                                executionClientBundle.providerName(),
+                                executionClientBundle.model(),
+                                chunkIndex,
+                                content.length(),
+                                previewForLog(content));
+                    }
+                    String delta = streamDeltaNormalizer.normalize(rawResponse, content);
                     if (delta.isEmpty()) {
+                        if (chunkIndex <= 8 || chunkIndex % 25 == 0) {
+                            logger.info("LLM stream chunk normalized-empty session={} chunk={} accumulatedChars={}",
+                                    sessionKey,
+                                    chunkIndex,
+                                    attemptResponse.length());
+                        }
                         return;
                     }
-                    delta = reasoningContentFilter.filterDelta(delta);
-                    if (delta.isEmpty()) {
-                        return;
+                    rawResponse.append(delta);
+                    if (chunkIndex <= 8 || chunkIndex % 25 == 0) {
+                        logger.info("LLM stream delta session={} chunk={} deltaChars={} deltaPreview={} accumulatedBefore={}",
+                                sessionKey,
+                                chunkIndex,
+                                delta.length(),
+                                previewForLog(delta),
+                                attemptResponse.length());
                     }
                     attemptResponse.append(delta);
                     fullResponse.append(delta);
-                    if (checkpointAssistantDraft
-                            && fullResponse.length() - lastDraftCheckpoint.get() >= ASSISTANT_DRAFT_CHECKPOINT_CHARS) {
-                        sessionManager.saveAssistantDraft(sessionKey, fullResponse.toString());
-                        lastDraftCheckpoint.set(fullResponse.length());
-                    }
-                    if (eventCallback != null) {
-                        if (toolExecutionStateTracker.isExecuting(sessionKey)) {
-                            toolExecutionStateTracker.bufferThink(sessionKey, delta);
-                        } else {
-                            eventCallback.accept(new ExecutionEvent(
-                                    sessionKey,
-                                    ExecutionEvent.EventType.THINK_STREAM,
-                                    delta
-                            ));
-                        }
-                    }
+                    emitVisibleDelta(eventCallback, sessionKey, streamSegmentId, delta);
                 }
             });
         } catch (RuntimeException e) {
@@ -1714,25 +2307,172 @@ public class AgentLoop {
                 logger.info("managed manifest takeover session={} attemptChars={}", sessionKey, attemptResponse.length());
                 return attemptResponse.toString();
             }
+            if (isSpringAiStreamAggregationFailure(e)) {
+                logger.warn("Spring AI stream aggregation failed; retrying once with non-stream call session={} provider={} model={} apiBase={} chunks={} attemptChars={} error={}",
+                        sessionKey,
+                        executionClientBundle.providerName(),
+                        executionClientBundle.model(),
+                        executionClientBundle.apiBase(),
+                        streamChunkCount.get(),
+                        attemptResponse.length(),
+                        e.getMessage());
+                return runNonStreamFallback(
+                        executionClientBundle,
+                        promptMessages,
+                        tools,
+                        options,
+                        sessionKey,
+                        eventCallback,
+                        fullResponse,
+                        checkpointAssistantDraft,
+                        fullResponseStartLength,
+                        "spring-ai-stream-aggregation");
+            }
             WebClientResponseException responseException = findWebClientResponseException(e);
             if (responseException != null) {
-                logger.warn("LLM HTTP error session={} status={} body={}",
+                logger.warn("LLM HTTP error session={} provider={} model={} apiBase={} chunks={} attemptChars={} status={} body={}",
                         sessionKey,
+                        executionClientBundle.providerName(),
+                        executionClientBundle.model(),
+                        executionClientBundle.apiBase(),
+                        streamChunkCount.get(),
+                        attemptResponse.length(),
                         responseException.getStatusCode(),
                         responseException.getResponseBodyAsString());
             }
-            throw e;
+            throw enrichLlmRuntimeException(e, executionClientBundle);
         }
-        String sanitized = reasoningContentFilter.sanitizeFinal(attemptResponse.toString());
-        if (sanitized.length() != attemptResponse.length()) {
-            attemptResponse.setLength(0);
-            attemptResponse.append(sanitized);
-            if (fullResponse != null && fullResponse.length() >= fullResponseStartLength) {
-                fullResponse.setLength(fullResponseStartLength);
-                fullResponse.append(sanitized);
+        if (attemptResponse.isEmpty()) {
+            logger.warn("LLM stream returned no visible content; retrying once with non-stream call session={} provider={} model={} chunks={}",
+                    sessionKey,
+                    executionClientBundle.providerName(),
+                    executionClientBundle.model(),
+                    streamChunkCount.get());
+            return runNonStreamFallback(
+                    executionClientBundle,
+                    promptMessages,
+                    tools,
+                    options,
+                    sessionKey,
+                    eventCallback,
+                    fullResponse,
+                    checkpointAssistantDraft,
+                    fullResponseStartLength,
+                    "empty-stream",
+                    streamSegmentId);
+        }
+        logger.info("LLM stream complete session={} provider={} model={} chunks={} responseChars={} responsePreview={}",
+                sessionKey,
+                executionClientBundle.providerName(),
+                executionClientBundle.model(),
+                streamChunkCount.get(),
+                attemptResponse.length(),
+                previewForLog(attemptResponse.toString()));
+        return attemptResponse.toString();
+    }
+
+    private String runNonStreamFallback(ExecutionClientBundle executionClientBundle,
+                                        List<Message> promptMessages,
+                                        ToolCallback[] tools,
+                                        ChatOptions.Builder<?> options,
+                                        String sessionKey,
+                                        Consumer<ExecutionEvent> eventCallback,
+                                        StringBuilder fullResponse,
+                                        boolean checkpointAssistantDraft,
+                                        int fullResponseStartLength,
+                                        String reason) {
+        return runNonStreamFallback(executionClientBundle, promptMessages, tools, options, sessionKey, eventCallback,
+                fullResponse, checkpointAssistantDraft, fullResponseStartLength, reason,
+                "seg-" + UUID.randomUUID().toString().replace("-", "").substring(0, 12));
+    }
+
+    private String runNonStreamFallback(ExecutionClientBundle executionClientBundle,
+                                        List<Message> promptMessages,
+                                        ToolCallback[] tools,
+                                        ChatOptions.Builder<?> options,
+                                        String sessionKey,
+                                        Consumer<ExecutionEvent> eventCallback,
+                                        StringBuilder fullResponse,
+                                        boolean checkpointAssistantDraft,
+                                        int fullResponseStartLength,
+                                        String reason,
+                                        String streamSegmentId) {
+        StringBuilder fallbackResponse = new StringBuilder();
+        ensureNotCancelled();
+        logger.info("LLM non-stream call start session={} provider={} model={} apiBase={} reason={} messages={} tools={}",
+                sessionKey,
+                executionClientBundle.providerName(),
+                executionClientBundle.model(),
+                executionClientBundle.apiBase(),
+                reason,
+                promptMessages != null ? promptMessages.size() : 0,
+                tools != null ? tools.length : 0);
+        try {
+            ChatResponse fallbackChatResponse = executionClientBundle.chatClient().prompt()
+                    .messages(promptMessages)
+                    .toolCallbacks(tools)
+                    .options(options)
+                    .call()
+                    .chatResponse();
+            ensureNotCancelled();
+            StreamResponseParts responseParts = extractStreamResponseParts(fallbackChatResponse);
+            String fallbackContent = responseParts.content();
+            String reasoning = responseParts.reasoning();
+            if (!reasoning.isEmpty()) {
+                emitReasoningDelta(eventCallback, sessionKey, streamSegmentId, reasoning);
             }
+            String delta = fallbackContent;
+            logger.info("LLM non-stream raw response session={} provider={} model={} reason={} rawChars={} reasoningChars={} rawPreview={}",
+                    sessionKey,
+                    executionClientBundle.providerName(),
+                    executionClientBundle.model(),
+                    reason,
+                    fallbackContent.length(),
+                    reasoning.length(),
+                    previewForLog(fallbackContent));
+            if (!delta.isEmpty()) {
+                fallbackResponse.append(delta);
+                if (fullResponse != null) {
+                    if ("spring-ai-stream-aggregation".equals(reason)
+                            && fullResponse.length() >= fullResponseStartLength) {
+                        fullResponse.setLength(fullResponseStartLength);
+                    }
+                    fullResponse.append(delta);
+                }
+                emitVisibleDelta(eventCallback, sessionKey, streamSegmentId, delta);
+            }
+        } catch (RuntimeException e) {
+            if (containsManagedManifestTakeoverSignal(e)) {
+                logger.info("managed manifest takeover during non-stream fallback session={} reason={} chars={}",
+                        sessionKey,
+                        reason,
+                        fallbackResponse.length());
+                return fallbackResponse.toString();
+            }
+            WebClientResponseException responseException = findWebClientResponseException(e);
+            if (responseException != null) {
+                logger.warn("LLM HTTP error during non-stream fallback session={} provider={} model={} apiBase={} reason={} status={} body={}",
+                        sessionKey,
+                        executionClientBundle.providerName(),
+                        executionClientBundle.model(),
+                        executionClientBundle.apiBase(),
+                        reason,
+                        responseException.getStatusCode(),
+                        responseException.getResponseBodyAsString());
+            }
+            throw enrichLlmRuntimeException(e, executionClientBundle);
         }
-        return sanitized;
+        if (fallbackResponse.isEmpty()) {
+            throw new IllegalStateException("LLM returned empty content in non-stream fallback after " + reason);
+        }
+        logger.info("LLM non-stream complete session={} provider={} model={} reason={} responseChars={} responsePreview={}",
+                sessionKey,
+                executionClientBundle.providerName(),
+                executionClientBundle.model(),
+                reason,
+                fallbackResponse.length(),
+                previewForLog(fallbackResponse.toString()));
+        return fallbackResponse.toString();
     }
 
     private boolean containsManagedManifestTakeoverSignal(Throwable throwable) {
@@ -1740,6 +2480,103 @@ public class AgentLoop {
         while (current != null) {
             if (current instanceof ManagedManifestTakeoverSignal) {
                 return true;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    private void emitVisibleDelta(Consumer<ExecutionEvent> eventCallback,
+                                  String sessionKey,
+                                  String streamSegmentId,
+                                  String content) {
+        if (eventCallback == null || content == null || content.isEmpty()) {
+            return;
+        }
+        ExecutionEvent streamEvent = new ExecutionEvent(
+                sessionKey,
+                ExecutionEvent.EventType.THINK_STREAM,
+                content,
+                Map.of("streamSegmentId", streamSegmentId, "reasoning", false)
+        );
+        if (toolExecutionStateTracker.isExecuting(sessionKey)) {
+            toolExecutionStateTracker.bufferThink(sessionKey, content);
+        } else {
+            eventCallback.accept(streamEvent);
+        }
+    }
+
+    private void emitReasoningDelta(Consumer<ExecutionEvent> eventCallback,
+                                    String sessionKey,
+                                    String streamSegmentId,
+                                    String content) {
+        if (eventCallback == null || content == null || content.isEmpty()) {
+            return;
+        }
+        eventCallback.accept(new ExecutionEvent(
+                sessionKey,
+                ExecutionEvent.EventType.THINK_STREAM,
+                content,
+                Map.of("streamSegmentId", streamSegmentId, "reasoning", true)
+        ));
+    }
+
+    static StreamResponseParts extractStreamResponseParts(ChatResponse chatResponse) {
+        if (chatResponse == null || chatResponse.getResult() == null
+                || chatResponse.getResult().getOutput() == null) {
+            return StreamResponseParts.EMPTY;
+        }
+        AssistantMessage output = chatResponse.getResult().getOutput();
+        String content = output.getText() != null ? output.getText() : "";
+        Map<String, Object> metadata = output.getMetadata();
+
+        String reasoning = "";
+        if (output instanceof DeepSeekAssistantMessage deepSeekMessage
+                && deepSeekMessage.getReasoningContent() != null) {
+            reasoning = deepSeekMessage.getReasoningContent();
+        }
+        if (reasoning.isEmpty()) {
+            reasoning = firstMetadataText(metadata, "reasoningContent", "reasoning_content", "reasoning");
+        }
+
+        Object isThought = metadata != null ? metadata.get("isThought") : null;
+        if (Boolean.parseBoolean(String.valueOf(isThought))) {
+            return new StreamResponseParts(content.isEmpty() ? reasoning : content, "");
+        }
+        return new StreamResponseParts(reasoning, content);
+    }
+
+    private static String firstMetadataText(Map<String, Object> metadata, String... keys) {
+        if (metadata == null || metadata.isEmpty()) {
+            return "";
+        }
+        for (String key : keys) {
+            Object value = metadata.get(key);
+            if (value instanceof CharSequence text && !text.isEmpty()) {
+                return text.toString();
+            }
+        }
+        return "";
+    }
+
+    record StreamResponseParts(String reasoning, String content) {
+        private static final StreamResponseParts EMPTY = new StreamResponseParts("", "");
+    }
+
+    private boolean isSpringAiStreamAggregationFailure(Throwable throwable) {
+        boolean indexOutOfBounds = false;
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof IndexOutOfBoundsException) {
+                indexOutOfBounds = true;
+            }
+            for (StackTraceElement element : current.getStackTrace()) {
+                String className = element.getClassName();
+                if (className.contains("MessageAggregator")
+                        || className.contains("OpenAiChatModel$ChunkMerger")
+                        || className.contains("OpenAiChatModel.ChunkMerger")) {
+                    return indexOutOfBounds || current instanceof IndexOutOfBoundsException;
+                }
             }
             current = current.getCause();
         }
@@ -1757,6 +2594,41 @@ public class AgentLoop {
         return null;
     }
 
+    private RuntimeException enrichLlmRuntimeException(RuntimeException exception,
+                                                       ExecutionClientBundle executionClientBundle) {
+        JsonParseException jsonParseException = findJsonParseException(exception);
+        if (jsonParseException == null || !looksLikeNonJsonProviderResponse(jsonParseException)) {
+            return exception;
+        }
+        String message = "LLM provider returned a non-JSON response while the OpenAI-compatible client expected JSON. "
+                + "This usually means the selected model/provider/API Base combination is wrong, the API Base points "
+                + "to an HTML page instead of an OpenAI-compatible /v1 endpoint, or an upstream proxy/login/error page "
+                + "was returned. provider=" + executionClientBundle.providerName()
+                + ", model=" + executionClientBundle.model()
+                + ", apiBase=" + executionClientBundle.apiBase()
+                + ". Original parser error: " + jsonParseException.getOriginalMessage();
+        return new IllegalStateException(message, exception);
+    }
+
+    private JsonParseException findJsonParseException(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof JsonParseException jsonParseException) {
+                return jsonParseException;
+            }
+            current = current.getCause();
+        }
+        return null;
+    }
+
+    private boolean looksLikeNonJsonProviderResponse(JsonParseException exception) {
+        String message = exception.getOriginalMessage();
+        return message != null
+                && (message.contains("Unexpected character ('<'")
+                || message.contains("Unexpected character '<'")
+                || message.contains("code 60"));
+    }
+
     private boolean shouldReturnManagedManifestControl(String toolName, String request, ToolExecutionResult result) {
         if (!"manifest".equalsIgnoreCase(toolName) || result == null || !result.success()) {
             return false;
@@ -1772,8 +2644,7 @@ public class AgentLoop {
         if (!("create".equals(action) || "done".equals(action) || "fail".equals(action) || "failed".equals(action))) {
             return false;
         }
-        return activeManifestRegistry.findManagedBlockingState(scope.sessionKey(), scope.runId()).isPresent()
-                || activeManifestRegistry.findManagedHandoffState(scope.sessionKey(), scope.runId()).isPresent();
+        return activeManifestRegistry.findManagedBlockingState(scope.sessionKey(), scope.runId()).isPresent();
     }
 
     private String completeManagedManifestRequest(String toolName,
@@ -1827,7 +2698,7 @@ public class AgentLoop {
         return node == null || node.isNull() || (node.isTextual() && node.asText("").isBlank());
     }
 
-    private boolean isToolErrorResponse(String response) {
+    private static boolean isToolErrorResponse(String response) {
         return response != null && response.stripLeading().startsWith("Error:");
     }
 
@@ -1902,8 +2773,10 @@ public class AgentLoop {
                           AgentRole role,
                           AgentExecutionOptions executionOptions,
                           Consumer<ExecutionEvent> eventCallback) {
-        return processWithDefinition(sessionKey, userContent, role != null ? AgentDefinition.fromRole(role) : null,
-                executionOptions, eventCallback);
+        return processWithDefinition(sessionKey, userContent,
+                role != null ? AgentDefinition.fromRole(role) : null,
+                executionOptions,
+                eventCallback);
     }
 
     /**
@@ -1927,10 +2800,9 @@ public class AgentLoop {
             promptMessages.add(new SystemMessage(systemPrompt));
         }
         if (historyMessages != null) {
-            List<io.jobclaw.providers.Message> messagesForProvider =
-                    isReasoningSideChannelProvider(providerName, modelName)
-                            ? DeepSeekMessageProtocolNormalizer.normalize(historyMessages)
-                            : historyMessages;
+            List<io.jobclaw.providers.Message> messagesForProvider = isReasoningSideChannelProvider(providerName, modelName)
+                    ? DeepSeekMessageProtocolNormalizer.normalize(historyMessages)
+                    : historyMessages;
             for (io.jobclaw.providers.Message message : messagesForProvider) {
                 Message springMessage = toSpringMessage(message, providerName, modelName);
                 if (springMessage != null) {
@@ -1942,19 +2814,13 @@ public class AgentLoop {
         return promptMessages;
     }
 
-    private Message toSpringMessage(io.jobclaw.providers.Message message,
-                                    String providerName,
-                                    String modelName) {
+    private Message toSpringMessage(io.jobclaw.providers.Message message, String providerName, String modelName) {
         if (message == null || message.getRole() == null) {
             return null;
         }
 
         String role = message.getRole();
         String content = message.getContent() != null ? message.getContent() : "";
-        if ("assistant".equals(message.getRole())
-                && isReasoningSideChannelProvider(providerName, modelName)) {
-            content = ReasoningContentFilter.sanitizeText(content);
-        }
         return switch (role) {
             case "system" -> new SystemMessage(content);
             case "assistant" -> toSpringAssistantMessage(message, content);
@@ -2072,7 +2938,8 @@ public class AgentLoop {
      */
     private ToolCallback[] wrapToolCallbacks(ToolCallback[] rawCallbacks,
                                              String sessionKey,
-                                             Consumer<ExecutionEvent> eventCallback) {
+                                             Consumer<ExecutionEvent> eventCallback,
+                                             ArtifactCompletionTracker artifactCompletionTracker) {
         if (rawCallbacks == null) {
             return rawCallbacks;
         }
@@ -2081,8 +2948,66 @@ public class AgentLoop {
 
         // 包装每个 ToolCallback，使其在执行时发布事件
         return java.util.Arrays.stream(rawCallbacks)
-                .map(callback -> wrapSingleCallback(callback, sessionKey, eventCallback))
+                .map(callback -> wrapSingleCallback(callback, sessionKey, eventCallback, artifactCompletionTracker))
                 .toArray(ToolCallback[]::new);
+    }
+
+    private ToolCallback[] createToolDiscoveryCallbacks(AgentDefinition definition,
+                                                        ToolCallback[] selectedTools,
+                                                        String sessionKey,
+                                                        Consumer<ExecutionEvent> eventCallback,
+                                                        ArtifactCompletionTracker artifactCompletionTracker) {
+        if (definition != null
+                && definition.getAllowedTools() != null
+                && !definition.getAllowedTools().isEmpty()) {
+            return new ToolCallback[0];
+        }
+        Set<String> selectedNames = Arrays.stream(selectedTools != null ? selectedTools : new ToolCallback[0])
+                .filter(callback -> callback != null && callback.getToolDefinition() != null)
+                .map(callback -> callback.getToolDefinition().name())
+                .collect(java.util.stream.Collectors.toSet());
+        List<ToolCallback> discoverableTools = Arrays.stream(allToolCallbacks)
+                .filter(callback -> callback != null && callback.getToolDefinition() != null)
+                .filter(callback -> !selectedNames.contains(callback.getToolDefinition().name()))
+                .filter(callback -> !"exec".equals(callback.getToolDefinition().name()))
+                .toList();
+        if (discoverableTools.isEmpty()) {
+            return new ToolCallback[0];
+        }
+
+        ToolDiscoveryCatalog catalog = new ToolDiscoveryCatalog(discoverableTools);
+        ToolDiscoveryCallbacks.CallbackPair callbacks = ToolDiscoveryCallbacks.create(
+                catalog,
+                (target, arguments) -> {
+                    ToolCallback wrappedTarget = wrapSingleCallback(
+                            target,
+                            sessionKey,
+                            eventCallback,
+                            artifactCompletionTracker
+                    );
+                    String response = wrappedTarget.call(arguments);
+                    rememberSessionTools(sessionKey, new ToolCallback[]{target});
+                    return response;
+                }
+        );
+        ToolCallback trackedSearch = wrapSingleCallback(
+                callbacks.search(),
+                sessionKey,
+                eventCallback,
+                artifactCompletionTracker
+        );
+        logger.info("optional tool discovery enabled catalogSize={} directTools={}",
+                catalog.size(),
+                toolNames(selectedTools));
+        return new ToolCallback[]{trackedSearch, callbacks.use()};
+    }
+
+    private ToolCallback[] concatToolCallbacks(ToolCallback[] first, ToolCallback[] second) {
+        ToolCallback[] left = first != null ? first : new ToolCallback[0];
+        ToolCallback[] right = second != null ? second : new ToolCallback[0];
+        ToolCallback[] combined = Arrays.copyOf(left, left.length + right.length);
+        System.arraycopy(right, 0, combined, left.length, right.length);
+        return combined;
     }
 
     /**
@@ -2095,7 +3020,8 @@ public class AgentLoop {
      */
     private ToolCallback wrapSingleCallback(ToolCallback callback,
                                             String sessionKey,
-                                            Consumer<ExecutionEvent> eventCallback) {
+                                            Consumer<ExecutionEvent> eventCallback,
+                                            ArtifactCompletionTracker artifactCompletionTracker) {
         AgentExecutionContext.ExecutionScope capturedScope = AgentExecutionContext.getCurrentScope();
         return new ToolCallback() {
             @Override
@@ -2122,6 +3048,13 @@ public class AgentLoop {
                             callback,
                             eventCallback
                     ));
+                    if (artifactCompletionTracker != null) {
+                        artifactCompletionTracker.recordToolResult(
+                                getToolDefinition().name(),
+                                effectiveRequest,
+                                result
+                        );
+                    }
                     if (shouldReturnManagedManifestControl(getToolDefinition().name(), effectiveRequest, result)) {
                         AgentLoop.logger.info("managed manifest tool boundary reached session={} run={} tool={} request={}",
                                 capturedScope != null ? capturedScope.sessionKey() : sessionKey,
@@ -2142,6 +3075,12 @@ public class AgentLoop {
         };
     }
 
+    private ToolCallback wrapSingleCallback(ToolCallback callback,
+                                            String sessionKey,
+                                            Consumer<ExecutionEvent> eventCallback) {
+        return wrapSingleCallback(callback, sessionKey, eventCallback, null);
+    }
+
     /**
      * 根据 Agent 定义过滤工具
      *
@@ -2149,6 +3088,10 @@ public class AgentLoop {
      * @return 过滤后的工具数组
      */
     private ToolCallback[] filterToolsByDefinition(AgentDefinition definition, String userContent) {
+        return filterToolsByDefinition(definition, userContent, null);
+    }
+
+    private ToolCallback[] filterToolsByDefinition(AgentDefinition definition, String userContent, String sessionKey) {
         if (definition != null && definition.getAllowedTools() != null && !definition.getAllowedTools().isEmpty()) {
             ToolCallback[] explicitTools = Arrays.stream(allToolCallbacks)
                     .filter(tool -> definition.isToolAllowed(tool.getToolDefinition().name()))
@@ -2157,19 +3100,372 @@ public class AgentLoop {
             return explicitTools;
         }
 
-        logger.debug("No explicit agent tool allowlist; using full toolset: {}", toolNames(allToolCallbacks));
-        return allToolCallbacks;
+        ToolSelection selection = resolveDeterministicToolSelection(definition, userContent, sessionKey);
+        ToolCallback[] selectedTools = Arrays.stream(allToolCallbacks)
+                .filter(tool -> selection.toolNames().contains(tool.getToolDefinition().name()))
+                .toArray(ToolCallback[]::new);
+        rememberSessionTools(sessionKey, selectedTools);
+        logger.info("tool injection selected profiles={} sources={} tools={}",
+                selection.profiles(), selection.sources(), toolNames(selectedTools));
+        return selectedTools;
+    }
+
+    private ToolSelection resolveDeterministicToolSelection(AgentDefinition definition, String userContent) {
+        return resolveDeterministicToolSelection(definition, userContent, null);
+    }
+
+    private ToolSelection resolveDeterministicToolSelection(AgentDefinition definition, String userContent, String sessionKey) {
+        LinkedHashSet<String> profiles = new LinkedHashSet<>();
+        LinkedHashSet<String> sources = new LinkedHashSet<>();
+        LinkedHashSet<String> toolNames = new LinkedHashSet<>(BASE_TOOL_NAMES);
+        sources.add("base");
+
+        Set<String> carriedTools = sessionKey != null && !sessionKey.isBlank()
+                ? sessionToolCarryover.get(sessionKey)
+                : null;
+        if (carriedTools != null && !carriedTools.isEmpty()) {
+            carriedTools.stream()
+                    .sorted()
+                    .forEach(toolNames::add);
+            sources.add("session-carryover");
+        }
+
+        Collection<String> agentProfiles = readAgentToolProfiles(definition);
+        if (!agentProfiles.isEmpty()) {
+            profiles.addAll(agentProfiles);
+            sources.add("agent-profile");
+        }
+
+        Collection<String> roleProfiles = defaultProfilesForRole(definition);
+        if (!roleProfiles.isEmpty()) {
+            profiles.addAll(roleProfiles);
+            sources.add("role-profile");
+        }
+
+        SkillToolHints skillHints = resolveSkillToolHints(userContent);
+        if (!skillHints.profiles().isEmpty() || !skillHints.toolNames().isEmpty()) {
+            profiles.addAll(skillHints.profiles());
+            toolNames.addAll(skillHints.toolNames());
+            sources.add("skill-metadata");
+        }
+
+        LinkedHashSet<String> explicitProfiles = inferProfilesFromExplicitIntent(userContent);
+        if (!explicitProfiles.isEmpty()) {
+            profiles.addAll(explicitProfiles);
+            sources.add("explicit-intent");
+        }
+
+        for (String profile : profiles) {
+            Set<String> profileTools = TOOL_PROFILE_TOOL_NAMES.get(profile);
+            if (profileTools != null) {
+                toolNames.addAll(profileTools);
+            }
+        }
+
+        return new ToolSelection(toolNames, profiles, sources);
+    }
+
+    private void rememberSessionTools(String sessionKey, ToolCallback[] selectedTools) {
+        if (sessionKey == null || sessionKey.isBlank() || selectedTools == null || selectedTools.length == 0) {
+            return;
+        }
+        Set<String> remembered = sessionToolCarryover.computeIfAbsent(sessionKey, key -> ConcurrentHashMap.newKeySet());
+        for (ToolCallback selectedTool : selectedTools) {
+            if (selectedTool == null || selectedTool.getToolDefinition() == null) {
+                continue;
+            }
+            String toolName = selectedTool.getToolDefinition().name();
+            if (toolName != null && !toolName.isBlank() && !"exec".equals(toolName)) {
+                remembered.add(toolName);
+            }
+        }
+    }
+
+    private Collection<String> readAgentToolProfiles(AgentDefinition definition) {
+        if (definition == null || definition.getMetadata() == null) {
+            return List.of();
+        }
+        Object profiles = definition.getMetadata().get("toolProfiles");
+        if (profiles == null) {
+            profiles = definition.getMetadata().get("toolProfile");
+        }
+        return normalizeProfiles(profiles);
+    }
+
+    private Collection<String> defaultProfilesForRole(AgentDefinition definition) {
+        if (definition == null || definition.getCode() == null || definition.getCode().isBlank()) {
+            return List.of();
+        }
+        return switch (definition.getCode().trim().toLowerCase(Locale.ROOT)) {
+            case "coder", "tester" -> List.of("code");
+            case "writer" -> List.of("document");
+            case "researcher" -> List.of("document", "web");
+            case "reviewer" -> List.of("code", "document");
+            default -> List.of();
+        };
+    }
+
+    private Collection<String> normalizeProfiles(Object profiles) {
+        if (profiles instanceof Collection<?> collection) {
+            return collection.stream()
+                    .map(value -> value != null ? value.toString() : "")
+                    .map(this::normalizeProfile)
+                    .filter(profile -> !profile.isBlank())
+                    .toList();
+        }
+        if (profiles != null && !profiles.toString().isBlank()) {
+            return Arrays.stream(profiles.toString().split(","))
+                    .map(this::normalizeProfile)
+                    .filter(profile -> !profile.isBlank())
+                    .toList();
+        }
+        return List.of();
+    }
+
+    private String normalizeProfile(String profile) {
+        String normalized = profile == null ? "" : profile.trim().toLowerCase(Locale.ROOT);
+        return TOOL_PROFILE_TOOL_NAMES.containsKey(normalized) ? normalized : "";
+    }
+
+    private LinkedHashSet<String> inferProfilesFromExplicitIntent(String userContent) {
+        LinkedHashSet<String> profiles = new LinkedHashSet<>();
+        String text = userContent == null ? "" : userContent.toLowerCase(Locale.ROOT);
+        if (text.isBlank()) {
+            return profiles;
+        }
+
+        if (containsAny(text, ".java", ".kt", ".py", ".js", ".ts", ".tsx", ".vue", ".go", ".rs",
+                "pom.xml", "package.json", "build.gradle", "测试", "编译", "打包", "修复", "改代码", "代码",
+                "分支", "合并", "提交", "commit", "branch", "merge", "test", "build", "mvn", "gradle", "npm")) {
+            profiles.add("code");
+        }
+        if (containsAny(text, ".pdf", ".doc", ".docx", "pdf", "word", "document", "论文", "本地文档", "文档文件", "综述", "报告", "docx")) {
+            profiles.add("document");
+        }
+        if (containsAny(text, ".xls", ".xlsx", ".csv", ".tsv", "excel", "表格", "电子表格", "spreadsheet")) {
+            profiles.add("spreadsheet");
+        }
+        boolean lookupRequest = containsAny(text, "查一下", "查询", "查资料", "搜索", "找一下", "看看有没有", "了解一下");
+        boolean externalKnowledge = containsAny(text, "最新", "官方文档", "文档里", "资料", "网页", "网站", "版本", "变化", "更新", "spring ai");
+        if (containsAny(text, "http://", "https://", "搜索", "查资料", "网页", "网站", "联网", "web", "url")
+                || (lookupRequest && externalKnowledge)) {
+            profiles.add("web");
+        }
+        if (containsAny(text, "github", "issue", "pull request", " pr ", "提交github", "提 issue", "发起 issue")) {
+            profiles.add("github");
+        }
+        if (containsAny(text, "记忆", "经验", "memory")) {
+            profiles.add("memory");
+        }
+        if (containsAny(text, "子 agent", "子agent", "多智能体", "协作", "spawn", "collaborate")) {
+            profiles.add("agent");
+        }
+        if (containsAny(text, "定时", "明天", "后天", "早上", "晚上", "每天", "每周", "每月", "分钟", "小时", "点钟", "监控", "cron", "automation")) {
+            profiles.add("scheduler");
+        }
+        if (containsAny(text, "mcp", "model context protocol")) {
+            profiles.add("mcp");
+        }
+        if (containsAny(text, "token", "用量", "消耗", "费用", "计费", "api 费用", "api费用", "usage")) {
+            profiles.add("usage");
+        }
+        return profiles;
+    }
+
+    private boolean containsAny(String text, String... needles) {
+        for (String needle : needles) {
+            if (needle != null && !needle.isBlank() && text.contains(needle)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private SkillToolHints resolveSkillToolHints(String userContent) {
+        if (contextBuilder == null || userContent == null || userContent.isBlank()) {
+            return SkillToolHints.empty();
+        }
+        SkillsService skillsService = contextBuilder.getSkillsService();
+        if (skillsService == null) {
+            return SkillToolHints.empty();
+        }
+        String text = userContent.toLowerCase(Locale.ROOT);
+        LinkedHashSet<String> profiles = new LinkedHashSet<>();
+        LinkedHashSet<String> toolNames = new LinkedHashSet<>();
+        try {
+            for (SkillInfo skill : skillsService.listSkills()) {
+                if (skill == null || skill.getName() == null || skill.getName().isBlank()) {
+                    continue;
+                }
+                String skillName = skill.getName();
+                if (!text.contains(skillName.toLowerCase(Locale.ROOT))) {
+                    continue;
+                }
+                profiles.addAll(inferProfilesFromExplicitIntent(skillName + " " + nullToBlank(skill.getDescription())));
+                String content = skillsService.loadSkill(skillName);
+                SkillToolHints hints = extractSkillToolHints(content);
+                profiles.addAll(hints.profiles());
+                toolNames.addAll(hints.toolNames());
+            }
+        } catch (Exception e) {
+            logger.debug("Failed to resolve skill tool hints: {}", e.getMessage());
+        }
+        return new SkillToolHints(toolNames, profiles);
+    }
+
+    private SkillToolHints extractSkillToolHints(String skillContent) {
+        if (skillContent == null || skillContent.isBlank()) {
+            return SkillToolHints.empty();
+        }
+        LinkedHashSet<String> profiles = new LinkedHashSet<>();
+        LinkedHashSet<String> toolNames = new LinkedHashSet<>();
+
+        for (String line : skillContent.lines().toList()) {
+            int separator = line.indexOf(':');
+            if (separator <= 0) {
+                separator = line.indexOf('=');
+            }
+            if (separator <= 0) {
+                continue;
+            }
+            String key = line.substring(0, separator).trim().toLowerCase(Locale.ROOT);
+            String value = line.substring(separator + 1).trim();
+            switch (key) {
+                case "toolprofile", "toolprofiles", "tool_profiles" -> profiles.addAll(normalizeProfiles(value));
+                case "requiredtools", "required_tools", "optionaltools", "optional_tools", "tools", "allowedtools", "allowed_tools" ->
+                        toolNames.addAll(normalizeToolNames(value));
+                case "metadata" -> addJsonMetadataHints(value, profiles, toolNames);
+                default -> {
+                    // Other skill content is instructional text, not a tool declaration.
+                }
+            }
+        }
+
+        return new SkillToolHints(toolNames, profiles);
+    }
+
+    private void addJsonMetadataHints(String value, Set<String> profiles, Set<String> toolNames) {
+        if (value == null || value.isBlank() || !value.trim().startsWith("{")) {
+            return;
+        }
+        try {
+            JsonNode root = OBJECT_MAPPER.readTree(value);
+            collectJsonMetadataHints(root, profiles, toolNames);
+        } catch (Exception ignored) {
+            // Metadata is optional; malformed metadata must not block the task.
+        }
+    }
+
+    private void collectJsonMetadataHints(JsonNode node, Set<String> profiles, Set<String> toolNames) {
+        if (node == null || node.isNull()) {
+            return;
+        }
+        if (node.isObject()) {
+            node.fields().forEachRemaining(entry -> {
+                String key = entry.getKey() != null ? entry.getKey().toLowerCase(Locale.ROOT) : "";
+                JsonNode value = entry.getValue();
+                if ("toolprofile".equals(key) || "toolprofiles".equals(key) || "tool_profiles".equals(key)) {
+                    profiles.addAll(jsonValues(value).stream()
+                            .map(this::normalizeProfile)
+                            .filter(profile -> !profile.isBlank())
+                            .toList());
+                } else if ("requiredtools".equals(key) || "required_tools".equals(key)
+                        || "optionaltools".equals(key) || "optional_tools".equals(key)
+                        || "tools".equals(key) || "allowedtools".equals(key) || "allowed_tools".equals(key)) {
+                    toolNames.addAll(jsonValues(value).stream()
+                            .map(this::normalizeToolName)
+                            .filter(tool -> !tool.isBlank())
+                            .toList());
+                } else {
+                    collectJsonMetadataHints(value, profiles, toolNames);
+                }
+            });
+            return;
+        }
+        if (node.isArray()) {
+            node.forEach(child -> collectJsonMetadataHints(child, profiles, toolNames));
+        }
+    }
+
+    private List<String> jsonValues(JsonNode node) {
+        if (node == null || node.isNull()) {
+            return List.of();
+        }
+        if (node.isArray()) {
+            List<String> values = new ArrayList<>();
+            node.forEach(child -> values.addAll(jsonValues(child)));
+            return values;
+        }
+        if (node.isTextual() || node.isNumber() || node.isBoolean()) {
+            return splitListValue(node.asText());
+        }
+        return List.of();
+    }
+
+    private Collection<String> normalizeToolNames(String value) {
+        return splitListValue(value).stream()
+                .map(this::normalizeToolName)
+                .filter(tool -> !tool.isBlank())
+                .toList();
+    }
+
+    private String normalizeToolName(String toolName) {
+        if (toolName == null) {
+            return "";
+        }
+        String normalized = toolName.trim()
+                .replace("\"", "")
+                .replace("'", "")
+                .toLowerCase(Locale.ROOT);
+        if ("exec".equals(normalized)) {
+            return "run_command";
+        }
+        return normalized;
+    }
+
+    private List<String> splitListValue(String value) {
+        if (value == null || value.isBlank()) {
+            return List.of();
+        }
+        String cleaned = value
+                .replace("[", "")
+                .replace("]", "")
+                .replace("\"", "")
+                .replace("'", "");
+        return Arrays.stream(cleaned.split("[,，]"))
+                .map(String::trim)
+                .filter(part -> !part.isBlank())
+                .toList();
+    }
+
+    private String nullToBlank(String value) {
+        return value != null ? value : "";
+    }
+
+    private record ToolSelection(Set<String> toolNames, Set<String> profiles, Set<String> sources) {
+    }
+
+    private record SkillToolHints(Set<String> toolNames, Set<String> profiles) {
+        static SkillToolHints empty() {
+            return new SkillToolHints(Set.of(), Set.of());
+        }
     }
 
     private boolean containsInterruptedException(Throwable throwable) {
         Throwable current = throwable;
         while (current != null) {
-            if (current instanceof InterruptedException) {
+            if (current instanceof InterruptedException || current instanceof CancellationException) {
                 return true;
             }
             current = current.getCause();
         }
         return Thread.currentThread().isInterrupted();
+    }
+
+    private void ensureNotCancelled() {
+        if (Thread.currentThread().isInterrupted()) {
+            throw new CancellationException("execution cancelled");
+        }
     }
 
     private List<String> toolNames(ToolCallback[] callbacks) {
@@ -2183,6 +3479,57 @@ public class AgentLoop {
 
     static String normalizeStreamDelta(CharSequence currentResponse, String nextChunk) {
         return new StreamDeltaNormalizer().normalize(currentResponse, nextChunk);
+    }
+
+    static final class ArtifactCompletionTracker {
+        private static final List<String> WRITE_TOOLS = List.of(
+                "write_file",
+                "edit_file",
+                "append_file"
+        );
+
+        private final List<String> artifactPaths = new ArrayList<>();
+        private boolean writeEvidence;
+
+        void recordToolResult(String toolName, String request, ToolExecutionResult result) {
+            String normalizedTool = toolName == null ? "" : toolName.trim().toLowerCase();
+            boolean writeTool = WRITE_TOOLS.contains(normalizedTool);
+            if (!writeTool && !isSuccessful(result)) {
+                return;
+            }
+            if (writeTool && isSuccessful(result)) {
+                writeEvidence = true;
+            }
+            collectPaths(request);
+            if (result != null) {
+                collectPaths(result.response());
+            }
+        }
+
+        boolean hasWriteEvidence() {
+            return writeEvidence;
+        }
+
+        List<String> artifactPaths() {
+            return artifactPaths.stream().distinct().toList();
+        }
+
+        private boolean isSuccessful(ToolExecutionResult result) {
+            return result != null && result.success() && !isToolErrorResponse(result.response());
+        }
+
+        private void collectPaths(String text) {
+            if (text == null || text.isBlank()) {
+                return;
+            }
+            Matcher matcher = WINDOWS_ABSOLUTE_PATH.matcher(text);
+            while (matcher.find()) {
+                String path = trimArtifactPathCandidate(matcher.group());
+                if (!path.isBlank() && !artifactPaths.contains(path)) {
+                    artifactPaths.add(path);
+                }
+            }
+        }
     }
 
     static final class StreamDeltaNormalizer {
@@ -2233,16 +3580,9 @@ public class AgentLoop {
 
     private synchronized ResolvedProviderConfig reloadDefaultClient(ChatClient providedChatClient) {
         ResolvedProviderConfig resolvedProvider = providerRuntime.resolve(config, modelOverride);
-        ChatClient nextChatClient;
-        ChatClient nextSimpleChatClient;
-        if (providedChatClient != null) {
-            nextChatClient = providedChatClient;
-            nextSimpleChatClient = providedChatClient;
-        } else {
-            ChatModel chatModel = createChatModel(resolvedProvider);
-            nextChatClient = ChatClient.builder(chatModel).build();
-            nextSimpleChatClient = ChatClient.builder(createChatModel(resolvedProvider)).build();
-        }
+        ChatModel chatModel = createChatModel(resolvedProvider);
+        ChatClient nextChatClient = providedChatClient != null ? providedChatClient : ChatClient.builder(chatModel).build();
+        ChatClient nextSimpleChatClient = ChatClient.builder(createChatModel(resolvedProvider)).build();
 
         this.defaultProviderConfig = resolvedProvider;
         this.model = resolvedProvider.model();
@@ -2253,8 +3593,7 @@ public class AgentLoop {
             logger.warn("requested provider not available, falling back to provider '{}'", resolvedProvider.providerName());
         }
 
-        logger.info("Spring AI provider config - provider: {}, apiKey: {}***, model: {}, apiBase: {} -> using: {}",
-                resolvedProvider.providerName(),
+        logger.info("Spring AI OpenAI Compatible config reloaded - apiKey: {}***, model: {}, apiBase: {} -> using: {}",
                 resolvedProvider.apiKey() != null && resolvedProvider.apiKey().length() > 4
                         ? resolvedProvider.apiKey().substring(0, 4)
                         : "null",
@@ -2262,17 +3601,32 @@ public class AgentLoop {
         return resolvedProvider;
     }
 
-    private ChatOptions buildExecutionOptions(AgentDefinition definition, String baseModel) {
-        String providerName = defaultProviderConfig != null
-                ? defaultProviderConfig.providerName()
-                : config.getAgent().getProvider();
-        return buildExecutionOptions(definition, baseModel, providerName);
+    private ChatOptions.Builder<?> buildExecutionOptions(AgentDefinition definition, String baseModel) {
+        return buildExecutionOptions(
+                definition,
+                baseModel,
+                defaultProviderConfig != null ? defaultProviderConfig.providerName() : config.getAgent().getProvider(),
+                defaultProviderConfig != null ? defaultProviderConfig.apiBase() : null
+        );
     }
 
-    private ChatOptions buildExecutionOptions(AgentDefinition definition, String baseModel, String providerName) {
+    private ChatOptions.Builder<?> buildExecutionOptions(AgentDefinition definition, String baseModel, String providerName) {
+        return buildExecutionOptions(
+                definition,
+                baseModel,
+                providerName,
+                defaultProviderConfig != null ? defaultProviderConfig.apiBase() : null
+        );
+    }
+
+    private ChatOptions.Builder<?> buildExecutionOptions(AgentDefinition definition,
+                                                         String baseModel,
+                                                         String providerName,
+                                                         String apiBase) {
         String effectiveModel = baseModel != null && !baseModel.isBlank() ? baseModel : model;
-        Integer effectiveMaxTokens = null;
-        Double effectiveTemperature = null;
+        Integer effectiveMaxTokens = config.getAgent().getMaxTokens() > 0 ? config.getAgent().getMaxTokens() : null;
+        Double effectiveTemperature = config.getAgent().getTemperature();
+        String thinkingMode = config.getAgent().getThinkingMode();
 
         if (definition != null && definition.getConfig() != null) {
             AgentDefinition.AgentConfig definitionConfig = definition.getConfig();
@@ -2285,53 +3639,42 @@ public class AgentLoop {
             if (definitionConfig.getTemperature() != null) {
                 effectiveTemperature = definitionConfig.getTemperature();
             }
+            Object definitionThinkingMode = definitionConfig.getCustomSetting("thinkingMode");
+            if (definitionThinkingMode != null && !definitionThinkingMode.toString().isBlank()) {
+                thinkingMode = definitionThinkingMode.toString();
+            }
         }
 
-        if (usesNativeDeepSeek(providerName)) {
-            DeepSeekChatOptions.Builder builder = DeepSeekChatOptions.builder()
-                    .model(effectiveModel);
+        if (isNativeDeepSeekProvider(providerName)) {
+            DeepSeekChatOptions.Builder builder = DeepSeekChatOptions.builder();
+            builder.model(effectiveModel);
             if (effectiveMaxTokens != null) {
                 builder.maxTokens(effectiveMaxTokens);
             }
             if (effectiveTemperature != null) {
                 builder.temperature(effectiveTemperature);
             }
-            return builder.build();
+            return builder;
         }
 
-        OpenAiChatOptions.Builder builder = OpenAiChatOptions.builder()
-                .model(effectiveModel);
+        OpenAiChatOptions.Builder builder = OpenAiChatOptions.builder();
+        builder.model(effectiveModel);
         if (effectiveMaxTokens != null) {
             builder.maxTokens(effectiveMaxTokens);
         }
         if (effectiveTemperature != null) {
             builder.temperature(effectiveTemperature);
         }
-        if (shouldDisableDeepSeekThinking(providerName, effectiveModel)) {
-            builder.extraBody(Map.of("thinking", Map.of("type", "disabled")));
+        Map<String, Object> thinkingOptions = QwenThinkingOptions.extraBody(
+                providerName,
+                effectiveModel,
+                apiBase,
+                thinkingMode
+        );
+        if (!thinkingOptions.isEmpty()) {
+            builder.extraBody(thinkingOptions);
         }
-        return builder.build();
-    }
-
-    private boolean shouldDisableDeepSeekThinking(String providerName, String modelName) {
-        if (usesNativeDeepSeek(providerName)) {
-            return false;
-        }
-        if (!isReasoningSideChannelProvider(providerName, modelName)) {
-            return false;
-        }
-        String modelValue = modelName != null ? modelName.toLowerCase() : "";
-        return !modelValue.contains("reasoner");
-    }
-
-    private OpenAiChatOptions deepSeekThinkingDisabledOptions(String providerName, String modelName) {
-        if (!shouldDisableDeepSeekThinking(providerName, modelName)) {
-            return null;
-        }
-        return OpenAiChatOptions.builder()
-                .model(modelName)
-                .extraBody(Map.of("thinking", Map.of("type", "disabled")))
-                .build();
+        return builder;
     }
 
     private ExecutionClientBundle createExecutionClientBundle(AgentDefinition definition) {
@@ -2344,7 +3687,7 @@ public class AgentLoop {
                 && (apiBaseOverride == null || apiBaseOverride.isBlank())
                 && (modelOverride == null || modelOverride.isBlank())) {
             ensureDefaultClientReady();
-            return new ExecutionClientBundle(chatClient, model, defaultProviderConfig.providerName());
+            return new ExecutionClientBundle(chatClient, model, defaultProviderConfig.providerName(), defaultProviderConfig.apiBase(), defaultProviderConfig.streamingEnabled());
         }
 
         ResolvedProviderConfig resolved = providerRuntime.resolve(
@@ -2355,7 +3698,7 @@ public class AgentLoop {
         );
         ChatModel chatModel = createChatModel(resolved);
         ChatClient executionChatClient = ChatClient.builder(chatModel).build();
-        return new ExecutionClientBundle(executionChatClient, resolved.model(), resolved.providerName());
+        return new ExecutionClientBundle(executionChatClient, resolved.model(), resolved.providerName(), resolved.apiBase(), resolved.streamingEnabled());
     }
 
     private void ensureDefaultClientReady() {
@@ -2372,7 +3715,7 @@ public class AgentLoop {
         }
     }
 
-    private record ExecutionClientBundle(ChatClient chatClient, String model, String providerName) {
+    private record ExecutionClientBundle(ChatClient chatClient, String model, String providerName, String apiBase, boolean streamingEnabled) {
     }
 
     private boolean isReasoningSideChannelProvider(String providerName, String modelName) {
@@ -2381,94 +3724,46 @@ public class AgentLoop {
         return provider.contains("deepseek") || modelValue.contains("deepseek");
     }
 
-    private boolean usesNativeDeepSeek(String providerName) {
-        return providerName != null && providerName.equalsIgnoreCase("deepseek");
-    }
-
-    private static final class ReasoningContentFilter {
-        private final boolean enabled;
-        private boolean inThinkBlock;
-
-        private ReasoningContentFilter(boolean enabled) {
-            this.enabled = enabled;
-        }
-
-        static ReasoningContentFilter forModel(boolean enabled) {
-            return new ReasoningContentFilter(enabled);
-        }
-
-        String filterDelta(String delta) {
-            if (!enabled || delta == null || delta.isEmpty()) {
-                return delta != null ? delta : "";
-            }
-            StringBuilder visible = new StringBuilder(delta.length());
-            int index = 0;
-            while (index < delta.length()) {
-                if (inThinkBlock) {
-                    int close = indexOfIgnoreCase(delta, "</think>", index);
-                    if (close < 0) {
-                        return visible.toString();
-                    }
-                    inThinkBlock = false;
-                    index = close + "</think>".length();
-                    continue;
-                }
-                int open = indexOfIgnoreCase(delta, "<think>", index);
-                if (open < 0) {
-                    visible.append(delta, index, delta.length());
-                    break;
-                }
-                visible.append(delta, index, open);
-                inThinkBlock = true;
-                index = open + "<think>".length();
-            }
-            return visible.toString();
-        }
-
-        String sanitizeFinal(String text) {
-            if (!enabled) {
-                return text != null ? text : "";
-            }
-            return sanitizeText(text);
-        }
-
-        static String sanitizeText(String text) {
-            if (text == null || text.isEmpty()) {
-                return "";
-            }
-            String sanitized = text.replaceAll("(?is)<think>.*?</think>", "");
-            sanitized = sanitized.replaceAll("(?im)^\\s*\"?reasoning_content\"?\\s*:\\s*\".*\"\\s*,?\\s*$", "");
-            return sanitized;
-        }
-
-        private static int indexOfIgnoreCase(String source, String target, int fromIndex) {
-            int max = source.length() - target.length();
-            for (int i = Math.max(0, fromIndex); i <= max; i++) {
-                if (source.regionMatches(true, i, target, 0, target.length())) {
-                    return i;
-                }
-            }
-            return -1;
-        }
-    }
-
     private ChatModel createChatModel(ResolvedProviderConfig resolvedProvider) {
-        if (usesNativeDeepSeek(resolvedProvider.providerName())) {
-            DeepSeekApi deepSeekApi = DeepSeekApi.builder()
-                    .apiKey(resolvedProvider.apiKey())
-                    .baseUrl(nativeDeepSeekBaseUrl(resolvedProvider.springAiBaseUrl()))
-                    .build();
+        if (isNativeDeepSeekProvider(resolvedProvider.providerName())) {
             return DeepSeekChatModel.builder()
-                    .deepSeekApi(deepSeekApi)
-                    .options((DeepSeekChatOptions) buildExecutionOptions(null, resolvedProvider.model(),
-                            resolvedProvider.providerName()))
+                    .deepSeekApi(DeepSeekApi.builder()
+                            .apiKey(resolvedProvider.apiKey())
+                            .baseUrl(nativeDeepSeekBaseUrl(resolvedProvider.springAiBaseUrl()))
+                            .build())
+                    .options(createDeepSeekDefaultOptions(resolvedProvider))
                     .build();
         }
-
         return OpenAiChatModel.builder()
-                .options((OpenAiChatOptions) buildExecutionOptions(null, resolvedProvider.model(),
-                        resolvedProvider.providerName()))
+                .options(createDefaultOptions(resolvedProvider))
                 .build();
+    }
+
+    private DeepSeekChatOptions createDeepSeekDefaultOptions(ResolvedProviderConfig resolvedProvider) {
+        DeepSeekChatOptions.Builder builder = DeepSeekChatOptions.builder();
+        builder.model(resolvedProvider.model());
+        if (config.getAgent().getMaxTokens() > 0) {
+            builder.maxTokens(config.getAgent().getMaxTokens());
+        }
+        builder.temperature(config.getAgent().getTemperature());
+        return builder.build();
+    }
+
+    private OpenAiChatOptions createDefaultOptions(ResolvedProviderConfig resolvedProvider) {
+        OpenAiChatOptions.Builder builder = OpenAiChatOptions.builder();
+        builder.apiKey(resolvedProvider.apiKey());
+        builder.baseUrl(resolvedProvider.springAiBaseUrl());
+        builder.model(resolvedProvider.model());
+        builder.timeout(Duration.ofMillis(safeTimeoutMillis(config.getAgent().getLlmCallTimeoutSeconds(), 300)));
+        if (config.getAgent().getMaxTokens() > 0) {
+            builder.maxTokens(config.getAgent().getMaxTokens());
+        }
+        builder.temperature(config.getAgent().getTemperature());
+        return builder.build();
+    }
+
+    private boolean isNativeDeepSeekProvider(String providerName) {
+        return providerName != null && providerName.equalsIgnoreCase("deepseek");
     }
 
     private String nativeDeepSeekBaseUrl(String baseUrl) {
@@ -2583,11 +3878,10 @@ public class AgentLoop {
 
     public String callLLM(String prompt, Map<String, Object> options) {
         try {
-            ensureDefaultClientReady();
             String response = simpleChatClient.prompt()
                     .system("You are a helpful assistant.")
                     .user(prompt)
-                    .options(buildExecutionOptions(null, model, defaultProviderConfig.providerName()).mutate())
+                    .options(buildExecutionOptions(null, model))
                     .call()
                     .content();
 

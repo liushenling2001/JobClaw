@@ -14,6 +14,7 @@ public class TerminalEventRenderer {
     private boolean boxActive;
     private boolean assistantStreaming;
     private boolean assistantStreamPrinted;
+    private String assistantStreamSegmentId = "";
     private int toolCount;
     private ToolPanel currentTool;
 
@@ -63,9 +64,22 @@ public class TerminalEventRenderer {
             case THINK_START -> {
                 assistantStreaming = false;
                 assistantStreamPrinted = false;
+                assistantStreamSegmentId = "";
                 status("thinking...");
             }
             case THINK_STREAM -> {
+                if (isReasoning(event)) {
+                    status("thinking...");
+                    break;
+                }
+                String segmentId = stringValue(event.getMetadata().get("streamSegmentId"));
+                if (segmentId != null && !segmentId.isBlank() && !segmentId.equals(assistantStreamSegmentId)) {
+                    if (assistantStreaming) {
+                        System.out.println();
+                    }
+                    assistantStreaming = false;
+                    assistantStreamSegmentId = segmentId;
+                }
                 renderAssistantDelta(event.getContent());
             }
             case THINK_END -> {
@@ -77,6 +91,7 @@ public class TerminalEventRenderer {
             }
             case TOOL_START -> {
                 assistantStreaming = false;
+                assistantStreamSegmentId = "";
                 currentTool = new ToolPanel(toolName(event), stringValue(event.getMetadata().get("request")), "");
                 status("tool " + currentTool.name() + " running");
             }
@@ -255,6 +270,11 @@ public class TerminalEventRenderer {
 
     private String stringValue(Object value) {
         return value != null ? String.valueOf(value) : null;
+    }
+
+    private boolean isReasoning(ExecutionEvent event) {
+        Object value = event.getMetadata().get("reasoning");
+        return value instanceof Boolean flag ? flag : Boolean.parseBoolean(String.valueOf(value));
     }
 
     private String compact(String content) {

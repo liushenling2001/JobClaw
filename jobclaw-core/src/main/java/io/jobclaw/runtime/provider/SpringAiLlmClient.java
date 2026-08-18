@@ -10,7 +10,9 @@ import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.stereotype.Component;
 
+import java.lang.reflect.Method;
 import java.time.Duration;
+import java.util.Map;
 
 @Component
 public class SpringAiLlmClient {
@@ -66,7 +68,27 @@ public class SpringAiLlmClient {
         if (temperature != null) {
             builder.temperature(temperature);
         }
+        Map<String, Object> thinkingOptions = QwenThinkingOptions.extraBody(
+                resolved.providerName(),
+                resolved.model(),
+                resolved.apiBase(),
+                config.getAgent().getThinkingMode()
+        );
+        if (!thinkingOptions.isEmpty()) {
+            applyExtraBodyIfAvailable(builder, thinkingOptions);
+        }
         return builder.build();
+    }
+
+    private void applyExtraBodyIfAvailable(DeepSeekChatOptions.Builder builder, Map<String, Object> extraBody) {
+        try {
+            Method method = builder.getClass().getMethod("extraBody", Map.class);
+            method.invoke(builder, extraBody);
+        } catch (NoSuchMethodException ignored) {
+            // compatibility: older Spring AI versions (including 1.1.x) may not expose extraBody.
+        } catch (ReflectiveOperationException ex) {
+            throw new IllegalStateException("Failed to apply thinking options for DeepSeek chat options", ex);
+        }
     }
 
     private OpenAiChatOptions createOpenAiOptions(ResolvedProviderConfig resolved,

@@ -164,6 +164,7 @@ class AgentProfileServiceTest {
         config.getAgent().setWorkspace(tempDir.toString());
         config.getAgent().setProvider("openai");
         config.getAgent().setModel("main-model");
+        config.getAgent().setThinkingMode("disabled");
         config.getProviders().getOpenai().setApiKey("sk-secret");
         AgentCatalogService catalogService = new AgentCatalogService(
                 new FileAgentCatalogStore(tempDir.resolve(".jobclaw").resolve("agents").toString())
@@ -185,6 +186,7 @@ class AgentProfileServiceTest {
 
         assertEquals("openai", profile.modelConfig().get("provider"));
         assertEquals("child-model", profile.modelConfig().get("model"));
+        assertEquals("disabled", profile.modelConfig().get("thinkingMode"));
         assertTrue(!profile.modelConfig().containsKey("apiKey"));
     }
 }

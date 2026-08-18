@@ -1,0 +1,20 @@
+[
+  {
+    "id": "single-vllm-chunk",
+    "chunks": ["complete response"],
+    "expectedDeltas": ["complete response"],
+    "expectedFinal": "complete response"
+  },
+  {
+    "id": "cumulative-provider-chunks",
+    "chunks": ["hello", "hello world", "hello world!"],
+    "expectedDeltas": ["hello", " world", "!"],
+    "expectedFinal": "hello world!"
+  },
+  {
+    "id": "duplicate-provider-chunk",
+    "chunks": ["hello", "hello", " world"],
+    "expectedDeltas": ["hello", "", " world"],
+    "expectedFinal": "hello world"
+  }
+]
