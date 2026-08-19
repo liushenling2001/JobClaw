@@ -92,6 +92,13 @@ public final class FullScreenCli {
     private int historyIndex = -1;
     private int menuIndex;
     private int selectedTool = -1;
+    private int scrollOffset;
+    private int maxScrollOffset;
+    private int viewportHeight = 10;
+    private int lastBodyLineCount;
+    private List<String> lastRenderedScreen = List.of();
+    private int lastRenderWidth = -1;
+    private int lastRenderHeight = -1;
     private boolean toolFocus;
     private boolean confirmExit;
     private boolean exit;
@@ -99,7 +106,11 @@ public final class FullScreenCli {
     private List<RunRecord> resumeChoices;
     private int resumeIndex;
     private long startedAt = System.nanoTime();
+    private long lastRenderAt;
     private boolean dirty = true;
+    private boolean renderImmediately = true;
+
+    private static final long STREAM_FRAME_INTERVAL_NANOS = 120_000_000L;
 
     public FullScreenCli(Terminal terminal, CompletableFuture<ConfigurableApplicationContext> runtimeFuture) {
         this.terminal = terminal;
@@ -114,7 +125,7 @@ public final class FullScreenCli {
         PrintStream originalOut = System.out;
         PrintStream originalErr = System.err;
         terminal.writer().print(ESC + "?1049h"
-                + (wslImeMode ? "" : ESC + "?1000h" + ESC + "?1006h")
+                + ESC + "?1002h" + ESC + "?1006h"
                 + ESC + "?25h" + ESC + "2J" + ESC + "H");
         terminal.flush();
         System.setOut(new PrintStream(OutputStream.nullOutputStream(), true, StandardCharsets.UTF_8));
@@ -132,10 +143,15 @@ public final class FullScreenCli {
                 int key = terminal.reader().read(40L);
                 if (key >= 0) {
                     handleKey(key);
+                    renderImmediately = true;
                 }
-                if (dirty) {
+                long now = System.nanoTime();
+                boolean streamFrameDue = now - lastRenderAt >= STREAM_FRAME_INTERVAL_NANOS;
+                if (dirty && (renderImmediately || activeRun == null || streamFrameDue)) {
                     render();
                     dirty = false;
+                    renderImmediately = false;
+                    lastRenderAt = now;
                 }
             }
             return 0;
@@ -153,7 +169,7 @@ public final class FullScreenCli {
             System.setErr(originalErr);
             terminal.handle(Terminal.Signal.INT, originalIntHandler);
             terminal.setAttributes(original);
-            terminal.writer().print((wslImeMode ? "" : ESC + "?1006l" + ESC + "?1000l")
+            terminal.writer().print(ESC + "?1006l" + ESC + "?1002l"
                     + ESC + "?25h" + ESC + "?1049l" + RESET);
             terminal.flush();
         }
@@ -216,6 +232,7 @@ public final class FullScreenCli {
             return;
         }
         String task = promptQueue.remove();
+        scrollToBottom();
         transcript.addUser(task);
         startedAt = System.nanoTime();
         activeRun = CompletableFuture.supplyAsync(() -> {
@@ -312,10 +329,31 @@ public final class FullScreenCli {
             case 'B' -> moveDown();
             case 'C' -> { if (cursor < composer.length()) cursor++; }
             case 'D' -> { if (cursor > 0) cursor--; }
+            case '5' -> handlePageKey(true);
+            case '6' -> handlePageKey(false);
+            case 'H' -> scrollToTop();
+            case 'F' -> scrollToBottom();
+            case '1' -> handleHomeEndKey(true);
+            case '4' -> handleHomeEndKey(false);
             case '<' -> handleMouseSequence();
             default -> { }
         }
         dirty = true;
+    }
+
+    private void handlePageKey(boolean up) throws Exception {
+        int terminator = terminal.reader().read(5L);
+        if (terminator == '~') {
+            scrollBy(up ? Math.max(3, viewportHeight - 2) : -Math.max(3, viewportHeight - 2));
+        }
+    }
+
+    private void handleHomeEndKey(boolean home) throws Exception {
+        int terminator = terminal.reader().read(5L);
+        if (terminator == '~') {
+            if (home) scrollToTop();
+            else scrollToBottom();
+        }
     }
 
     private void handleMouseSequence() throws Exception {
@@ -335,7 +373,17 @@ public final class FullScreenCli {
         if (values.length != 3) return;
         try {
             int button = Integer.parseInt(values[0]);
+            int column = Integer.parseInt(values[1]);
             int row = Integer.parseInt(values[2]);
+            if ((button & 64) != 0) {
+                scrollBy((button & 1) == 0 ? 3 : -3);
+                return;
+            }
+            if ((button & 3) == 0 && column >= terminal.getWidth() - 1
+                    && row >= 4 && row < 4 + viewportHeight) {
+                scrollToScrollbarRow(row - 4);
+                return;
+            }
             if ((button & 3) != 0) return;
             Integer toolIndex = toolRows.get(row);
             if (toolIndex != null) {
@@ -419,6 +467,7 @@ public final class FullScreenCli {
             input = visibleSuggestions.get(Math.min(menuIndex, visibleSuggestions.size() - 1)).value;
         }
         setComposer("");
+        scrollToBottom();
         addHistory(input);
         if (input.startsWith("/")) {
             executeCommand(input);
@@ -532,11 +581,21 @@ public final class FullScreenCli {
         }
         RunRecord record = runService.getRequired(runId);
         transcript.clear();
-        transcript.addUser(record.getTask());
-        runService.readEvents(runId, 2_000).forEach(transcript::accept);
+        List<RunRecord> replayRuns = resume && record.getSessionKey() != null
+                ? runService.listRuns(2_000).stream()
+                        .filter(run -> record.getSessionKey().equals(run.getSessionKey()))
+                        .sorted(Comparator.comparing(RunRecord::getCreatedAt,
+                                Comparator.nullsLast(Comparator.naturalOrder())))
+                        .toList()
+                : List.of(record);
+        for (RunRecord replayRun : replayRuns) {
+            transcript.addUser(replayRun.getTask());
+            runService.readEvents(replayRun.getRunId(), 2_000).forEach(transcript::accept);
+        }
         transcript.status((resume ? "Resumed " : "Attached ") + runId);
         lastRunId = runId;
         if (resume) sessionKey = record.getSessionKey();
+        scrollToBottom();
     }
 
     private void handlePickerKey(int key) throws Exception {
@@ -595,7 +654,8 @@ public final class FullScreenCli {
     private String helpText() {
         StringBuilder text = new StringBuilder("Commands\n");
         COMMANDS.forEach(command -> text.append(String.format("%-14s %s%n", command.name, command.description)));
-        return text.append("\nTab: complete command / focus tools\nEnter: send / expand selected tool\nCtrl+C: confirm exit").toString();
+        return text.append("\nMouse wheel or PageUp/PageDown: scroll transcript\nTab: complete command / focus tools"
+                + "\nEnter: send / expand selected tool\nCtrl+C: confirm exit").toString();
     }
 
     private String skillsText() {
@@ -621,19 +681,32 @@ public final class FullScreenCli {
         List<Suggestion> suggestions = suggestions();
         int overlayRows = resumeChoices != null ? Math.min(12, resumeChoices.size() + 3) : Math.min(8, suggestions.size());
         int bodyHeight = Math.max(4, height - 8 - overlayRows);
+        viewportHeight = bodyHeight;
         List<String> body = transcript.blocks().isEmpty()
                 ? renderWelcome(width, bodyHeight)
-                : renderTranscript(width);
-        int from = Math.max(0, body.size() - bodyHeight);
+                : renderTranscript(Math.max(20, width - 1));
+        if (scrollOffset > 0 && body.size() > lastBodyLineCount) {
+            scrollOffset += body.size() - lastBodyLineCount;
+        }
+        lastBodyLineCount = body.size();
+        maxScrollOffset = Math.max(0, body.size() - bodyHeight);
+        scrollOffset = Math.max(0, Math.min(scrollOffset, maxScrollOffset));
+        int from = Math.max(0, body.size() - bodyHeight - scrollOffset);
         List<String> screen = new ArrayList<>();
         screen.add(ORANGE + " JobClaw" + RESET + "  " + DIM + model + RESET);
         screen.add(DIM + " " + compact(System.getProperty("user.dir"), width - 2) + RESET);
         screen.add(DIM + "─".repeat(width) + RESET);
-        for (int i = from; i < body.size(); i++) screen.add(body.get(i));
-        while (screen.size() < 3 + bodyHeight) screen.add("");
+        for (int row = 0; row < bodyHeight; row++) {
+            int index = from + row;
+            String line = index < body.size() ? body.get(index) : "";
+            screen.add(withScrollbar(line, width, scrollbarMarker(row, bodyHeight, body.size(), from)));
+        }
         if (resumeChoices != null) screen.addAll(renderResumePicker(width));
         else screen.addAll(renderSuggestions(suggestions, width));
         String activity = activityText();
+        if (scrollOffset > 0) {
+            activity = "Viewing earlier messages · " + scrollOffset + " lines below · PgDn to return";
+        }
         screen.add(" " + (activeRun != null ? CYAN + spinner() + " " : DIM) + activity + RESET);
         screen.add(ORANGE + "╭" + "─".repeat(width - 2) + "╮" + RESET);
         ComposerView composerView = composerView(width - 6);
@@ -641,7 +714,10 @@ public final class FullScreenCli {
         screen.add(ORANGE + "│" + RESET + " " + input
                 + pad(width - 3 - displayWidth(input)) + ORANGE + "│" + RESET);
         screen.add(ORANGE + "╰" + "─".repeat(width - 2) + "╯" + RESET);
-        screen.add(DIM + " / commands  ·  Tab tools  ·  Ctrl+C exit" + (promptQueue.isEmpty() ? "" : "  ·  " + promptQueue.size() + " queued") + RESET);
+        String shortcuts = width >= 72
+                ? " / commands  ·  Wheel/PgUp/PgDn scroll  ·  Tab tools  ·  Ctrl+C exit"
+                : " /  ·  Wheel/PgUp/PgDn  ·  Ctrl+C";
+        screen.add(DIM + shortcuts + (promptQueue.isEmpty() ? "" : "  ·  " + promptQueue.size() + " queued") + RESET);
 
         toolRows.clear();
         for (int row = 0; row < screen.size(); row++) {
@@ -649,18 +725,26 @@ public final class FullScreenCli {
             if (matcher.matches()) toolRows.put(row + 1, Integer.parseInt(matcher.group(1)));
         }
 
-        // Windows Terminal owns the IME composition window for WSL. Synchronized
-        // output and mouse reporting can reset that composition, so WSL uses the
-        // plain repaint path and keeps the cursor visible throughout.
+        // Keep Windows Terminal's IME composition intact and avoid flashing on
+        // fast streams by updating only rows whose rendered content changed.
+        List<String> renderedScreen = new ArrayList<>(height);
+        for (int row = 0; row < height; row++) {
+            String line = row < screen.size() ? screen.get(row) : "";
+            renderedScreen.add(clipAnsi(line, width));
+        }
+        boolean fullRepaint = width != lastRenderWidth
+                || height != lastRenderHeight
+                || lastRenderedScreen.size() != height;
         StringBuilder out = new StringBuilder();
         if (!wslImeMode) {
             out.append(ESC).append("?2026h");
         }
-        out.append(ESC).append('H');
         for (int row = 0; row < height; row++) {
-            String line = row < screen.size() ? screen.get(row) : "";
-            out.append(ESC).append("2K").append(clipAnsi(line, width));
-            if (row + 1 < height) out.append('\n');
+            String line = renderedScreen.get(row);
+            if (fullRepaint || !line.equals(lastRenderedScreen.get(row))) {
+                out.append(ESC).append(row + 1).append(";1H")
+                        .append(ESC).append("2K").append(line);
+            }
         }
         int composerRow = Math.min(height - 1, 3 + bodyHeight + overlayRows + 3);
         int cursorColumn = Math.min(width - 1, 5 + composerView.cursorOffset());
@@ -671,6 +755,9 @@ public final class FullScreenCli {
         }
         terminal.writer().print(out);
         terminal.flush();
+        lastRenderedScreen = List.copyOf(renderedScreen);
+        lastRenderWidth = width;
+        lastRenderHeight = height;
     }
 
     private List<String> renderWelcome(int width, int availableHeight) {
@@ -757,7 +844,9 @@ public final class FullScreenCli {
         List<String> lines = new ArrayList<>();
         for (CliTranscriptModel.Block block : transcript.blocks()) {
             if (block instanceof CliTranscriptModel.TextBlock text) {
-                lines.add("");
+                if (!lines.isEmpty() && !stripAnsi(lines.get(lines.size() - 1)).isBlank()) {
+                    lines.add("");
+                }
                 String prefix = switch (text.kind()) {
                     case USER -> "❯ "; case ASSISTANT -> "● "; case ERROR -> "! "; default -> "  ";
                     case TOOL -> "  ";
@@ -785,6 +874,44 @@ public final class FullScreenCli {
             }
         }
         return lines;
+    }
+
+    private void scrollBy(int lines) {
+        scrollOffset = Math.max(0, Math.min(maxScrollOffset, scrollOffset + lines));
+        dirty = true;
+    }
+
+    private void scrollToBottom() {
+        scrollOffset = 0;
+        dirty = true;
+    }
+
+    private void scrollToTop() {
+        scrollOffset = maxScrollOffset;
+        dirty = true;
+    }
+
+    private void scrollToScrollbarRow(int row) {
+        if (viewportHeight <= 1 || maxScrollOffset <= 0) return;
+        double topRatio = (double) Math.max(0, Math.min(viewportHeight - 1, row)) / (viewportHeight - 1);
+        int firstVisibleLine = (int) Math.round(topRatio * maxScrollOffset);
+        scrollOffset = maxScrollOffset - firstVisibleLine;
+        dirty = true;
+    }
+
+    private String scrollbarMarker(int row, int height, int totalLines, int from) {
+        if (totalLines <= height) return " ";
+        int thumbSize = Math.max(1, (int) Math.round((double) height * height / totalLines));
+        int travel = Math.max(0, height - thumbSize);
+        int scrollable = Math.max(1, totalLines - height);
+        int thumbStart = (int) Math.round((double) from * travel / scrollable);
+        return row >= thumbStart && row < thumbStart + thumbSize ? "┃" : "│";
+    }
+
+    private String withScrollbar(String line, int width, String marker) {
+        String content = clipAnsi(line, Math.max(1, width - 1));
+        int padding = Math.max(0, width - 1 - displayWidth(stripAnsi(content)));
+        return content + pad(padding) + DIM + marker + RESET;
     }
 
     private void appendToolDetail(List<String> lines, String label, String value, int width) {

@@ -39,6 +39,17 @@ class CliTranscriptModelTest {
         assertEquals("after tool", ((CliTranscriptModel.TextBlock) model.blocks().get(2)).text());
     }
 
+    @Test
+    void ignoresEmptyLeadingDeltasAndRemovesLeadingLineBreaks() {
+        CliTranscriptModel model = new CliTranscriptModel();
+
+        model.accept(stream("", "seg-1", false));
+        model.accept(stream("\n\nanswer", "seg-1", false));
+
+        assertEquals(1, model.blocks().size());
+        assertEquals("answer", ((CliTranscriptModel.TextBlock) model.blocks().get(0)).text());
+    }
+
     private ExecutionEvent stream(String content, String segmentId, boolean reasoning) {
         return new ExecutionEvent("session", ExecutionEvent.EventType.THINK_STREAM, content,
                 Map.of("streamSegmentId", segmentId, "reasoning", reasoning));

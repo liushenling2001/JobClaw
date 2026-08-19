@@ -142,6 +142,13 @@ final class CliTranscriptModel {
                     status = "Thinking";
                     break;
                 }
+                String content = event.getContent();
+                if (streamingAssistant == null) {
+                    content = stripLeadingLineBreaks(content);
+                }
+                if (content == null || content.isEmpty()) {
+                    break;
+                }
                 String segmentId = value(event, "streamSegmentId");
                 if (!segmentId.isBlank() && !segmentId.equals(streamingSegmentId)) {
                     closeAssistant();
@@ -151,7 +158,7 @@ final class CliTranscriptModel {
                     streamingAssistant = new TextBlock(Kind.ASSISTANT, "");
                     blocks.add(streamingAssistant);
                 }
-                streamingAssistant.append(event.getContent());
+                streamingAssistant.append(content);
                 turnAssistantSeen = true;
                 status = "Responding";
             }
@@ -261,6 +268,15 @@ final class CliTranscriptModel {
     private boolean isReasoning(ExecutionEvent event) {
         Object value = event.getMetadata().get("reasoning");
         return value instanceof Boolean flag ? flag : Boolean.parseBoolean(String.valueOf(value));
+    }
+
+    private String stripLeadingLineBreaks(String value) {
+        if (value == null || value.isEmpty()) return value;
+        int offset = 0;
+        while (offset < value.length() && (value.charAt(offset) == '\r' || value.charAt(offset) == '\n')) {
+            offset++;
+        }
+        return value.substring(offset);
     }
 
     private String value(ExecutionEvent event, String key) {
