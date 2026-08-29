@@ -68,14 +68,26 @@ public class AgentOrchestrator {
     }
 
     public String process(String sessionKey, String userContent, Consumer<ExecutionEvent> eventCallback) {
+        return process(sessionKey, userContent, eventCallback, null);
+    }
+
+    public String process(String sessionKey,
+                          String userContent,
+                          Consumer<ExecutionEvent> eventCallback,
+                          String reasoningEffort) {
         AgentRole specifiedRole = extractSpecifiedRole(userContent);
         if (specifiedRole != null) {
-            return processWithRole(sessionKey, userContent, specifiedRole, eventCallback);
+            AgentLoop agent = agentRegistry.getOrCreateAgent(specifiedRole, sessionKey);
+            return agent.processWithDefinition(
+                    sessionKey,
+                    userContent,
+                    AgentDefinition.fromRole(specifiedRole),
+                    eventCallback,
+                    reasoningEffort
+            );
         }
         AgentLoop agent = agentRegistry.getOrCreateAgent(AgentRole.ASSISTANT, sessionKey);
-        return eventCallback != null
-                ? agent.process(sessionKey, userContent, eventCallback)
-                : agent.process(sessionKey, userContent);
+        return agent.processWithDefinition(sessionKey, userContent, null, eventCallback, reasoningEffort);
     }
 
     public String getStatus() {

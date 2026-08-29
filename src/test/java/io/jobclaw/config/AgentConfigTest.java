@@ -11,7 +11,7 @@ class AgentConfigTest {
         AgentConfig config = new AgentConfig();
 
         assertEquals(1, config.getMaxRepairAttempts());
-        assertEquals(300, config.getLlmCallTimeoutSeconds());
+        assertEquals(3600, config.getLlmCallTimeoutSeconds());
     }
 
     @Test
@@ -19,6 +19,6 @@ class AgentConfigTest {
         Config config = Config.defaultConfig();
 
         assertEquals(1, config.getAgent().getMaxRepairAttempts());
-        assertEquals(300, config.getAgent().getLlmCallTimeoutSeconds());
+        assertEquals(3600, config.getAgent().getLlmCallTimeoutSeconds());
     }
 }

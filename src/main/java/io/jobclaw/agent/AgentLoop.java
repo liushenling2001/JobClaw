@@ -18,6 +18,7 @@ import io.jobclaw.context.ContextAssembler;
 import io.jobclaw.context.ContextAssemblyOptions;
 import io.jobclaw.context.ContextAssemblyPolicy;
 import io.jobclaw.config.Config;
+import io.jobclaw.config.ModelRuntimeConfig;
 import io.jobclaw.context.result.ContextRef;
 import io.jobclaw.context.result.NoopResultStore;
 import io.jobclaw.context.result.ResultStore;
@@ -41,6 +42,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.advisor.ToolCallingAdvisor;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
@@ -54,8 +56,12 @@ import org.springframework.ai.deepseek.DeepSeekChatOptions;
 import org.springframework.ai.deepseek.api.DeepSeekApi;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
+import org.springframework.ai.model.tool.ToolCallingManager;
 import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.chat.model.ToolContext;
+import org.springframework.ai.tool.metadata.ToolMetadata;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
+import io.micrometer.observation.ObservationRegistry;
 import reactor.core.publisher.Flux;
 
 import java.io.IOException;
@@ -80,6 +86,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -128,6 +135,7 @@ public class AgentLoop {
     private volatile ChatClient chatClient;
     private volatile String model;
     private final ToolCallback[] allToolCallbacks;
+    private final ToolCallingManager toolCallingManager;
 
     // 新增组件
     private final ContextBuilder contextBuilder;
@@ -224,7 +232,23 @@ public class AgentLoop {
                      ActiveManifestRegistry activeManifestRegistry) {
         this(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler, contextAssemblyPolicy,
                 summaryService, null, null, new ProviderRuntime(), new ActiveExecutionRegistry(), resultStore,
-                completionRegistry, activeSkillRegistry, activeManifestRegistry);
+                completionRegistry, activeSkillRegistry, activeManifestRegistry, null);
+    }
+
+    public AgentLoop(Config config, SessionManager sessionManager,
+                     ToolCallback[] allToolCallbacks,
+                     ContextBuilder contextBuilder,
+                     ContextAssembler contextAssembler,
+                     ContextAssemblyPolicy contextAssemblyPolicy,
+                     SummaryService summaryService,
+                     ResultStore resultStore,
+                     CompletionRegistry completionRegistry,
+                     ActiveSkillRegistry activeSkillRegistry,
+                     ActiveManifestRegistry activeManifestRegistry,
+                     ToolCallingManager toolCallingManager) {
+        this(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler, contextAssemblyPolicy,
+                summaryService, null, null, new ProviderRuntime(), new ActiveExecutionRegistry(), resultStore,
+                completionRegistry, activeSkillRegistry, activeManifestRegistry, toolCallingManager);
     }
 
     /**
@@ -309,9 +333,31 @@ public class AgentLoop {
                      CompletionRegistry completionRegistry,
                      ActiveSkillRegistry activeSkillRegistry,
                      ActiveManifestRegistry activeManifestRegistry) {
+        this(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler, contextAssemblyPolicy,
+                summaryService, chatClient, model, providerRuntime, activeExecutionRegistry, resultStore,
+                completionRegistry, activeSkillRegistry, activeManifestRegistry, null);
+    }
+
+    AgentLoop(Config config, SessionManager sessionManager,
+                     ToolCallback[] allToolCallbacks,
+                     ContextBuilder contextBuilder,
+                     ContextAssembler contextAssembler,
+                     ContextAssemblyPolicy contextAssemblyPolicy,
+                     SummaryService summaryService,
+                     ChatClient chatClient, String model,
+                     ProviderRuntime providerRuntime,
+                     ActiveExecutionRegistry activeExecutionRegistry,
+                     ResultStore resultStore,
+                     CompletionRegistry completionRegistry,
+                     ActiveSkillRegistry activeSkillRegistry,
+                     ActiveManifestRegistry activeManifestRegistry,
+                     ToolCallingManager toolCallingManager) {
         this.config = config;
         this.sessionManager = sessionManager;
         this.allToolCallbacks = allToolCallbacks;
+        this.toolCallingManager = toolCallingManager != null
+                ? toolCallingManager
+                : ToolCallingManager.builder().unlimitedCallsPerTool().unlimitedTotalToolCalls().build();
         this.providerRuntime = providerRuntime;
         this.activeExecutionRegistry = activeExecutionRegistry;
         this.completionRegistry = completionRegistry != null ? completionRegistry : new CompletionRegistry(config);
@@ -353,7 +399,8 @@ public class AgentLoop {
                 config.getAgent(),
                 memoryStore,
                 memoryEvolver,
-                summaryService
+                summaryService,
+                () -> ModelRuntimeConfig.contextWindow(config, config.getAgent().getModel())
         );
         this.runTrajectoryCompactor = new RunTrajectoryCompactor(config.getAgent(), this.resultStore);
 
@@ -442,13 +489,22 @@ public class AgentLoop {
      */
     public String processWithDefinition(String sessionKey, String userContent, AgentDefinition definition,
                                         Consumer<ExecutionEvent> eventCallback) {
+        return processWithDefinition(sessionKey, userContent, definition, eventCallback, null);
+    }
+
+    public String processWithDefinition(String sessionKey,
+                                        String userContent,
+                                        AgentDefinition definition,
+                                        Consumer<ExecutionEvent> eventCallback,
+                                        String reasoningEffortOverride) {
         // 设置执行上下文（供 SpawnTool/CollaborateTool 获取 sessionKey）
         AgentExecutionContext.ExecutionScope previousScope = AgentExecutionContext.getCurrentScope();
         AgentExecutionContext.ExecutionScope scope = createExecutionScope(
                 sessionKey,
                 definition,
                 eventCallback,
-                previousScope
+                previousScope,
+                reasoningEffortOverride
         );
         AgentExecutionContext.setCurrentContext(scope);
         userInputRequestRegistry.clear(sessionKey, scope.runId());
@@ -2188,14 +2244,18 @@ public class AgentLoop {
                                    boolean checkpointAssistantDraft) {
         StringBuilder attemptResponse = new StringBuilder();
         StringBuilder rawResponse = new StringBuilder();
-        StringBuilder rawReasoning = new StringBuilder();
         ensureNotCancelled();
         StreamDeltaNormalizer streamDeltaNormalizer = new StreamDeltaNormalizer();
-        StreamDeltaNormalizer reasoningDeltaNormalizer = new StreamDeltaNormalizer();
         int fullResponseStartLength = fullResponse != null ? fullResponse.length() : 0;
         AtomicInteger streamChunkCount = new AtomicInteger();
         AtomicInteger reasoningChunkCount = new AtomicInteger();
         String streamSegmentId = "seg-" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+        AtomicLong toolRoundRevision = new AtomicLong();
+        ToolCallback[] attemptTools = trackToolRoundBoundaries(tools, toolRoundRevision);
+        ReasoningStreamState reasoningState = new ReasoningStreamState(streamSegmentId, toolRoundRevision.get());
+        List<Message> requestMessages = isNativeDeepSeekProvider(executionClientBundle.providerName())
+                ? promptMessages
+                : normalizeOpenAiCompatibleSystemMessages(promptMessages);
 
         logger.info("LLM call start session={} provider={} model={} apiBase={} streaming={} messages={} tools={} checkpointDraft={}",
                 sessionKey,
@@ -2203,7 +2263,7 @@ public class AgentLoop {
                 executionClientBundle.model(),
                 executionClientBundle.apiBase(),
                 executionClientBundle.streamingEnabled(),
-                promptMessages != null ? promptMessages.size() : 0,
+                requestMessages != null ? requestMessages.size() : 0,
                 tools != null ? tools.length : 0,
                 checkpointAssistantDraft);
 
@@ -2215,7 +2275,7 @@ public class AgentLoop {
                     executionClientBundle.apiBase());
             return runNonStreamFallback(
                     executionClientBundle,
-                    promptMessages,
+                    requestMessages,
                     tools,
                     options,
                     sessionKey,
@@ -2227,8 +2287,8 @@ public class AgentLoop {
         }
 
         Flux<ChatResponse> responseStream = executionClientBundle.chatClient().prompt()
-                .messages(promptMessages)
-                .toolCallbacks(tools)
+                .messages(requestMessages)
+                .toolCallbacks(attemptTools)
                 .options(options)
                 .stream()
                 .chatResponse();
@@ -2239,21 +2299,31 @@ public class AgentLoop {
                 StreamResponseParts responseParts = extractStreamResponseParts(chatResponse);
                 String reasoning = responseParts.reasoning();
                 if (!reasoning.isEmpty()) {
-                    String reasoningDelta = reasoningDeltaNormalizer.normalize(rawReasoning, reasoning);
+                    NormalizedReasoning normalizedReasoning = reasoningState.normalize(
+                            toolRoundRevision.get(), reasoning);
+                    String reasoningDelta = normalizedReasoning.delta();
                     if (!reasoningDelta.isEmpty()) {
                         int reasoningIndex = reasoningChunkCount.incrementAndGet();
-                        rawReasoning.append(reasoningDelta);
                         if (reasoningIndex <= 8 || reasoningIndex % 25 == 0) {
-                            logger.info("LLM reasoning delta session={} provider={} model={} chunk={} deltaChars={} deltaPreview={} accumulatedBefore={}",
+                            logger.info("LLM reasoning delta session={} provider={} model={} chunk={} round={} deltaChars={} deltaPreview={} accumulatedBefore={}",
                                     sessionKey,
                                     executionClientBundle.providerName(),
                                     executionClientBundle.model(),
                                     reasoningIndex,
+                                    normalizedReasoning.roundIndex(),
                                     reasoningDelta.length(),
                                     previewForLog(reasoningDelta),
-                                    rawReasoning.length() - reasoningDelta.length());
+                                    normalizedReasoning.accumulatedBefore());
                         }
-                        emitReasoningDelta(eventCallback, sessionKey, streamSegmentId, reasoningDelta);
+                        if (normalizedReasoning.newRound()) {
+                            logger.info("LLM reasoning round reset session={} provider={} model={} round={} toolRevision={}",
+                                    sessionKey,
+                                    executionClientBundle.providerName(),
+                                    executionClientBundle.model(),
+                                    normalizedReasoning.roundIndex(),
+                                    toolRoundRevision.get());
+                        }
+                        emitReasoningDelta(eventCallback, sessionKey, normalizedReasoning.segmentId(), reasoningDelta);
                     }
                 }
 
@@ -2787,6 +2857,34 @@ public class AgentLoop {
         return promptMessages;
     }
 
+    static List<Message> normalizeOpenAiCompatibleSystemMessages(List<Message> messages) {
+        if (messages == null || messages.isEmpty()) {
+            return messages == null ? List.of() : new ArrayList<>();
+        }
+
+        List<String> systemParts = new ArrayList<>();
+        List<Message> nonSystemMessages = new ArrayList<>(messages.size());
+        for (Message message : messages) {
+            if (message instanceof SystemMessage) {
+                String text = message.getText();
+                if (text != null && !text.isBlank()) {
+                    systemParts.add(text);
+                }
+            } else {
+                nonSystemMessages.add(message);
+            }
+        }
+
+        if (systemParts.isEmpty()) {
+            return new ArrayList<>(messages);
+        }
+
+        List<Message> normalized = new ArrayList<>(nonSystemMessages.size() + 1);
+        normalized.add(new SystemMessage(String.join("\n\n", systemParts)));
+        normalized.addAll(nonSystemMessages);
+        return normalized;
+    }
+
     private Message toSpringMessage(io.jobclaw.providers.Message message, String providerName, String modelName) {
         if (message == null || message.getRole() == null) {
             return null;
@@ -2981,6 +3079,47 @@ public class AgentLoop {
         ToolCallback[] combined = Arrays.copyOf(left, left.length + right.length);
         System.arraycopy(right, 0, combined, left.length, right.length);
         return combined;
+    }
+
+    private ToolCallback[] trackToolRoundBoundaries(ToolCallback[] callbacks, AtomicLong toolRoundRevision) {
+        if (callbacks == null || callbacks.length == 0) {
+            return new ToolCallback[0];
+        }
+        return Arrays.stream(callbacks)
+                .map(callback -> trackToolRoundBoundary(callback, toolRoundRevision))
+                .toArray(ToolCallback[]::new);
+    }
+
+    private ToolCallback trackToolRoundBoundary(ToolCallback callback, AtomicLong toolRoundRevision) {
+        return new ToolCallback() {
+            @Override
+            public org.springframework.ai.tool.definition.ToolDefinition getToolDefinition() {
+                return callback.getToolDefinition();
+            }
+
+            @Override
+            public ToolMetadata getToolMetadata() {
+                return callback.getToolMetadata();
+            }
+
+            @Override
+            public String call(String toolInput) {
+                try {
+                    return callback.call(toolInput);
+                } finally {
+                    toolRoundRevision.incrementAndGet();
+                }
+            }
+
+            @Override
+            public String call(String toolInput, ToolContext toolContext) {
+                try {
+                    return callback.call(toolInput, toolContext);
+                } finally {
+                    toolRoundRevision.incrementAndGet();
+                }
+            }
+        };
     }
 
     /**
@@ -3507,6 +3646,7 @@ public class AgentLoop {
 
     static final class StreamDeltaNormalizer {
         private StreamMode mode = StreamMode.UNKNOWN;
+        private String previousChunk = "";
 
         String normalize(CharSequence currentResponse, String nextChunk) {
             if (nextChunk == null || nextChunk.isEmpty()) {
@@ -3514,24 +3654,111 @@ public class AgentLoop {
             }
             String current = currentResponse == null ? "" : currentResponse.toString();
             if (current.isEmpty()) {
+                previousChunk = nextChunk;
                 return nextChunk;
             }
             if (current.endsWith(nextChunk)) {
+                previousChunk = nextChunk;
                 return "";
-            }
-            if (mode == StreamMode.CUMULATIVE) {
-                return nextChunk.startsWith(current) ? nextChunk.substring(current.length()) : nextChunk;
-            }
-            if (mode == StreamMode.DELTA) {
-                return nextChunk;
             }
             if (nextChunk.startsWith(current)) {
                 mode = StreamMode.CUMULATIVE;
+                previousChunk = nextChunk;
                 return nextChunk.substring(current.length());
             }
+            if (!previousChunk.isEmpty() && nextChunk.startsWith(previousChunk)
+                    && (mode == StreamMode.CUMULATIVE
+                    || (nextChunk.length() >= 16 && nextChunk.length() >= previousChunk.length() * 2))) {
+                mode = StreamMode.CUMULATIVE;
+                String delta = nextChunk.substring(previousChunk.length());
+                previousChunk = nextChunk;
+                return delta;
+            }
+            int snapshotOverlap = cumulativeSnapshotOverlap(current, nextChunk);
+            if (snapshotOverlap > 0) {
+                mode = StreamMode.CUMULATIVE;
+                previousChunk = nextChunk;
+                return nextChunk.substring(snapshotOverlap);
+            }
             mode = StreamMode.DELTA;
+            previousChunk = nextChunk;
             return nextChunk;
         }
+
+        private int cumulativeSnapshotOverlap(String current, String nextChunk) {
+            if (nextChunk.length() < 16 || (!previousChunk.isEmpty() && nextChunk.length() < previousChunk.length() * 2)) {
+                return 0;
+            }
+            int overlap = suffixPrefixOverlap(current, nextChunk);
+            return overlap >= 16 || (overlap >= 8 && overlap >= nextChunk.length() / 2) ? overlap : 0;
+        }
+
+        private int suffixPrefixOverlap(String current, String nextChunk) {
+            int[] prefix = new int[nextChunk.length()];
+            for (int i = 1, matched = 0; i < nextChunk.length(); i++) {
+                while (matched > 0 && nextChunk.charAt(i) != nextChunk.charAt(matched)) {
+                    matched = prefix[matched - 1];
+                }
+                if (nextChunk.charAt(i) == nextChunk.charAt(matched)) matched++;
+                prefix[i] = matched;
+            }
+            int matched = 0;
+            int start = Math.max(0, current.length() - nextChunk.length());
+            for (int i = start; i < current.length(); i++) {
+                while (matched > 0 && current.charAt(i) != nextChunk.charAt(matched)) {
+                    matched = prefix[matched - 1];
+                }
+                if (current.charAt(i) == nextChunk.charAt(matched)) matched++;
+                if (matched == nextChunk.length() && i + 1 < current.length()) {
+                    matched = prefix[matched - 1];
+                }
+            }
+            return matched;
+        }
+    }
+
+    static final class ReasoningStreamState {
+        private final String segmentBase;
+        private long observedToolRevision;
+        private int roundIndex = 1;
+        private StringBuilder currentRound = new StringBuilder();
+        private StreamDeltaNormalizer normalizer = new StreamDeltaNormalizer();
+
+        ReasoningStreamState(String segmentBase, long initialToolRevision) {
+            this.segmentBase = segmentBase;
+            this.observedToolRevision = initialToolRevision;
+        }
+
+        NormalizedReasoning normalize(long toolRevision, String nextChunk) {
+            boolean newRound = toolRevision != observedToolRevision;
+            if (newRound) {
+                observedToolRevision = toolRevision;
+                roundIndex++;
+                currentRound = new StringBuilder();
+                normalizer = new StreamDeltaNormalizer();
+            }
+            int accumulatedBefore = currentRound.length();
+            String delta = normalizer.normalize(currentRound, nextChunk);
+            currentRound.append(delta);
+            return new NormalizedReasoning(
+                    delta,
+                    segmentBase + "-reasoning-" + roundIndex,
+                    roundIndex,
+                    accumulatedBefore,
+                    newRound
+            );
+        }
+
+        String currentRoundText() {
+            return currentRound.toString();
+        }
+    }
+
+    record NormalizedReasoning(String delta,
+                               String segmentId,
+                               int roundIndex,
+                               int accumulatedBefore,
+                               boolean newRound) {
     }
 
     enum StreamMode {
@@ -3554,8 +3781,8 @@ public class AgentLoop {
     private synchronized ResolvedProviderConfig reloadDefaultClient(ChatClient providedChatClient) {
         ResolvedProviderConfig resolvedProvider = providerRuntime.resolve(config, modelOverride);
         ChatModel chatModel = createChatModel(resolvedProvider);
-        ChatClient nextChatClient = providedChatClient != null ? providedChatClient : ChatClient.builder(chatModel).build();
-        ChatClient nextSimpleChatClient = ChatClient.builder(createChatModel(resolvedProvider)).build();
+        ChatClient nextChatClient = providedChatClient != null ? providedChatClient : createChatClient(chatModel);
+        ChatClient nextSimpleChatClient = createChatClient(createChatModel(resolvedProvider));
 
         this.defaultProviderConfig = resolvedProvider;
         this.model = resolvedProvider.model();
@@ -3597,14 +3824,21 @@ public class AgentLoop {
                                                          String providerName,
                                                          String apiBase) {
         String effectiveModel = baseModel != null && !baseModel.isBlank() ? baseModel : model;
-        Integer effectiveMaxTokens = config.getAgent().getMaxTokens() > 0 ? config.getAgent().getMaxTokens() : null;
+        int configuredMaxTokens = ModelRuntimeConfig.maxTokens(config, effectiveModel);
+        Integer effectiveMaxTokens = configuredMaxTokens > 0 ? configuredMaxTokens : null;
         Double effectiveTemperature = config.getAgent().getTemperature();
         String thinkingMode = config.getAgent().getThinkingMode();
+        String reasoningEffort = config.getAgent().getReasoningEffort();
+        Integer thinkingTokenBudget = config.getAgent().getThinkingTokenBudget() > 0
+                ? config.getAgent().getThinkingTokenBudget()
+                : null;
 
         if (definition != null && definition.getConfig() != null) {
             AgentDefinition.AgentConfig definitionConfig = definition.getConfig();
             if (definitionConfig.getModel() != null && !definitionConfig.getModel().isBlank()) {
                 effectiveModel = definitionConfig.getModel();
+                int modelMaxTokens = ModelRuntimeConfig.maxTokens(config, effectiveModel);
+                effectiveMaxTokens = modelMaxTokens > 0 ? modelMaxTokens : null;
             }
             if (definitionConfig.getMaxTokens() != null && definitionConfig.getMaxTokens() > 0) {
                 effectiveMaxTokens = definitionConfig.getMaxTokens();
@@ -3616,6 +3850,26 @@ public class AgentLoop {
             if (definitionThinkingMode != null && !definitionThinkingMode.toString().isBlank()) {
                 thinkingMode = definitionThinkingMode.toString();
             }
+            Object definitionReasoningEffort = definitionConfig.getCustomSetting("reasoningEffort");
+            if (definitionReasoningEffort != null && !definitionReasoningEffort.toString().isBlank()) {
+                reasoningEffort = definitionReasoningEffort.toString();
+            }
+            Object definitionThinkingTokenBudget = definitionConfig.getCustomSetting("thinkingTokenBudget");
+            if (definitionThinkingTokenBudget instanceof Number number) {
+                thinkingTokenBudget = number.intValue() > 0 ? number.intValue() : null;
+            } else if (definitionThinkingTokenBudget != null) {
+                try {
+                    int parsed = Integer.parseInt(definitionThinkingTokenBudget.toString());
+                    thinkingTokenBudget = parsed > 0 ? parsed : null;
+                } catch (NumberFormatException ignored) {
+                    // Keep the inherited budget when an agent definition contains an invalid value.
+                }
+            }
+        }
+
+        String runtimeReasoningEffort = AgentExecutionContext.getCurrentReasoningEffort();
+        if (runtimeReasoningEffort != null && !runtimeReasoningEffort.isBlank()) {
+            reasoningEffort = runtimeReasoningEffort;
         }
 
         if (isNativeDeepSeekProvider(providerName)) {
@@ -3642,7 +3896,9 @@ public class AgentLoop {
                 providerName,
                 effectiveModel,
                 apiBase,
-                thinkingMode
+                thinkingMode,
+                thinkingTokenBudget,
+                reasoningEffort
         );
         if (!thinkingOptions.isEmpty()) {
             builder.extraBody(thinkingOptions);
@@ -3670,8 +3926,18 @@ public class AgentLoop {
                 modelOverride
         );
         ChatModel chatModel = createChatModel(resolved);
-        ChatClient executionChatClient = ChatClient.builder(chatModel).build();
+        ChatClient executionChatClient = createChatClient(chatModel);
         return new ExecutionClientBundle(executionChatClient, resolved.model(), resolved.providerName(), resolved.apiBase(), resolved.streamingEnabled());
+    }
+
+    private ChatClient createChatClient(ChatModel chatModel) {
+        return ChatClient.builder(
+                        chatModel,
+                        ObservationRegistry.NOOP,
+                        null,
+                        null,
+                        ToolCallingAdvisor.builder().toolCallingManager(toolCallingManager))
+                .build();
     }
 
     private void ensureDefaultClientReady() {
@@ -3715,8 +3981,9 @@ public class AgentLoop {
     private DeepSeekChatOptions createDeepSeekDefaultOptions(ResolvedProviderConfig resolvedProvider) {
         DeepSeekChatOptions.Builder builder = DeepSeekChatOptions.builder();
         builder.model(resolvedProvider.model());
-        if (config.getAgent().getMaxTokens() > 0) {
-            builder.maxTokens(config.getAgent().getMaxTokens());
+        int maxTokens = ModelRuntimeConfig.maxTokens(config, resolvedProvider.model());
+        if (maxTokens > 0) {
+            builder.maxTokens(maxTokens);
         }
         builder.temperature(config.getAgent().getTemperature());
         return builder.build();
@@ -3728,10 +3995,22 @@ public class AgentLoop {
         builder.baseUrl(resolvedProvider.springAiBaseUrl());
         builder.model(resolvedProvider.model());
         builder.timeout(Duration.ofMillis(safeTimeoutMillis(config.getAgent().getLlmCallTimeoutSeconds(), 300)));
-        if (config.getAgent().getMaxTokens() > 0) {
-            builder.maxTokens(config.getAgent().getMaxTokens());
+        int maxTokens = ModelRuntimeConfig.maxTokens(config, resolvedProvider.model());
+        if (maxTokens > 0) {
+            builder.maxTokens(maxTokens);
         }
         builder.temperature(config.getAgent().getTemperature());
+        Map<String, Object> thinkingOptions = QwenThinkingOptions.extraBody(
+                resolvedProvider.providerName(),
+                resolvedProvider.model(),
+                resolvedProvider.apiBase(),
+                config.getAgent().getThinkingMode(),
+                config.getAgent().getThinkingTokenBudget(),
+                config.getAgent().getReasoningEffort()
+        );
+        if (!thinkingOptions.isEmpty()) {
+            builder.extraBody(thinkingOptions);
+        }
         return builder.build();
     }
 
@@ -3766,12 +4045,16 @@ public class AgentLoop {
     private AgentExecutionContext.ExecutionScope createExecutionScope(String sessionKey,
                                                                       AgentDefinition definition,
                                                                       Consumer<ExecutionEvent> eventCallback,
-                                                                      AgentExecutionContext.ExecutionScope previousScope) {
+                                                                      AgentExecutionContext.ExecutionScope previousScope,
+                                                                      String reasoningEffortOverride) {
         String agentId = definition != null ? definition.getCode() : "assistant";
         String agentName = definition != null ? definition.getDisplayName() : "Assistant";
         Consumer<ExecutionEvent> effectiveCallback = eventCallback != null
                 ? eventCallback
                 : previousScope != null ? previousScope.eventCallback() : null;
+        String effectiveReasoningEffort = reasoningEffortOverride != null && !reasoningEffortOverride.isBlank()
+                ? QwenThinkingOptions.normalizeReasoningEffort(reasoningEffortOverride)
+                : previousScope != null ? previousScope.reasoningEffort() : null;
 
         if (previousScope != null && sessionKey.equals(previousScope.sessionKey()) && previousScope.runId() != null) {
             return new AgentExecutionContext.ExecutionScope(
@@ -3781,7 +4064,8 @@ public class AgentLoop {
                     previousScope.parentRunId(),
                     agentId,
                     agentName,
-                    definition != null ? definition : previousScope.definition()
+                    definition != null ? definition : previousScope.definition(),
+                    effectiveReasoningEffort
             );
         }
 
@@ -3794,7 +4078,8 @@ public class AgentLoop {
                 parentRunId,
                 agentId,
                 agentName,
-                definition != null ? definition : previousScope != null ? previousScope.definition() : null
+                definition != null ? definition : previousScope != null ? previousScope.definition() : null,
+                effectiveReasoningEffort
         );
     }
 

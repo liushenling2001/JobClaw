@@ -22,8 +22,18 @@ public class AgentExecutionContext {
             String parentRunId,
             String agentId,
             String agentName,
-            AgentDefinition definition
+            AgentDefinition definition,
+            String reasoningEffort
     ) {
+        public ExecutionScope(String sessionKey,
+                              Consumer<ExecutionEvent> eventCallback,
+                              String runId,
+                              String parentRunId,
+                              String agentId,
+                              String agentName,
+                              AgentDefinition definition) {
+            this(sessionKey, eventCallback, runId, parentRunId, agentId, agentName, definition, null);
+        }
     }
 
     private static final ThreadLocal<ExecutionScope> currentScope = new ThreadLocal<>();
@@ -78,6 +88,11 @@ public class AgentExecutionContext {
     public static AgentDefinition getCurrentDefinition() {
         ExecutionScope scope = currentScope.get();
         return scope != null ? scope.definition() : null;
+    }
+
+    public static String getCurrentReasoningEffort() {
+        ExecutionScope scope = currentScope.get();
+        return scope != null ? scope.reasoningEffort() : null;
     }
 
     public static void setRuntimeRequiredToolNames(Collection<String> toolNames) {

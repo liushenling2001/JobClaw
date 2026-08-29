@@ -1061,6 +1061,7 @@ function it() {
           {
             if ((t.metadata && t.metadata.reasoning) === !0) {
               const M =
+                t.runId ||
                 (t.metadata && t.metadata.streamSegmentId) ||
                 t.streamSegmentId ||
                 "current";
@@ -1923,9 +1924,9 @@ const kt = { class: "flex items-center gap-3" },
   Ts = {
     key: 0,
     class:
-      "mt-2 max-h-[24vh] overflow-y-auto rounded border border-outline-variant/20 bg-surface-container px-3 py-2",
+      "mt-2 flex max-h-[24vh] flex-col overflow-y-auto rounded border border-outline-variant/20 bg-surface-container px-3 py-2",
   },
-  As = { key: 0, class: "mb-3" },
+  As = { key: 0, class: "order-2 mb-3" },
   Es = {
     class:
       "mb-1 flex items-center justify-between text-[11px] text-on-surface-variant",
@@ -1940,7 +1941,7 @@ const kt = { class: "flex items-center gap-3" },
     key: 0,
     class: "mt-1 truncate font-mono text-[11px] text-on-surface-variant",
   },
-  js = { key: 1, class: "mb-3" },
+  js = { key: 1, class: "order-1 mb-3" },
   Bs = {
     class:
       "mb-1 flex items-center justify-between text-[11px] text-on-surface-variant",
@@ -1951,15 +1952,16 @@ const kt = { class: "flex items-center gap-3" },
   Us = { class: "truncate text-xs font-semibold text-on-surface" },
   zs = { class: "shrink-0 text-[11px] text-on-surface-variant" },
   Hs = { key: 0, class: "mt-1 truncate text-[11px] text-on-surface-variant" },
-  Gs = { class: "grid gap-2 text-[11px] md:grid-cols-2" },
+  Gs = { class: "order-3 grid gap-2 text-[11px] md:grid-cols-2" },
   Js = { class: "truncate text-on-surface" },
   Qs = { class: "truncate font-mono text-on-surface" },
   qs = { key: 0, class: "ml-1 text-on-surface-variant" },
   Ws = {
     key: 2,
-    class: "mt-2 whitespace-pre-wrap text-xs text-on-surface-variant",
+    class:
+      "order-4 mt-2 whitespace-pre-wrap text-xs text-on-surface-variant",
   },
-  Ys = { key: 3, class: "mt-2 space-y-1" },
+  Ys = { key: 3, class: "order-5 mt-2 space-y-1" },
   We = 8,
   Ye = 8,
   Xe = 2,
@@ -1986,6 +1988,7 @@ const kt = { class: "flex items-center gap-3" },
                 return a.kind === "agent" ||
                   a.kind === "progress" ||
                   a.kind === "manifest" ||
+                  a.kind === "thinking" ||
                   a.toolCall
                   ? !1
                   : a.role === "user" ||
@@ -2008,8 +2011,15 @@ const kt = { class: "flex items-center gap-3" },
             l = i.value.slice(a),
             I = l.filter((y) => y.kind === "agent"),
             b = l.filter((y) => y.kind === "progress"),
+            thinkingMessages = l.filter((y) => y.kind === "thinking"),
             o = i.value.filter((y) => y.kind === "manifest"),
-            k = l.filter((y) => y.toolCall).map((y) => y.toolCall),
+            rawToolCalls = l.filter((y) => y.toolCall).map((y) => y.toolCall),
+            agentToolCalls = rawToolCalls.filter(
+              (y) => y.toolName === "spawn" || y.toolName === "collaborate",
+            ),
+            k = rawToolCalls.filter(
+              (y) => y.toolName !== "spawn" && y.toolName !== "collaborate",
+            ),
             g = I.map((y) => {
               var H, ae, q, ne, P, ue, Y, he;
               const z =
@@ -2031,6 +2041,9 @@ const kt = { class: "flex items-center gap-3" },
                   ((he = y.agentMeta) == null ? void 0 : he.events) || []
                 ).slice(-3),
                 toolCalls: z.slice(-Xe),
+                toolTotal: z.length,
+                toolDone: z.filter((H) => H.status === "success").length,
+                toolRunning: z.filter((H) => H.status === "running").length,
                 omittedToolCalls: Math.max(0, z.length - Xe),
               };
             }).sort((y, z) => {
@@ -2040,20 +2053,46 @@ const kt = { class: "flex items-center gap-3" },
                 : new Date(z.timestamp).getTime() -
                     new Date(y.timestamp).getTime();
             }),
-            A = g.slice(0, Ye),
+            inferredAgents =
+              g.length === 0
+                ? agentToolCalls.map((y, z) => ({
+                    id: y.toolId || `agent-tool-${z}`,
+                    label:
+                      y.toolName === "collaborate"
+                        ? `协作任务 ${z + 1}`
+                        : `子智能体 ${z + 1}`,
+                    status: y.status || "running",
+                    timestamp: new Date().toISOString(),
+                    events: [
+                      y.status === "running"
+                        ? "正在执行子任务"
+                        : y.status === "error"
+                          ? "子任务执行失败"
+                          : "子任务已返回结果",
+                    ],
+                    toolCalls: [],
+                    toolTotal: 0,
+                    toolDone: 0,
+                    toolRunning: 0,
+                    omittedToolCalls: 0,
+                  }))
+                : [],
+            allAgents = [...g, ...inferredAgents],
+            A = allAgents.slice(0, Ye),
             K = k.slice(-We),
+            latestThinking = thinkingMessages[thinkingMessages.length - 1],
             N = o[o.length - 1],
             E = N == null ? void 0 : N.manifestMeta,
-            U = [...k, ...g.flatMap((y) => y.toolCalls)],
+            U = [...k, ...allAgents.flatMap((y) => y.toolCalls)],
             Q =
               U.filter((y) => y.status === "running").length +
-              g.filter((y) => y.status === "running").length,
+              allAgents.filter((y) => y.status === "running").length,
             te =
               U.filter((y) => y.status === "success").length +
-              g.filter((y) => y.status === "success").length,
+              allAgents.filter((y) => y.status === "success").length,
             se =
               U.filter((y) => y.status === "error").length +
-              g.filter((y) => y.status === "error").length;
+              allAgents.filter((y) => y.status === "error").length;
           if (E) {
             const y = E.total ?? 0,
               z = E.pending ?? 0,
@@ -2061,17 +2100,28 @@ const kt = { class: "flex items-center gap-3" },
               ae = E.done ?? 0,
               q = E.failed ?? 0,
               ne = !!(E.finalArtifactPath && !E.finalArtifactReady),
-              P = H > 0 || z > 0 || ne;
+              agentRunning = allAgents.filter(
+                (y) => y.status === "running",
+              ).length,
+              toolRunning = k.filter((y) => y.status === "running").length,
+              P = H > 0 || z > 0 || ne || agentRunning > 0 || f.value;
             return {
               visible: f.value || P || !!E.action,
-              title: "任务队列",
+              hasManifest: true,
+              title: "任务执行",
               icon: P ? "progress_activity" : q > 0 ? "error" : "check_circle",
               running: P,
               status: q > 0 && !P ? "error" : P ? "running" : "success",
               statusLabel: ne
                 ? "生成产物中"
-                : P
-                  ? "运行中"
+                : agentRunning > 0
+                  ? "子智能体运行中"
+                  : H > 0
+                    ? "执行子任务"
+                    : z > 0
+                      ? "准备下一项"
+                      : f.value
+                        ? "整理结果中"
                   : q > 0
                     ? "有失败项"
                     : "已完成",
@@ -2087,33 +2137,57 @@ const kt = { class: "flex items-center gap-3" },
               runningCount: H,
               done: ae,
               failed: q,
+              thinking: latestThinking || null,
+              mainTools: K,
+              mainToolTotal: k.length,
+              mainToolsOmitted: Math.max(0, k.length - We),
+              mainToolRunning: toolRunning,
+              agents: A,
+              agentTotal: allAgents.length,
+              agentsOmitted: Math.max(0, allAgents.length - Ye),
+              agentRunning,
+              progress: b.slice(-2),
+              successCount: te,
+              errorCount: se + q,
             };
           }
+          const runtimeRunning = f.value || Q > 0;
           return {
-            visible: f.value && (I.length > 0 || K.length > 0 || b.length > 0),
-            title: "任务运行",
+            visible:
+              f.value &&
+              (allAgents.length > 0 || K.length > 0 || b.length > 0),
+            hasManifest: false,
+            title: "任务执行",
             icon:
-              Q > 0 ? "progress_activity" : se > 0 ? "error" : "check_circle",
-            running: Q > 0,
-            status: se > 0 ? "error" : Q > 0 ? "running" : "success",
-            statusLabel: se > 0 ? "有异常" : Q > 0 ? "运行中" : "已完成",
+              runtimeRunning
+                ? "progress_activity"
+                : se > 0
+                  ? "error"
+                  : "check_circle",
+            running: runtimeRunning,
+            status: se > 0 ? "error" : runtimeRunning ? "running" : "success",
+            statusLabel:
+              Q > 0 ? "执行中" : f.value ? "整理结果中" : "已完成",
             taskKey: "工具与智能体",
             artifactPath: "",
             events: [...b.map((y) => y.content), ...g.flatMap((y) => y.events)]
               .filter(Boolean)
               .slice(-6),
-            total: U.length + g.length,
+            total: 0,
             pending: 0,
             runningCount: Q,
             done: te,
             failed: se,
             detail: "",
+            thinking: latestThinking || null,
             mainTools: K,
             mainToolTotal: k.length,
             mainToolsOmitted: Math.max(0, k.length - We),
+            mainToolRunning: k.filter((y) => y.status === "running").length,
             agents: A,
-            agentTotal: g.length,
-            agentsOmitted: Math.max(0, g.length - Ye),
+            agentTotal: allAgents.length,
+            agentsOmitted: Math.max(0, allAgents.length - Ye),
+            agentRunning: allAgents.filter((y) => y.status === "running").length,
             progress: b.slice(-2),
             successCount: te,
             errorCount: se,
@@ -2928,15 +3002,67 @@ ${b}`;
                         ),
                       ]),
                       r("div", _s, [
-                        r(
-                          "span",
-                          ws,
-                          " 完成 " + h(_.value.done) + "/" + h(_.value.total),
-                          1,
-                        ),
-                        r("span", Cs, " 运行 " + h(_.value.runningCount), 1),
-                        r("span", Is, " 待处理 " + h(_.value.pending), 1),
-                        r("span", Ms, " 失败 " + h(_.value.failed), 1),
+                        _.value.hasManifest && _.value.total > 0
+                          ? (c(),
+                            d(
+                              "span",
+                              {
+                                key: 0,
+                                class:
+                                  "inline-flex w-24 shrink-0 items-center justify-center whitespace-nowrap rounded border border-outline-variant/30 bg-surface-container px-2 py-0.5 text-on-surface-variant",
+                              },
+                              " 子任务 " +
+                                h(_.value.done) +
+                                "/" +
+                                h(_.value.total),
+                              1,
+                            ))
+                          : C("", !0),
+                        _.value.agentTotal > 0
+                          ? (c(),
+                            d(
+                              "span",
+                              {
+                                key: 1,
+                                class:
+                                  "inline-flex w-24 shrink-0 items-center justify-center whitespace-nowrap rounded border border-outline-variant/30 bg-surface-container px-2 py-0.5 text-on-surface-variant",
+                              },
+                              " 智能体 " +
+                                h(_.value.agentRunning) +
+                                "/" +
+                                h(_.value.agentTotal),
+                              1,
+                            ))
+                          : C("", !0),
+                        _.value.mainToolTotal > 0
+                          ? (c(),
+                            d(
+                              "span",
+                              {
+                                key: 2,
+                                class:
+                                  "inline-flex w-20 shrink-0 items-center justify-center whitespace-nowrap rounded border border-outline-variant/30 bg-surface-container px-2 py-0.5 text-on-surface-variant",
+                              },
+                              " 工具 " +
+                                h(_.value.mainToolRunning) +
+                                "/" +
+                                h(_.value.mainToolTotal),
+                              1,
+                            ))
+                          : C("", !0),
+                        _.value.errorCount > 0
+                          ? (c(),
+                            d(
+                              "span",
+                              {
+                                key: 3,
+                                class:
+                                  "inline-flex w-16 shrink-0 items-center justify-center whitespace-nowrap rounded border border-error/40 bg-error/10 px-2 py-0.5 text-error",
+                              },
+                              " 异常 " + h(_.value.errorCount),
+                              1,
+                            ))
+                          : C("", !0),
                         r(
                           "button",
                           {
@@ -2962,15 +3088,134 @@ ${b}`;
                         ),
                       ]),
                     ]),
+                    _.value.hasManifest && _.value.total > 0
+                      ? (c(),
+                        d(
+                          "div",
+                          {
+                            key: 0,
+                            class:
+                              "mt-2 h-1 overflow-hidden rounded-full bg-surface-container-highest",
+                            role: "progressbar",
+                            "aria-valuemin": "0",
+                            "aria-valuemax": "100",
+                            "aria-valuenow": Math.round(
+                              (Math.min(_.value.done, _.value.total) /
+                                Math.max(1, _.value.total)) *
+                                100,
+                            ),
+                          },
+                          [
+                            r("div", {
+                              class:
+                                "h-full rounded-full bg-secondary transition-all duration-300",
+                              style: {
+                                width:
+                                  Math.round(
+                                    (Math.min(_.value.done, _.value.total) /
+                                      Math.max(1, _.value.total)) *
+                                      100,
+                                  ) + "%",
+                              },
+                            }),
+                          ],
+                          8,
+                          ["aria-valuenow"],
+                        ))
+                      : C("", !0),
                     p.value
                       ? (c(),
                         d("div", Ts, [
+                          _.value.thinking
+                            ? (c(),
+                              d(
+                                "details",
+                                {
+                                  key: 10,
+                                  class:
+                                    "mb-3 border-b border-outline-variant/20 pb-3",
+                                },
+                                [
+                                  r(
+                                    "summary",
+                                    {
+                                      class:
+                                        "flex cursor-pointer select-none items-center justify-between gap-3 text-xs text-on-surface",
+                                    },
+                                    [
+                                      r(
+                                        "span",
+                                        {
+                                          class:
+                                            "flex min-w-0 items-center gap-2 font-semibold",
+                                        },
+                                        [
+                                          r(
+                                            "span",
+                                            {
+                                              class:
+                                                "material-symbols-outlined text-sm text-amber-200",
+                                            },
+                                            "psychology_alt",
+                                          ),
+                                          r("span", null, "思考过程"),
+                                        ],
+                                      ),
+                                      r(
+                                        "span",
+                                        {
+                                          class:
+                                            "shrink-0 text-[11px] text-on-surface-variant",
+                                        },
+                                        h(
+                                          (_.value.thinking.thinkingMeta &&
+                                            _.value.thinking.thinkingMeta
+                                              .originalLength) ||
+                                            _.value.thinking.content.length,
+                                        ) + " 字",
+                                        1,
+                                      ),
+                                    ],
+                                  ),
+                                  r(
+                                    "pre",
+                                    {
+                                      class:
+                                        "mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-on-surface-variant",
+                                    },
+                                    h(_.value.thinking.content),
+                                    1,
+                                  ),
+                                  _.value.thinking.thinkingMeta &&
+                                  _.value.thinking.thinkingMeta.truncated
+                                    ? (c(),
+                                      d(
+                                        "div",
+                                        {
+                                          key: 0,
+                                          class:
+                                            "mt-2 text-[11px] text-on-surface-variant",
+                                        },
+                                        "思考内容较长，仅保留前 " +
+                                          h(_.value.thinking.content.length) +
+                                          " 字。",
+                                        1,
+                                      ))
+                                    : C("", !0),
+                                ],
+                              ))
+                            : C("", !0),
                           (I = _.value.mainTools) != null && I.length
                             ? (c(),
                               d("div", As, [
                                 r("div", Es, [
                                   l[8] ||
-                                    (l[8] = r("span", null, "工具调用", -1)),
+                                    (l[8] = r(
+                                      "span",
+                                      null,
+                                      "主智能体工具",
+                                      -1,
+                                    )),
                                   _.value.mainToolsOmitted > 0
                                     ? (c(),
                                       d(
@@ -3046,7 +3291,12 @@ ${b}`;
                               d("div", js, [
                                 r("div", Bs, [
                                   l[9] ||
-                                    (l[9] = r("span", null, "子智能体", -1)),
+                                    (l[9] = r(
+                                      "span",
+                                      null,
+                                      "子智能体任务",
+                                      -1,
+                                    )),
                                   _.value.agentsOmitted > 0
                                     ? (c(),
                                       d(
@@ -3078,7 +3328,18 @@ ${b}`;
                                           [
                                             r("div", Fs, [
                                               r("span", Us, h(o.label), 1),
-                                              r("span", zs, h(D(o.status)), 1),
+                                              r(
+                                                "span",
+                                                zs,
+                                                h(D(o.status)) +
+                                                  (o.toolTotal > 0
+                                                    ? " · 工具 " +
+                                                      h(o.toolDone) +
+                                                      "/" +
+                                                      h(o.toolTotal)
+                                                    : ""),
+                                                1,
+                                              ),
                                             ]),
                                             (k = o.events) != null && k.length
                                               ? (c(),
@@ -3198,10 +3459,13 @@ ${b}`;
   }),
   tn = {
     class: "border-t border-outline-variant/20 p-4 bg-surface-container-low",
+    style:
+      "display: grid; grid-template-columns: minmax(0, 1fr) max-content; grid-template-rows: auto auto auto; column-gap: 1rem; row-gap: 0.5rem; align-items: end;",
   },
   sn = {
-    class:
-      "mb-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-outline-variant/20 bg-surface-container-high/50 px-3 py-2",
+    id: "jobclaw-chat-controls",
+    class: "flex min-h-8 flex-wrap items-center justify-end gap-2",
+    style: "grid-column: 2; grid-row: 1; align-self: end;",
   },
   nn = { class: "flex items-center gap-2 text-xs text-on-surface-variant" },
   rn = ["disabled"],
@@ -3215,14 +3479,21 @@ ${b}`;
     class: "flex items-center gap-2 text-xs text-on-surface-variant",
   },
   fn = ["value"],
-  hn = { class: "flex gap-4 items-end" },
-  gn = { class: "flex-1" },
+  hn = { class: "flex gap-4 items-end", style: "display: contents;" },
+  gn = {
+    class: "flex-1",
+    style: "grid-column: 1; grid-row: 1 / span 2; min-width: 0; align-self: stretch;",
+  },
   mn = ["placeholder", "disabled", "onKeydown"],
-  pn = { class: "flex gap-2" },
+  pn = {
+    class: "flex gap-2",
+    style: "grid-column: 2; grid-row: 2; justify-content: flex-end;",
+  },
   vn = { key: 0, class: "material-symbols-outlined text-sm animate-spin" },
   xn = { key: 1, class: "material-symbols-outlined text-sm" },
   bn = {
     class: "mt-2 text-xs text-on-surface-variant flex items-center gap-2",
+    style: "grid-column: 1 / -1; grid-row: 3;",
   },
   yn = { key: 1, class: "text-red-400" },
   Sn = be({
@@ -3441,8 +3712,18 @@ ${b}`;
                   {
                     type: "button",
                     disabled: !ce(i).voiceAvailable,
+                    title: ce(i).voiceAvailable
+                      ? O.value
+                        ? "关闭语音"
+                        : "开启语音"
+                      : "当前部署未配置语音环境",
+                    "aria-label": ce(i).voiceAvailable
+                      ? O.value
+                        ? "关闭语音"
+                        : "开启语音"
+                      : "语音不可用",
                     class: L([
-                      "inline-flex items-center gap-2 rounded-full px-3 py-1.5 transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+                      "inline-flex size-8 shrink-0 items-center justify-center rounded-md transition-colors disabled:cursor-not-allowed disabled:opacity-40",
                       O.value
                         ? "bg-secondary text-on-secondary"
                         : "bg-surface-container-high text-on-surface-variant hover:text-on-surface",
@@ -3453,7 +3734,7 @@ ${b}`;
                     r("span", on, h(O.value ? "graphic_eq" : "mic_off"), 1),
                     r(
                       "span",
-                      null,
+                      { class: "sr-only" },
                       h(
                         ce(i).voiceAvailable
                           ? O.value
@@ -3475,8 +3756,10 @@ ${b}`;
                         key: 0,
                         type: "button",
                         disabled: p.value || ce(i).isTranscribing,
+                        title: t.value,
+                        "aria-label": t.value,
                         class: L([
-                          "inline-flex items-center gap-2 rounded-full px-3 py-1.5 transition-colors disabled:opacity-50",
+                          "inline-flex size-8 shrink-0 items-center justify-center rounded-md transition-colors disabled:opacity-50",
                           ce(i).isRecording
                             ? "bg-red-500 text-white"
                             : "bg-primary text-on-primary",
@@ -3490,7 +3773,7 @@ ${b}`;
                           h(ce(i).isRecording ? "stop_circle" : "mic"),
                           1,
                         ),
-                        r("span", null, h(t.value), 1),
+                        r("span", { class: "sr-only" }, h(t.value), 1),
                       ],
                       10,
                       an,

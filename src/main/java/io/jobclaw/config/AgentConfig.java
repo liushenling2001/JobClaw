@@ -12,6 +12,8 @@ public class AgentConfig {
     private String model;
     private String provider;
     private String thinkingMode;
+    private String reasoningEffort;
+    private int thinkingTokenBudget;
     private int maxTokens;
     private double temperature;
     private int maxToolIterations;
@@ -69,6 +71,8 @@ public class AgentConfig {
         this.model = "qwen3.5-plus";
         this.provider = "dashscope";
         this.thinkingMode = "auto";
+        this.reasoningEffort = "auto";
+        this.thinkingTokenBudget = 0;
         this.maxTokens = 16384;
         this.temperature = 0.7;
         this.maxToolIterations = 20;
@@ -82,7 +86,7 @@ public class AgentConfig {
         this.toolCallTimeoutSeconds = 300;
         this.toolRepeatGuardEnabled = true;
         this.toolRepeatGuardThreshold = 3;
-        this.llmCallTimeoutSeconds = 300;
+        this.llmCallTimeoutSeconds = 3600;
         this.childAgentTimeoutMs = 900_000L;
         this.childAgentResultMaxChars = 4000;
         this.contextRefEnabled = true;
@@ -138,6 +142,22 @@ public class AgentConfig {
 
     public void setThinkingMode(String thinkingMode) {
         this.thinkingMode = thinkingMode;
+    }
+
+    public String getReasoningEffort() {
+        return reasoningEffort;
+    }
+
+    public void setReasoningEffort(String reasoningEffort) {
+        this.reasoningEffort = reasoningEffort;
+    }
+
+    public int getThinkingTokenBudget() {
+        return thinkingTokenBudget;
+    }
+
+    public void setThinkingTokenBudget(int thinkingTokenBudget) {
+        this.thinkingTokenBudget = Math.max(0, thinkingTokenBudget);
     }
 
     public int getMaxTokens() {

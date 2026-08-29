@@ -1,5 +1,6 @@
 # Compiled class files
 target/
+BOOT-INF/
 build/
 out/
 

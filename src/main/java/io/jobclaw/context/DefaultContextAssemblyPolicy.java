@@ -4,6 +4,8 @@ import io.jobclaw.config.AgentConfig;
 import io.jobclaw.session.SessionManager;
 import io.jobclaw.summary.SummaryService;
 
+import java.util.function.IntSupplier;
+
 public class DefaultContextAssemblyPolicy implements ContextAssemblyPolicy {
 
     private static final int MIN_PROMPT_BUDGET = 2048;
@@ -15,24 +17,33 @@ public class DefaultContextAssemblyPolicy implements ContextAssemblyPolicy {
     private final AgentConfig agentConfig;
     private final SessionManager sessionManager;
     private final SummaryService summaryService;
+    private final IntSupplier contextWindowSupplier;
 
     public DefaultContextAssemblyPolicy(AgentConfig agentConfig,
                                         SessionManager sessionManager,
                                         SummaryService summaryService) {
+        this(agentConfig, sessionManager, summaryService, agentConfig::getContextWindow);
+    }
+
+    public DefaultContextAssemblyPolicy(AgentConfig agentConfig,
+                                        SessionManager sessionManager,
+                                        SummaryService summaryService,
+                                        IntSupplier contextWindowSupplier) {
         this.agentConfig = agentConfig;
         this.sessionManager = sessionManager;
         this.summaryService = summaryService;
+        this.contextWindowSupplier = contextWindowSupplier;
     }
 
     @Override
     public ContextAssemblyOptions buildOptions(String sessionId, String currentUserInput) {
-        int contextWindow = Math.max(MIN_CONTEXT_WINDOW, agentConfig.getContextWindow());
+        int contextWindow = Math.max(MIN_CONTEXT_WINDOW, contextWindowSupplier.getAsInt());
         int maxPromptTokens = Math.max(
                 MIN_PROMPT_BUDGET,
                 contextWindow * normalizePercentage(agentConfig.getContextMaxPromptTokenPercentage()) / 100
         );
         int recentLimit = deriveRecentLimit(contextWindow);
-        int memoryLimit = deriveMemoryLimit();
+        int memoryLimit = deriveMemoryLimit(contextWindow);
         int maxSummaryRetrieval = normalizeRetrievalLimit(agentConfig.getContextMaxSummaryRetrieval());
         int maxHistoryRetrieval = normalizeRetrievalLimit(agentConfig.getContextMaxHistoryRetrieval());
         int maxMemoryRetrieval = normalizeRetrievalLimit(agentConfig.getContextMaxMemoryRetrieval());
@@ -80,8 +91,7 @@ public class DefaultContextAssemblyPolicy implements ContextAssemblyPolicy {
         return Math.min(12, configured);
     }
 
-    private int deriveMemoryLimit() {
-        int contextWindow = Math.max(MIN_CONTEXT_WINDOW, agentConfig.getContextWindow());
+    private int deriveMemoryLimit(int contextWindow) {
         int minBudget = Math.max(256, agentConfig.getMemoryMinTokenBudget());
         int maxBudget = Math.max(minBudget, agentConfig.getMemoryMaxTokenBudget());
         int memoryBudget = contextWindow * normalizePercentage(agentConfig.getMemoryTokenBudgetPercentage()) / 100;

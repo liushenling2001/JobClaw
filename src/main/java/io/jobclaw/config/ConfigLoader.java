@@ -173,6 +173,8 @@ public class ConfigLoader {
     private static void applyAgentOverrides(Config config) {
         applyStringOverride("JOBCLAW_AGENT_WORKSPACE", config.getAgent()::setWorkspace);
         applyStringOverride("JOBCLAW_AGENT_MODEL", config.getAgent()::setModel);
+        applyStringOverride("JOBCLAW_AGENT_REASONING_EFFORT", config.getAgent()::setReasoningEffort);
+        applyIntOverride("JOBCLAW_AGENT_THINKING_TOKEN_BUDGET", config.getAgent()::setThinkingTokenBudget);
         applyIntOverride("JOBCLAW_AGENT_MAX_TOKENS", config.getAgent()::setMaxTokens);
         applyDoubleOverride("JOBCLAW_AGENT_TEMPERATURE", config.getAgent()::setTemperature);
         applyIntOverride("JOBCLAW_AGENT_CONTEXT_WINDOW", config.getAgent()::setContextWindow);

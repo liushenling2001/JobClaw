@@ -18,6 +18,7 @@ import org.slf4j.LoggerFactory;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.IntSupplier;
 
 /**
  * 会话摘要器，负责管理会话摘要和历史记录压缩。
@@ -97,7 +98,7 @@ public class SessionSummarizer {
     private final SessionManager sessions;
     private final AgentLoop agentLoop;
     private final AgentConfig agentConfig;
-    private final int contextWindow;
+    private final IntSupplier contextWindowSupplier;
     private final Set<String> summarizing;
     private final MemoryStore memoryStore;
     private final MemoryEvolver memoryEvolver;
@@ -116,10 +117,19 @@ public class SessionSummarizer {
                              AgentConfig agentConfig, MemoryStore memoryStore,
                              MemoryEvolver memoryEvolver,
                              SummaryService summaryService) {
+        this(sessions, agentLoop, agentConfig, memoryStore, memoryEvolver,
+                summaryService, agentConfig::getContextWindow);
+    }
+
+    public SessionSummarizer(SessionManager sessions, AgentLoop agentLoop,
+                             AgentConfig agentConfig, MemoryStore memoryStore,
+                             MemoryEvolver memoryEvolver,
+                             SummaryService summaryService,
+                             IntSupplier contextWindowSupplier) {
         this.sessions = sessions;
         this.agentLoop = agentLoop;
         this.agentConfig = agentConfig;
-        this.contextWindow = agentConfig.getContextWindow();
+        this.contextWindowSupplier = contextWindowSupplier;
         this.memoryStore = memoryStore;
         this.memoryEvolver = memoryEvolver;
         this.summaryService = summaryService;
@@ -151,6 +161,7 @@ public class SessionSummarizer {
      */
     private boolean shouldSummarize(List<Message> history) {
         int tokenEstimate = estimateTokens(history);
+        int contextWindow = contextWindowSupplier.getAsInt();
         int threshold = contextWindow * agentConfig.getSummarizeTokenPercentage() / 100;
 
         return history.size() > agentConfig.getSummarizeMessageThreshold() || tokenEstimate > threshold;
@@ -242,6 +253,7 @@ public class SessionSummarizer {
      */
     private List<Message> filterValidMessages(List<Message> messages) {
         List<Message> validMessages = new ArrayList<>();
+        int contextWindow = contextWindowSupplier.getAsInt();
         int maxMessageTokens = contextWindow / AgentConstants.MAX_MESSAGE_TOKEN_DIVISOR;
 
         for (Message message : messages) {

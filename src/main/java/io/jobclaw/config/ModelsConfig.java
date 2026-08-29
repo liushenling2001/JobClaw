@@ -44,6 +44,7 @@ public class ModelsConfig {
         private String provider;
         private String model;
         private Integer maxContextSize;
+        private Integer maxTokens;
         private String description;
 
         public ModelDefinition() {}
@@ -59,6 +60,8 @@ public class ModelsConfig {
         public void setModel(String model) { this.model = model; }
         public Integer getMaxContextSize() { return maxContextSize; }
         public void setMaxContextSize(Integer maxContextSize) { this.maxContextSize = maxContextSize; }
+        public Integer getMaxTokens() { return maxTokens; }
+        public void setMaxTokens(Integer maxTokens) { this.maxTokens = maxTokens; }
         public String getDescription() { return description; }
         public void setDescription(String description) { this.description = description; }
     }

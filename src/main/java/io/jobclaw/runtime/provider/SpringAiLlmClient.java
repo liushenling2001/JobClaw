@@ -105,6 +105,17 @@ public class SpringAiLlmClient {
         if (temperature != null) {
             builder.temperature(temperature);
         }
+        Map<String, Object> thinkingOptions = QwenThinkingOptions.extraBody(
+                resolved.providerName(),
+                resolved.model(),
+                resolved.apiBase(),
+                config.getAgent().getThinkingMode(),
+                config.getAgent().getThinkingTokenBudget(),
+                config.getAgent().getReasoningEffort()
+        );
+        if (!thinkingOptions.isEmpty()) {
+            builder.extraBody(thinkingOptions);
+        }
         return builder.build();
     }
 

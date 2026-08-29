@@ -136,6 +136,152 @@ class AgentLoopExecutionOptionsTest {
     }
 
     @Test
+    void shouldApplyQwenThinkingTokenBudgetToVllmRequest() throws Exception {
+        Config config = Config.defaultConfig();
+        config.getAgent().setProvider("openrouter");
+        config.getAgent().setModel("qwen");
+        config.getAgent().setThinkingMode("auto");
+        config.getAgent().setThinkingTokenBudget(8192);
+        AgentLoop loop = new AgentLoop(
+                config,
+                new SessionManager(),
+                new ToolCallback[0],
+                mock(ContextBuilder.class),
+                mock(ContextAssembler.class),
+                mock(ContextAssemblyPolicy.class),
+                mock(SummaryService.class)
+        );
+
+        Method method = AgentLoop.class.getDeclaredMethod("buildExecutionOptions",
+                AgentDefinition.class, String.class, String.class, String.class);
+        method.setAccessible(true);
+
+        OpenAiChatOptions options = buildOpenAiOptions(method.invoke(
+                loop,
+                null,
+                "qwen",
+                "openrouter",
+                "http://100.113.233.0:8000/v1"
+        ));
+
+        assertEquals(Map.of("thinking_token_budget", 8192), options.getExtraBody());
+    }
+
+    @Test
+    void shouldApplyAgentReasoningEffortToSglangRequest() throws Exception {
+        Config config = Config.defaultConfig();
+        config.getAgent().setProvider("openrouter");
+        config.getAgent().setModel("qwen");
+        config.getAgent().setReasoningEffort("medium");
+        AgentLoop loop = new AgentLoop(
+                config,
+                new SessionManager(),
+                new ToolCallback[0],
+                mock(ContextBuilder.class),
+                mock(ContextAssembler.class),
+                mock(ContextAssemblyPolicy.class),
+                mock(SummaryService.class)
+        );
+
+        Method method = AgentLoop.class.getDeclaredMethod("buildExecutionOptions",
+                AgentDefinition.class, String.class, String.class, String.class);
+        method.setAccessible(true);
+
+        OpenAiChatOptions options = buildOpenAiOptions(method.invoke(
+                loop,
+                null,
+                "qwen",
+                "openrouter",
+                "http://192.168.3.168:8000/v1"
+        ));
+
+        assertEquals(Map.of("reasoning", Map.of("effort", "medium")), options.getExtraBody());
+    }
+
+    @Test
+    void shouldAllowChildAgentToOverrideReasoningEffort() throws Exception {
+        Config config = Config.defaultConfig();
+        config.getAgent().setProvider("openrouter");
+        config.getAgent().setModel("qwen");
+        config.getAgent().setReasoningEffort("low");
+        AgentLoop loop = new AgentLoop(
+                config,
+                new SessionManager(),
+                new ToolCallback[0],
+                mock(ContextBuilder.class),
+                mock(ContextAssembler.class),
+                mock(ContextAssemblyPolicy.class),
+                mock(SummaryService.class)
+        );
+        AgentDefinition.AgentConfig childConfig = new AgentDefinition.AgentConfig();
+        childConfig.setCustomSetting("reasoningEffort", "high");
+        AgentDefinition definition = AgentDefinition.builder()
+                .code("writer")
+                .displayName("Writer")
+                .systemPrompt("prompt")
+                .config(childConfig)
+                .build();
+
+        Method method = AgentLoop.class.getDeclaredMethod("buildExecutionOptions",
+                AgentDefinition.class, String.class, String.class, String.class);
+        method.setAccessible(true);
+        OpenAiChatOptions options = buildOpenAiOptions(method.invoke(
+                loop,
+                definition,
+                "qwen",
+                "openrouter",
+                "http://192.168.3.168:8000/v1"
+        ));
+
+        assertEquals(Map.of("reasoning", Map.of("effort", "high")), options.getExtraBody());
+    }
+
+    @Test
+    void shouldApplyConversationReasoningEffortAfterAgentConfiguration() throws Exception {
+        Config config = Config.defaultConfig();
+        config.getAgent().setProvider("openrouter");
+        config.getAgent().setModel("qwen");
+        config.getAgent().setReasoningEffort("low");
+        AgentLoop loop = new AgentLoop(
+                config,
+                new SessionManager(),
+                new ToolCallback[0],
+                mock(ContextBuilder.class),
+                mock(ContextAssembler.class),
+                mock(ContextAssemblyPolicy.class),
+                mock(SummaryService.class)
+        );
+        AgentDefinition.AgentConfig childConfig = new AgentDefinition.AgentConfig();
+        childConfig.setCustomSetting("reasoningEffort", "high");
+        AgentDefinition definition = AgentDefinition.builder()
+                .code("writer")
+                .displayName("Writer")
+                .systemPrompt("prompt")
+                .config(childConfig)
+                .build();
+
+        Method method = AgentLoop.class.getDeclaredMethod("buildExecutionOptions",
+                AgentDefinition.class, String.class, String.class, String.class);
+        method.setAccessible(true);
+        AgentExecutionContext.setCurrentContext(new AgentExecutionContext.ExecutionScope(
+                "web:test", null, "run-test", null, "assistant", "Assistant", definition, "max"
+        ));
+        try {
+            OpenAiChatOptions options = buildOpenAiOptions(method.invoke(
+                    loop,
+                    definition,
+                    "qwen",
+                    "openrouter",
+                    "http://192.168.3.168:8000/v1"
+            ));
+
+            assertEquals(Map.of("reasoning", Map.of("effort", "max")), options.getExtraBody());
+        } finally {
+            AgentExecutionContext.clear();
+        }
+    }
+
+    @Test
     void shouldCreateNativeDeepSeekChatModelForDeepSeekProvider() throws Exception {
         Config config = Config.defaultConfig();
         config.getAgent().setProvider("deepseek");

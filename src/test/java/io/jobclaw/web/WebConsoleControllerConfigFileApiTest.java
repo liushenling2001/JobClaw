@@ -131,16 +131,18 @@ class WebConsoleControllerConfigFileApiTest {
 
             WebConsoleController controller = controller(config, agentLoop);
             WebConsoleController.AgentProfileUpsertRequest request = new WebConsoleController.AgentProfileUpsertRequest();
-            request.setModelConfig(Map.of(
-                    "provider", "ollama",
-                    "model", "llama3.1",
-                    "apiBase", "http://localhost:11434/v1",
-                    "apiKey", "sk-local-test",
-                    "thinkingMode", "disabled",
-                    "temperature", 0.2,
-                    "maxTokens", 2048,
-                    "toolCallTimeoutSeconds", 120,
-                    "childAgentTimeoutMs", 600000
+            request.setModelConfig(Map.ofEntries(
+                    Map.entry("provider", "ollama"),
+                    Map.entry("model", "llama3.1"),
+                    Map.entry("apiBase", "http://localhost:11434/v1"),
+                    Map.entry("apiKey", "sk-local-test"),
+                    Map.entry("thinkingMode", "disabled"),
+                    Map.entry("reasoningEffort", "high"),
+                    Map.entry("thinkingTokenBudget", 4096),
+                    Map.entry("temperature", 0.2),
+                    Map.entry("maxTokens", 2048),
+                    Map.entry("toolCallTimeoutSeconds", 120),
+                    Map.entry("childAgentTimeoutMs", 600000)
             ));
 
             ResponseEntity<?> response = controller.updateAgent("main:assistant", request);
@@ -154,6 +156,8 @@ class WebConsoleControllerConfigFileApiTest {
             assertEquals("ollama", config.getAgent().getProvider());
             assertEquals("llama3.1", config.getAgent().getModel());
             assertEquals("disabled", config.getAgent().getThinkingMode());
+            assertEquals("high", config.getAgent().getReasoningEffort());
+            assertEquals(4096, config.getAgent().getThinkingTokenBudget());
             assertEquals(0.2, config.getAgent().getTemperature());
             assertEquals(2048, config.getAgent().getMaxTokens());
             assertEquals(120, config.getAgent().getToolCallTimeoutSeconds());

@@ -152,6 +152,15 @@ DeepSeek 思考模型会走 DeepSeek 原生客户端，不再通过旧 HTTPProvi
 
 如果使用 LM Studio、Ollama 或 vLLM，请确认它们暴露的是兼容 `/v1` 的 base URL。
 
+Qwen 通过 vLLM 提供服务时，可在主智能体配置中设置 `thinkingTokenBudget`。正整数会作为
+`thinking_token_budget` 发送给 vLLM，用于限制单次推理使用的思考 token；设置为 `0` 时不发送该字段。
+该参数不会发送给 DashScope、OpenRouter 官方接口、Ollama 或非 Qwen 模型。
+
+对于支持推理强度的 OpenAI-compatible 服务（例如 SGLang），可设置 `reasoningEffort`：
+`auto`、`minimal`、`low`、`medium`、`high`、`xhigh` 或 `max`。除 `auto` 外，JobClaw 会发送
+`reasoning: { "effort": "..." }`；`auto` 表示不发送该字段，由服务端采用默认强度。
+显式设置 `reasoningEffort` 时，它优先于 `thinkingTokenBudget`，避免同时向服务端发送两套推理预算。
+
 ## 工具系统
 
 JobClaw 工具基于 Spring AI `@Tool` 和 `ToolCallback` 暴露给模型。工具不是一次性全部无脑注入，而是根据任务 profile、skill 和上下文动态选择。

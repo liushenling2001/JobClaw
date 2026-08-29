@@ -212,6 +212,16 @@ public class WebConsoleController {
                 agentConfig.setThinkingMode(QwenThinkingOptions.normalizeMode(thinkingMode));
             }
 
+            String reasoningEffort = stringValue(modelConfig.get("reasoningEffort"));
+            if (reasoningEffort != null) {
+                agentConfig.setReasoningEffort(QwenThinkingOptions.normalizeReasoningEffort(reasoningEffort));
+            }
+
+            Integer thinkingTokenBudget = integerValue(modelConfig.get("thinkingTokenBudget"));
+            if (thinkingTokenBudget != null) {
+                agentConfig.setThinkingTokenBudget(thinkingTokenBudget);
+            }
+
             Double temperature = doubleValue(modelConfig.get("temperature"));
             if (temperature != null) {
                 agentConfig.setTemperature(temperature);
@@ -335,7 +345,7 @@ public class WebConsoleController {
         try {
             String sessionKey = request.getSessionKey() != null ? request.getSessionKey() : "web:default";
             // 娴ｈ法鏁ょ紓鏍ㄥ笓閸ｃ劌顦╅悶鍡氼嚞濮瑰偊绱欓弨顖涘瘮婢?Agent 濡€崇础閿?
-            String result = orchestrator.process(sessionKey, request.getMessage());
+            String result = orchestrator.process(sessionKey, request.getMessage(), null, request.getReasoningEffort());
             response.put("success", true);
             response.put("message", result);
             response.put("session", sessionKey);
@@ -354,20 +364,23 @@ public class WebConsoleController {
     @PostMapping(value = "/execute/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public ResponseEntity<SseEmitter> executeStream(@RequestBody ChatRequest request) {
         String sessionKey = request.getSessionKey() != null ? request.getSessionKey() : "web:default";
-        return executeStreamInternal(sessionKey, request.getMessage());
+        return executeStreamInternal(sessionKey, request.getMessage(), request.getReasoningEffort());
     }
 
     @PostMapping(value = "/execute/stream", consumes = MediaType.MULTIPART_FORM_DATA_VALUE, produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public ResponseEntity<SseEmitter> executeStreamWithUploads(
             @RequestParam("message") String message,
             @RequestParam(value = "sessionKey", required = false) String sessionKey,
+            @RequestParam(value = "reasoningEffort", required = false) String reasoningEffort,
             @RequestPart(value = "files", required = false) MultipartFile[] files) {
         String resolvedSessionKey = sessionKey != null && !sessionKey.isBlank() ? sessionKey : "web:default";
         String messageWithUploads = appendUploadedFilePaths(message, resolvedSessionKey, files);
-        return executeStreamInternal(resolvedSessionKey, messageWithUploads);
+        return executeStreamInternal(resolvedSessionKey, messageWithUploads, reasoningEffort);
     }
 
-    private ResponseEntity<SseEmitter> executeStreamInternal(String sessionKey, String message) {
+    private ResponseEntity<SseEmitter> executeStreamInternal(String sessionKey,
+                                                             String message,
+                                                             String reasoningEffort) {
         SseEmitter emitter = new SseEmitter(0L);
 
         // 鐠併垽妲勯幍褑顢戞禍瀣╂
@@ -405,7 +418,7 @@ public class WebConsoleController {
                         } catch (Exception e) {
                             logger.debug("Failed to publish event: {}", e.getMessage());
                         }
-                    });
+                    }, reasoningEffort);
 
                 // 鐎瑰本鍨氶弮鏈电瑝閸愬秴褰傞柅?complete 娴滃娆㈤敍灞芥礈娑?FINAL_RESPONSE 娴滃娆㈠鑼病娴ｆ粈璐熺紒鎾存将娣団€冲娇
                 // 閸撳秶顏导姘壌閹?FINAL_RESPONSE 娴滃娆㈠〒鍛倞濞翠礁绱￠悩鑸碘偓?
@@ -1417,6 +1430,8 @@ public class WebConsoleController {
 
         response.put("workspace", config.getWorkspacePath());
         response.put("model", agentConfig.getModel());
+        response.put("reasoningEffort", QwenThinkingOptions.normalizeReasoningEffort(agentConfig.getReasoningEffort()));
+        response.put("thinkingTokenBudget", agentConfig.getThinkingTokenBudget());
         response.put("maxTokens", agentConfig.getMaxTokens());
         response.put("temperature", agentConfig.getTemperature());
         response.put("maxToolIterations", agentConfig.getMaxToolIterations());
@@ -1450,6 +1465,13 @@ public class WebConsoleController {
             // 閺囧瓨鏌婇柊宥囩枂
             if (request.getMaxTokens() != null) {
                 agentConfig.setMaxTokens(request.getMaxTokens());
+            }
+            if (request.getThinkingTokenBudget() != null) {
+                agentConfig.setThinkingTokenBudget(request.getThinkingTokenBudget());
+            }
+            if (request.getReasoningEffort() != null) {
+                agentConfig.setReasoningEffort(
+                        QwenThinkingOptions.normalizeReasoningEffort(request.getReasoningEffort()));
             }
             if (request.getTemperature() != null) {
                 agentConfig.setTemperature(request.getTemperature());
@@ -2221,11 +2243,14 @@ public class WebConsoleController {
     public static class ChatRequest {
         private String message;
         private String sessionKey;
+        private String reasoningEffort;
 
         public String getMessage() { return message; }
         public void setMessage(String message) { this.message = message; }
         public String getSessionKey() { return sessionKey; }
         public void setSessionKey(String sessionKey) { this.sessionKey = sessionKey; }
+        public String getReasoningEffort() { return reasoningEffort; }
+        public void setReasoningEffort(String reasoningEffort) { this.reasoningEffort = reasoningEffort; }
     }
 
     public static class LoginRequest {
@@ -2312,6 +2337,8 @@ public class WebConsoleController {
 
     public static class UpdateAgentConfigRequest {
         private Integer maxTokens;
+        private String reasoningEffort;
+        private Integer thinkingTokenBudget;
         private Double temperature;
         private Integer maxToolIterations;
         private Boolean heartbeatEnabled;
@@ -2330,6 +2357,10 @@ public class WebConsoleController {
 
         public Integer getMaxTokens() { return maxTokens; }
         public void setMaxTokens(Integer maxTokens) { this.maxTokens = maxTokens; }
+        public String getReasoningEffort() { return reasoningEffort; }
+        public void setReasoningEffort(String reasoningEffort) { this.reasoningEffort = reasoningEffort; }
+        public Integer getThinkingTokenBudget() { return thinkingTokenBudget; }
+        public void setThinkingTokenBudget(Integer thinkingTokenBudget) { this.thinkingTokenBudget = thinkingTokenBudget; }
         public Double getTemperature() { return temperature; }
         public void setTemperature(Double temperature) { this.temperature = temperature; }
         public Integer getMaxToolIterations() { return maxToolIterations; }

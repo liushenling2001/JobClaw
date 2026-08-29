@@ -2,7 +2,18 @@
 spring:
   application:
     name: JobClaw
+  web:
+    resources:
+      cache:
+        cachecontrol:
+          no-cache: true
   ai:
+    tools:
+      limits:
+        # Long-running agent tasks are governed by cancellation, timeouts, and JobClaw's
+        # stable-repeat guard instead of fixed per-turn tool call counts.
+        max-calls-per-tool-default: -1
+        max-total-tool-calls: -1
     openai:
       # 使用 DashScope Coding Plan 的 API Key（从 config.json 读取，这里是占位符）
       api-key: ${DASHSCOPE_API_KEY:sk-placeholder}

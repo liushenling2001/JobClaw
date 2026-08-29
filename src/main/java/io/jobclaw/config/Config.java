@@ -224,7 +224,7 @@ public class Config {
         config.getAgent().setMaxRepairAttempts(1);
         config.getAgent().setMaxToolOutputLength(10000);
         config.getAgent().setToolCallTimeoutSeconds(300);
-        config.getAgent().setLlmCallTimeoutSeconds(300);
+        config.getAgent().setLlmCallTimeoutSeconds(3600);
         config.getAgent().setChildAgentTimeoutMs(900_000L);
         config.getAgent().setChildAgentResultMaxChars(4000);
         config.getAgent().setContextRefEnabled(true);

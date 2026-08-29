@@ -38,6 +38,7 @@ import io.jobclaw.summary.file.FileSummaryService;
 import io.jobclaw.tools.*;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
+import org.springframework.ai.model.tool.ToolCallingManager;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -188,7 +189,12 @@ public class AgentBeansConfig {
     public ContextAssemblyPolicy contextAssemblyPolicy(Config config,
                                                        SessionManager sessionManager,
                                                        SummaryService summaryService) {
-        return new DefaultContextAssemblyPolicy(config.getAgent(), sessionManager, summaryService);
+        return new DefaultContextAssemblyPolicy(
+                config.getAgent(),
+                sessionManager,
+                summaryService,
+                () -> ModelRuntimeConfig.contextWindow(config, config.getAgent().getModel())
+        );
     }
 
     @Bean
@@ -255,9 +261,11 @@ public class AgentBeansConfig {
                                ResultStore resultStore,
                                CompletionRegistry completionRegistry,
                                ActiveSkillRegistry activeSkillRegistry,
-                               ActiveManifestRegistry activeManifestRegistry) {
+                               ActiveManifestRegistry activeManifestRegistry,
+                               ToolCallingManager toolCallingManager) {
         return new AgentLoop(config, sessionManager, allToolCallbacks, contextBuilder, contextAssembler,
-                contextAssemblyPolicy, summaryService, resultStore, completionRegistry, activeSkillRegistry, activeManifestRegistry);
+                contextAssemblyPolicy, summaryService, resultStore, completionRegistry, activeSkillRegistry,
+                activeManifestRegistry, toolCallingManager);
     }
 
     // Tool beans with dependencies

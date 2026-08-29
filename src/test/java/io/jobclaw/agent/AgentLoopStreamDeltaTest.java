@@ -41,6 +41,73 @@ class AgentLoopStreamDeltaTest {
     }
 
     @Test
+    void shouldDetectCumulativeReasoningAfterDeltaToolRound() {
+        AgentLoop.StreamDeltaNormalizer normalizer = new AgentLoop.StreamDeltaNormalizer();
+        StringBuilder response = new StringBuilder();
+
+        response.append(normalizer.normalize(response, "first tool round reasoning. "));
+        response.append(normalizer.normalize(response, "Tool completed. "));
+        response.append(normalizer.normalize(response, "The user"));
+        response.append(normalizer.normalize(response, "The user wants to continue"));
+        response.append(normalizer.normalize(response, "The user wants to continue writing."));
+
+        assertEquals(
+                "first tool round reasoning. Tool completed. The user wants to continue writing.",
+                response.toString()
+        );
+    }
+
+    @Test
+    void shouldDetectLargeCumulativeSnapshotAfterSmallDeltas() {
+        AgentLoop.StreamDeltaNormalizer normalizer = new AgentLoop.StreamDeltaNormalizer();
+        StringBuilder response = new StringBuilder();
+
+        response.append(normalizer.normalize(response, "Earlier reasoning. "));
+        response.append(normalizer.normalize(response, "The user "));
+        response.append(normalizer.normalize(response, "asked to "));
+        response.append(normalizer.normalize(response, "continue. "));
+        response.append(normalizer.normalize(response,
+                "The user asked to continue. This is the next reasoning step after reading the files."));
+
+        assertEquals(
+                "Earlier reasoning. The user asked to continue. This is the next reasoning step after reading the files.",
+                response.toString()
+        );
+    }
+
+    @Test
+    void shouldResetReasoningNormalizerAfterToolRound() {
+        AgentLoop.ReasoningStreamState state = new AgentLoop.ReasoningStreamState("seg-test", 0);
+
+        AgentLoop.NormalizedReasoning first = state.normalize(0, "Initial reasoning delta. ");
+        AgentLoop.NormalizedReasoning second = state.normalize(0, "Call a tool now.");
+        AgentLoop.NormalizedReasoning afterTool = state.normalize(1, "I need to investigate this");
+        AgentLoop.NormalizedReasoning snapshot = state.normalize(1, "I need to investigate this further.");
+
+        assertEquals("Initial reasoning delta. ", first.delta());
+        assertEquals("Call a tool now.", second.delta());
+        assertEquals("I need to investigate this", afterTool.delta());
+        assertEquals(" further.", snapshot.delta());
+        assertEquals(0, afterTool.accumulatedBefore());
+        assertEquals(2, afterTool.roundIndex());
+        assertEquals("seg-test-reasoning-2", afterTool.segmentId());
+        assertEquals("I need to investigate this further.", state.currentRoundText());
+    }
+
+    @Test
+    void shouldResetReasoningOnlyOnceForMultipleToolsInOneModelRound() {
+        AgentLoop.ReasoningStreamState state = new AgentLoop.ReasoningStreamState("seg-test", 0);
+
+        state.normalize(0, "Before tools.");
+        AgentLoop.NormalizedReasoning afterTools = state.normalize(2, "After both tools.");
+        AgentLoop.NormalizedReasoning sameRound = state.normalize(2, " Continue reasoning.");
+
+        assertEquals(2, afterTools.roundIndex());
+        assertEquals(2, sameRound.roundIndex());
+        assertEquals("After both tools. Continue reasoning.", state.currentRoundText());
+    }
+
+    @Test
     void shouldNotSwitchDeltaModeToCumulativeMidStream() {
         AgentLoop.StreamDeltaNormalizer normalizer = new AgentLoop.StreamDeltaNormalizer();
         StringBuilder response = new StringBuilder();
