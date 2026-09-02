@@ -1,1 +1,0 @@
-import{a as e}from"./useToast-gZkH730m.js";const i={list(){return e.get("/providers").then(t=>t.data)},get(t){return e.get(`/providers/${t}`).then(r=>r.data)},update(t,r){return e.put(`/providers/${t}`,r).then(a=>a.data)}};export{i as p};
