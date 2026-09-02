@@ -17,6 +17,10 @@ public interface ConversationStore {
 
     Optional<SessionRecord> getSession(String sessionId);
 
+    default SessionRecord renameSession(String sessionId, String title) {
+        throw new UnsupportedOperationException("Session rename is not supported");
+    }
+
     List<SessionRecord> listSessions();
 
     void deleteSession(String sessionId);

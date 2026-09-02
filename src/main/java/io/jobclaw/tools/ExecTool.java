@@ -1,6 +1,7 @@
 package io.jobclaw.tools;
 
 import io.jobclaw.config.Config;
+import io.jobclaw.agent.AgentExecutionContext;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.slf4j.Logger;
@@ -57,9 +58,7 @@ public class ExecTool {
         }
 
         // Resolve working directory
-        String cwd = workingDir != null && !workingDir.isEmpty() 
-            ? workingDir 
-            : System.getProperty("user.dir");
+        String cwd = resolveWorkingDirectory(workingDir);
 
         // Security warning
         logger.warn("Executing command without SecurityGuard: {}", command);
@@ -76,6 +75,20 @@ public class ExecTool {
             return 300;
         }
         return config.getAgent().getToolCallTimeoutSeconds();
+    }
+
+    private String defaultWorkingDirectory() {
+        String workspace = AgentExecutionContext.getCurrentWorkingDirectory();
+        return workspace != null && !workspace.isBlank() ? workspace : config.getWorkspacePath();
+    }
+
+    private String resolveWorkingDirectory(String workingDir) {
+        if (workingDir == null || workingDir.isBlank()) {
+            return defaultWorkingDirectory();
+        }
+        var path = Paths.get(workingDir);
+        return path.isAbsolute() ? path.normalize().toString()
+                : Paths.get(defaultWorkingDirectory()).resolve(path).normalize().toString();
     }
 
     private boolean looksLikeUnsafeInlineScript(String command) {

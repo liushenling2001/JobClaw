@@ -178,6 +178,27 @@ public class FileConversationStore implements ConversationStore {
     }
 
     @Override
+    public SessionRecord renameSession(String sessionId, String title) {
+        if (sessionId == null || sessionId.isBlank()) {
+            throw new IllegalArgumentException("sessionId is required");
+        }
+        if (title == null || title.isBlank()) {
+            throw new IllegalArgumentException("session title is required");
+        }
+        String normalizedTitle = title.trim();
+        if (normalizedTitle.length() > 80) {
+            throw new IllegalArgumentException("session title must not exceed 80 characters");
+        }
+        synchronized (lockFor(sessionId)) {
+            SessionRecord updated = loadOrCreateSessionRecord(sessionId)
+                    .withTitle(normalizedTitle)
+                    .withUpdatedAt(Instant.now());
+            writeSessionRecord(updated);
+            return updated;
+        }
+    }
+
+    @Override
     public List<SessionRecord> listSessions() {
         if (!Files.exists(rootDir)) {
             return List.of();

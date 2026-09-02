@@ -14,6 +14,7 @@ public class Session {
     private String key;
     private List<Message> messages;
     private String summary;
+    private String workingDirectory;
     private Instant created;
     private Instant updated;
 
@@ -34,6 +35,8 @@ public class Session {
     public void setMessages(List<Message> messages) { this.messages = messages; }
     public String getSummary() { return summary; }
     public void setSummary(String summary) { this.summary = summary; }
+    public String getWorkingDirectory() { return workingDirectory; }
+    public void setWorkingDirectory(String workingDirectory) { this.workingDirectory = workingDirectory; }
     public Instant getCreated() { return created; }
     public void setCreated(Instant created) { this.created = created; }
     public Instant getUpdated() { return updated; }

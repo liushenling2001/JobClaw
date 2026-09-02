@@ -74,6 +74,20 @@ class WebConsoleControllerSessionsApiTest {
         assertEquals(2, page.get("totalPages"));
     }
 
+    @Test
+    @SuppressWarnings("unchecked")
+    void shouldRenameSessionAndExposeTitleInList() {
+        SessionManager sessionManager = new SessionManager(tempDir.resolve("sessions").toString());
+        WebConsoleController controller = controller(sessionManager);
+
+        controller.renameSession("web:rename", new WebConsoleController.RenameSessionRequest("资料整理"));
+
+        Map<String, Object> page = controller.getSessions("web", false, 1, 20).getBody();
+        List<Map<String, Object>> items = (List<Map<String, Object>>) page.get("items");
+        assertEquals(1, items.size());
+        assertEquals("资料整理", items.getFirst().get("title"));
+    }
+
     private WebConsoleController controller(SessionManager sessionManager) {
         Config config = Config.defaultConfig();
         config.getAgent().setWorkspace(tempDir.toString());

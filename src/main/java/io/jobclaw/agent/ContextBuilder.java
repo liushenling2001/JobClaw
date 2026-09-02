@@ -259,7 +259,11 @@ public class ContextBuilder {
 
     private String getIdentity() {
         String now = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm (EEEE)"));
-        String workspacePath = Paths.get(workspace).toAbsolutePath().toString();
+        String globalWorkspacePath = Paths.get(workspace).toAbsolutePath().toString();
+        String scopedWorkingDirectory = AgentExecutionContext.getCurrentWorkingDirectory();
+        String workingDirectory = scopedWorkingDirectory != null && !scopedWorkingDirectory.isBlank()
+                ? Paths.get(scopedWorkingDirectory).toAbsolutePath().normalize().toString()
+                : globalWorkspacePath;
         String runtime = System.getProperty("os.name") + " "
                 + System.getProperty("os.arch") + ", Java " + System.getProperty("java.version");
 
@@ -268,10 +272,12 @@ public class ContextBuilder {
         sb.append("You are JobClaw, a helpful AI assistant.\n\n");
         sb.append("## Current Time\n").append(now).append("\n\n");
         sb.append("## Runtime\n").append(runtime).append("\n\n");
-        sb.append("## Workspace\n");
-        sb.append("Workspace: ").append(workspacePath).append("\n");
-        sb.append("- Memory: ").append(workspacePath).append("/memory/MEMORY.md\n");
-        sb.append("- Daily notes: ").append(workspacePath).append("/memory/YYYYMM/YYYYMMDD.md\n\n");
+        sb.append("## Working Directory\n");
+        sb.append("Working directory: ").append(workingDirectory).append("\n");
+        sb.append("Use this directory as the default location for task inputs and outputs.\n\n");
+        sb.append("## Global Memory\n");
+        sb.append("- Memory: ").append(globalWorkspacePath).append("/memory/MEMORY.md\n");
+        sb.append("- Daily notes: ").append(globalWorkspacePath).append("/memory/YYYYMM/YYYYMMDD.md\n\n");
         sb.append("## Rules\n\n");
         sb.append("1. Use tools when you need to perform actions.\n");
         sb.append("2. Be concise and accurate.\n");

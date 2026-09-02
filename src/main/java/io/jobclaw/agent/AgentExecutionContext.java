@@ -23,7 +23,8 @@ public class AgentExecutionContext {
             String agentId,
             String agentName,
             AgentDefinition definition,
-            String reasoningEffort
+            String reasoningEffort,
+            String workingDirectory
     ) {
         public ExecutionScope(String sessionKey,
                               Consumer<ExecutionEvent> eventCallback,
@@ -31,8 +32,20 @@ public class AgentExecutionContext {
                               String parentRunId,
                               String agentId,
                               String agentName,
+                              AgentDefinition definition,
+                              String reasoningEffort) {
+            this(sessionKey, eventCallback, runId, parentRunId, agentId, agentName, definition,
+                    reasoningEffort, null);
+        }
+
+        public ExecutionScope(String sessionKey,
+                              Consumer<ExecutionEvent> eventCallback,
+                              String runId,
+                              String parentRunId,
+                              String agentId,
+                              String agentName,
                               AgentDefinition definition) {
-            this(sessionKey, eventCallback, runId, parentRunId, agentId, agentName, definition, null);
+            this(sessionKey, eventCallback, runId, parentRunId, agentId, agentName, definition, null, null);
         }
     }
 
@@ -46,7 +59,7 @@ public class AgentExecutionContext {
         if (sessionKey == null) {
             return;
         }
-        setCurrentContext(new ExecutionScope(sessionKey, callback, null, null, null, null, null));
+        setCurrentContext(new ExecutionScope(sessionKey, callback, null, null, null, null, null, null, null));
     }
 
     public static void setCurrentContext(ExecutionScope scope) {
@@ -93,6 +106,11 @@ public class AgentExecutionContext {
     public static String getCurrentReasoningEffort() {
         ExecutionScope scope = currentScope.get();
         return scope != null ? scope.reasoningEffort() : null;
+    }
+
+    public static String getCurrentWorkingDirectory() {
+        ExecutionScope scope = currentScope.get();
+        return scope != null ? scope.workingDirectory() : null;
     }
 
     public static void setRuntimeRequiredToolNames(Collection<String> toolNames) {

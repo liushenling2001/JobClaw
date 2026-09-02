@@ -1,0 +1,1 @@
+import{a as t}from"./useToast-gZkH730m.js";const a={list(){return t.get("/models").then(e=>e.data)},getCurrent(){return t.get("/config/model").then(e=>e.data)},discover(e){return t.get(`/providers/${encodeURIComponent(e)}/models`).then(n=>n.data)},update(e,n){return t.put("/config/model",{model:e,provider:n}).then(o=>o.data)}};export{a as m};

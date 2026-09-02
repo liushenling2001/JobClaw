@@ -4065,7 +4065,8 @@ public class AgentLoop {
                     agentId,
                     agentName,
                     definition != null ? definition : previousScope.definition(),
-                    effectiveReasoningEffort
+                    effectiveReasoningEffort,
+                    previousScope.workingDirectory()
             );
         }
 
@@ -4079,7 +4080,8 @@ public class AgentLoop {
                 agentId,
                 agentName,
                 definition != null ? definition : previousScope != null ? previousScope.definition() : null,
-                effectiveReasoningEffort
+                effectiveReasoningEffort,
+                previousScope != null ? previousScope.workingDirectory() : null
         );
     }
 

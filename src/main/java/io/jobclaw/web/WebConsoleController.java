@@ -1,6 +1,7 @@
 package io.jobclaw.web;
 
 import io.jobclaw.agent.AgentLoop;
+import io.jobclaw.agent.AgentExecutionContext;
 import io.jobclaw.agent.AgentOrchestrator;
 import io.jobclaw.agent.ExecutionEvent;
 import io.jobclaw.agent.ExecutionTraceService;
@@ -27,6 +28,8 @@ import io.jobclaw.skills.SkillInfo;
 import io.jobclaw.skills.SkillsService;
 import io.jobclaw.stats.TokenUsageService;
 import io.jobclaw.tools.*;
+import io.jobclaw.workspace.WorkspaceRegistry;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
@@ -77,6 +80,7 @@ public class WebConsoleController {
     private final AgentCatalogService agentCatalogService;
     private final LearningCandidateService learningCandidateService;
     private final ExperienceMemoryService experienceMemoryService;
+    private WorkspaceRegistry workspaceRegistry;
 
     private final ExecutorService executor = Executors.newCachedThreadPool();
     private final Map<String, Future<?>> activeWebExecutions = new ConcurrentHashMap<>();
@@ -111,6 +115,11 @@ public class WebConsoleController {
         this.agentCatalogService = agentCatalogService;
         this.learningCandidateService = learningCandidateService;
         this.experienceMemoryService = experienceMemoryService;
+    }
+
+    @Autowired(required = false)
+    public void setWorkspaceRegistry(WorkspaceRegistry workspaceRegistry) {
+        this.workspaceRegistry = workspaceRegistry;
     }
 
     @GetMapping("/status")
@@ -342,8 +351,10 @@ public class WebConsoleController {
     @PostMapping("/chat")
     public ResponseEntity<Map<String, Object>> chat(@RequestBody ChatRequest request) {
         Map<String, Object> response = new HashMap<>();
+        AgentExecutionContext.ExecutionScope previousScope = AgentExecutionContext.getCurrentScope();
         try {
             String sessionKey = request.getSessionKey() != null ? request.getSessionKey() : "web:default";
+            setSessionWorkspaceContext(sessionKey, null);
             // 娴ｈ法鏁ょ紓鏍ㄥ笓閸ｃ劌顦╅悶鍡氼嚞濮瑰偊绱欓弨顖涘瘮婢?Agent 濡€崇础閿?
             String result = orchestrator.process(sessionKey, request.getMessage(), null, request.getReasoningEffort());
             response.put("success", true);
@@ -352,6 +363,8 @@ public class WebConsoleController {
         } catch (Exception e) {
             response.put("success", false);
             response.put("error", e.getMessage());
+        } finally {
+            restoreExecutionContext(previousScope);
         }
         return ResponseEntity.ok(response);
     }
@@ -399,7 +412,9 @@ public class WebConsoleController {
         activeWebExecutionTokens.put(sessionKey, executionToken);
 
         FutureTask<Void> future = new FutureTask<>((java.util.concurrent.Callable<Void>) () -> {
+            AgentExecutionContext.ExecutionScope previousScope = AgentExecutionContext.getCurrentScope();
             try {
+                setSessionWorkspaceContext(sessionKey, null);
                 // 閸欐垿鈧浇绻涢幒銉р€樼拋銈勭皑娴?
                 if (!safeSend(emitter, sessionKey, subscriberId, SseEmitter.event()
                         .name("connected")
@@ -448,6 +463,7 @@ public class WebConsoleController {
                         "execution error event");
                 emitter.complete();
             } finally {
+                restoreExecutionContext(previousScope);
                 if (executionToken.equals(activeWebExecutionTokens.get(sessionKey))) {
                     activeWebExecutionTokens.remove(sessionKey);
                     activeWebExecutions.remove(sessionKey);
@@ -481,6 +497,18 @@ public class WebConsoleController {
         response.put("cancelled", cancelled);
         response.put("sessionKey", sessionKey);
         return ResponseEntity.ok(response);
+    }
+
+    @GetMapping("/execute/stream/{sessionKey}/status")
+    public ResponseEntity<Map<String, Object>> getExecutionStatus(@PathVariable String sessionKey) {
+        Future<?> execution = activeWebExecutions.get(sessionKey);
+        boolean active = execution != null
+                && !execution.isDone()
+                && activeWebExecutionTokens.containsKey(sessionKey);
+        return ResponseEntity.ok(Map.of(
+                "sessionKey", sessionKey,
+                "active", active
+        ));
     }
 
     private String appendUploadedFilePaths(String message, String sessionKey, MultipartFile[] files) {
@@ -528,7 +556,29 @@ public class WebConsoleController {
     private Path uploadDirectory(String sessionKey) {
         String safeSession = safePathSegment(sessionKey);
         String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS"));
-        return Paths.get(config.getWorkspacePath(), "uploads", safeSession, timestamp).normalize();
+        return Paths.get(resolveSessionWorkingDirectory(sessionKey), "uploads", safeSession, timestamp).normalize();
+    }
+
+    private void setSessionWorkspaceContext(String sessionKey, java.util.function.Consumer<ExecutionEvent> callback) {
+        String workingDirectory = resolveSessionWorkingDirectory(sessionKey);
+        AgentExecutionContext.setCurrentContext(new AgentExecutionContext.ExecutionScope(
+                sessionKey, callback, null, null, null, null, null, null, workingDirectory));
+        Session session = sessionManager.getOrCreate(sessionKey);
+        session.setWorkingDirectory(workingDirectory);
+    }
+
+    private String resolveSessionWorkingDirectory(String sessionKey) {
+        return workspaceRegistry != null
+                ? workspaceRegistry.resolveWorkingDirectory(sessionKey)
+                : config.getWorkspacePath();
+    }
+
+    private void restoreExecutionContext(AgentExecutionContext.ExecutionScope previousScope) {
+        if (previousScope != null) {
+            AgentExecutionContext.setCurrentContext(previousScope);
+        } else {
+            AgentExecutionContext.clear();
+        }
     }
 
     private Path uniqueUploadPath(Path directory, String filename) {
@@ -650,10 +700,17 @@ public class WebConsoleController {
                 .map(record -> {
                     Map<String, Object> info = new HashMap<>();
                     info.put("key", record.getSessionId());
+                    info.put("title", record.getTitle());
                     info.put("channel", sessionChannel(record.getSessionId()));
                     info.put("created", record.getCreatedAt());
                     info.put("updated", record.getUpdatedAt());
                     info.put("message_count", record.getMessageCount());
+                    if (workspaceRegistry != null) {
+                        workspaceRegistry.findBySession(record.getSessionId()).ifPresent(workspace -> {
+                            info.put("workspaceId", workspace.getId());
+                            info.put("workingDirectory", workspace.getPath());
+                        });
+                    }
                     return info;
                 })
                 .toList();
@@ -693,6 +750,7 @@ public class WebConsoleController {
         if (session == null) {
             return ResponseEntity.notFound().build();
         }
+        session.setWorkingDirectory(resolveSessionWorkingDirectory(key));
         return ResponseEntity.ok(session);
     }
 
@@ -783,7 +841,24 @@ public class WebConsoleController {
     @DeleteMapping("/sessions/{key}")
     public ResponseEntity<Void> deleteSession(@PathVariable String key) {
         sessionManager.deleteSession(key);
+        if (workspaceRegistry != null) {
+            workspaceRegistry.detachSession(key);
+        }
         return ResponseEntity.ok().build();
+    }
+
+    @PatchMapping("/sessions/{key}")
+    public ResponseEntity<?> renameSession(@PathVariable String key, @RequestBody RenameSessionRequest request) {
+        try {
+            io.jobclaw.conversation.SessionRecord record = sessionManager.renameSession(key, request.title());
+            return ResponseEntity.ok(Map.of(
+                    "key", record.getSessionId(),
+                    "title", record.getTitle(),
+                    "updated", record.getUpdatedAt()
+            ));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
     }
 
     @GetMapping("/config")
@@ -1362,7 +1437,10 @@ public class WebConsoleController {
 
             // 濡偓閺屻儲褰佹笟娑樻櫌閺勵垰鎯佸鍙夊房閺?
             ProvidersConfig.ProviderConfig providerConfig = getProviderConfig(providersConfig, def.getProvider());
-            modelInfo.put("authorized", providerConfig != null && providerConfig.isValid());
+            boolean authorized = providerConfig != null && ("ollama".equalsIgnoreCase(def.getProvider())
+                    ? providerConfig.isValidForLocal()
+                    : providerConfig.isValid());
+            modelInfo.put("authorized", authorized);
 
             models.add(modelInfo);
         }
@@ -1392,31 +1470,63 @@ public class WebConsoleController {
     public ResponseEntity<Map<String, Object>> updateConfigModel(@RequestBody UpdateModelRequest request) {
         Map<String, Object> response = new HashMap<>();
         try {
-            // 妤犲矁鐦夊Ο鈥崇€烽弰顖氭儊鐎涙ê婀?
-            ModelsConfig.ModelDefinition modelDef = config.getModels().getDefinitions().get(request.getModel());
-            if (modelDef == null) {
-                response.put("error", "閺堫亞鐓￠惃鍕侀崹瀣剁窗" + request.getModel());
+            String requestedModel = request.getModel() == null ? "" : request.getModel().trim();
+            if (requestedModel.isEmpty()) {
+                response.put("error", "Model is required");
                 return ResponseEntity.status(400).body(response);
             }
 
-            // 閺囧瓨鏌婂Ο鈥崇€烽柊宥囩枂
-            config.getAgent().setModel(request.getModel());
-
-            // 婵″倹鐏夐幓鎰返娴?provider閿涘奔绡冮弴瀛樻煀
-            if (request.getProvider() != null && !request.getProvider().isEmpty()) {
-                config.getAgent().setProvider(request.getProvider());
+            ModelsConfig.ModelDefinition modelDef = config.getModels().getDefinitions().get(requestedModel);
+            String provider = request.getProvider() == null ? "" : request.getProvider().trim().toLowerCase(Locale.ROOT);
+            boolean providerWasExplicit = !provider.isEmpty();
+            if (provider.isEmpty() && modelDef != null) {
+                provider = modelDef.getProvider() == null ? "" : modelDef.getProvider().trim().toLowerCase(Locale.ROOT);
             }
+            if (provider.isEmpty()) {
+                response.put("error", "Provider is required for model: " + requestedModel);
+                return ResponseEntity.status(400).body(response);
+            }
+            if (getProviderConfig(config.getProviders(), provider) == null) {
+                response.put("error", "Unknown provider: " + provider);
+                return ResponseEntity.status(400).body(response);
+            }
+
+            String runtimeModel = !providerWasExplicit && modelDef != null
+                    && modelDef.getModel() != null && !modelDef.getModel().isBlank()
+                    ? modelDef.getModel().trim()
+                    : requestedModel;
+            rememberDiscoveredModel(provider, runtimeModel);
+            config.getAgent().setProvider(provider);
+            config.getAgent().setModel(runtimeModel);
 
             ConfigLoader.save(ConfigLoader.getConfigPath(), config);
             addAgentClientReloadResult(response);
 
             response.put("success", true);
             response.put("message", "Model updated");
+            response.put("provider", provider);
+            response.put("model", runtimeModel);
             return ResponseEntity.ok(response);
         } catch (Exception e) {
             response.put("error", e.getMessage());
             return ResponseEntity.status(500).body(response);
         }
+    }
+
+    private void rememberDiscoveredModel(String provider, String model) {
+        Map<String, ModelsConfig.ModelDefinition> definitions = config.getModels().getDefinitions();
+        boolean exists = definitions.values().stream()
+                .anyMatch(definition -> provider.equalsIgnoreCase(definition.getProvider())
+                        && model.equals(definition.getModel()));
+        if (exists) {
+            return;
+        }
+
+        String key = model;
+        if (definitions.containsKey(key)) {
+            key = provider + ":" + model;
+        }
+        definitions.put(key, new ModelsConfig.ModelDefinition(provider, model, null));
     }
 
     /**
@@ -2252,6 +2362,8 @@ public class WebConsoleController {
         public String getReasoningEffort() { return reasoningEffort; }
         public void setReasoningEffort(String reasoningEffort) { this.reasoningEffort = reasoningEffort; }
     }
+
+    public record RenameSessionRequest(String title) { }
 
     public static class LoginRequest {
         private String username;

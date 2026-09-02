@@ -1,6 +1,8 @@
 package io.jobclaw.tools;
 
 import io.jobclaw.config.Config;
+import io.jobclaw.agent.AgentExecutionContext;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -14,6 +16,23 @@ class RunCommandToolTest {
 
     @TempDir
     Path tempDir;
+
+    @AfterEach
+    void clearExecutionContext() {
+        AgentExecutionContext.clear();
+    }
+
+    @Test
+    void shouldUseSessionWorkingDirectoryWhenWorkingDirIsOmitted() throws Exception {
+        AgentExecutionContext.setCurrentContext(new AgentExecutionContext.ExecutionScope(
+                "web:test", null, null, null, null, null, null, null, tempDir.toRealPath().toString()));
+        RunCommandTool tool = new RunCommandTool(Config.defaultConfig());
+        String command = System.getProperty("os.name").toLowerCase().contains("win") ? "cd" : "pwd";
+
+        String result = tool.execute(command, null, 5);
+
+        assertTrue(result.toLowerCase().contains(tempDir.toRealPath().toString().toLowerCase()));
+    }
 
     @Test
     void shouldReturnErrorWhenCommandExitsNonZero() {

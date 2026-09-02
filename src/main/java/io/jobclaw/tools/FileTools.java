@@ -1,6 +1,7 @@
 package io.jobclaw.tools;
 
 import io.jobclaw.config.Config;
+import io.jobclaw.agent.AgentExecutionContext;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
@@ -440,7 +441,7 @@ public class FileTools {
     }
 
     private Path resolvePath(String path) {
-        Path workspace = Paths.get(config.getWorkspacePath());
+        Path workspace = currentWorkingDirectory();
         if (path == null || path.isBlank()) {
             return workspace.normalize();
         }
@@ -502,11 +503,16 @@ public class FileTools {
         String requestedFileName = separatorIndex >= 0 ? path.substring(separatorIndex + 1) : path;
 
         try {
-            Path parent = parentText.isBlank() ? Paths.get(config.getWorkspacePath()) : resolvePath(parentText);
+            Path parent = parentText.isBlank() ? currentWorkingDirectory() : resolvePath(parentText);
             return recoverMutatedFileName(parent, requestedFileName);
         } catch (Exception ignored) {
             return Optional.empty();
         }
+    }
+
+    private Path currentWorkingDirectory() {
+        String workspace = AgentExecutionContext.getCurrentWorkingDirectory();
+        return Paths.get(workspace != null && !workspace.isBlank() ? workspace : config.getWorkspacePath());
     }
 
     private Optional<Path> recoverMutatedExistingPath(Path requestedPath) {

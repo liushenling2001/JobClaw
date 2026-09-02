@@ -108,4 +108,18 @@ class SessionManagerProjectionTest {
         assertEquals(2, finalized.getMessages().size());
         assertEquals("final answer", finalized.getMessages().get(1).getContent());
     }
+
+    @Test
+    void sessionTitleCanBePersistedBeforeFirstMessage() {
+        FileConversationStore conversationStore = new FileConversationStore(tempDir.resolve("conversation").toString());
+        SessionManager sessionManager = new SessionManager(tempDir.toString(), conversationStore, null);
+
+        sessionManager.renameSession("web:empty", "论文综述");
+
+        SessionRecord reloaded = new FileConversationStore(tempDir.resolve("conversation").toString())
+                .getSession("web:empty")
+                .orElseThrow();
+        assertEquals("论文综述", reloaded.getTitle());
+        assertEquals(0, reloaded.getMessageCount());
+    }
 }

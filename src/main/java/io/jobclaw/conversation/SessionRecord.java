@@ -59,4 +59,8 @@ public class SessionRecord {
     public SessionRecord withMessageCount(long messageCount) {
         return new SessionRecord(sessionId, title, createdAt, updatedAt, lastMessageAt, messageCount, status, tags);
     }
+
+    public SessionRecord withTitle(String title) {
+        return new SessionRecord(sessionId, title, createdAt, updatedAt, lastMessageAt, messageCount, status, tags);
+    }
 }

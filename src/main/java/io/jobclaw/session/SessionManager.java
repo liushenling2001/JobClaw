@@ -183,6 +183,10 @@ public class SessionManager {
         return conversationStore.listSessions();
     }
 
+    public SessionRecord renameSession(String key, String title) {
+        return conversationStore.renameSession(key, title);
+    }
+
     public int getUserSessionCount() {
         return listUserSessionRecords().size();
     }
