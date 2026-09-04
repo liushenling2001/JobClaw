@@ -1,5 +1,7 @@
 package io.jobclaw.security;
 
+import io.jobclaw.agent.AgentExecutionContext;
+import io.jobclaw.config.Config;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -19,6 +21,7 @@ public class SecurityGuard {
 
     private final String workspace;
     private final boolean restrictToWorkspace;
+    private final Config config;
     private final List<Pattern> commandBlacklist;
     private final List<Path> protectedPaths;
 
@@ -27,6 +30,7 @@ public class SecurityGuard {
     }
 
     public SecurityGuard(String workspace, boolean restrictToWorkspace) {
+        this.config = null;
         this.workspace = normalizeWorkspacePath(workspace);
         this.restrictToWorkspace = restrictToWorkspace;
         this.commandBlacklist = buildDefaultCommandBlacklist();
@@ -36,12 +40,23 @@ public class SecurityGuard {
     }
 
     public SecurityGuard(String workspace, boolean restrictToWorkspace, List<String> customBlacklist) {
+        this.config = null;
         this.workspace = normalizeWorkspacePath(workspace);
         this.restrictToWorkspace = restrictToWorkspace;
         this.commandBlacklist = buildCommandBlacklist(customBlacklist);
         this.protectedPaths = buildDefaultProtectedPaths();
 
         logger.info("SecurityGuard initialized with custom blacklist");
+    }
+
+    public SecurityGuard(Config config) {
+        this.config = Objects.requireNonNull(config, "config");
+        this.workspace = normalizeWorkspacePath(config.getWorkspacePath());
+        this.restrictToWorkspace = config.getAgent().isRestrictToWorkspace();
+        this.commandBlacklist = buildCommandBlacklist(config.getAgent().getCommandBlacklist());
+        this.protectedPaths = buildDefaultProtectedPaths();
+
+        logger.info("SecurityGuard initialized from runtime config");
     }
 
     public String checkFilePath(String filePath) {
@@ -57,17 +72,18 @@ public class SecurityGuard {
                 return protectedError;
             }
 
-            if (!restrictToWorkspace) {
+            if (!isRestrictToWorkspace()) {
                 return null;
             }
 
-            Path workspacePath = resolveRealPath(Paths.get(workspace));
+            String effectiveWorkspace = effectiveWorkspace();
+            Path workspacePath = resolveRealPath(Paths.get(effectiveWorkspace));
 
             if (!resolvedPath.startsWith(workspacePath)) {
-                logger.warn("File path blocked (outside workspace)");
+                logger.warn("File path blocked (outside workspace): path={} workspace={}", filePath, effectiveWorkspace);
                 return String.format(
                         "Access denied: Path '%s' is outside workspace '%s'",
-                        filePath, workspace
+                        filePath, effectiveWorkspace
                 );
             }
 
@@ -125,7 +141,7 @@ public class SecurityGuard {
     }
 
     public String checkWorkingDir(String workingDir) {
-        if (!restrictToWorkspace) {
+        if (!isRestrictToWorkspace()) {
             return null;
         }
 
@@ -137,11 +153,26 @@ public class SecurityGuard {
     }
 
     public String getWorkspace() {
-        return workspace;
+        return configuredWorkspace();
+    }
+
+    public String getEffectiveWorkspace() {
+        return effectiveWorkspace();
     }
 
     public boolean isRestrictToWorkspace() {
-        return restrictToWorkspace;
+        return config != null ? config.getAgent().isRestrictToWorkspace() : restrictToWorkspace;
+    }
+
+    private String effectiveWorkspace() {
+        String scopedWorkspace = AgentExecutionContext.getCurrentWorkingDirectory();
+        return scopedWorkspace != null && !scopedWorkspace.isBlank()
+                ? normalizeWorkspacePath(scopedWorkspace)
+                : configuredWorkspace();
+    }
+
+    private String configuredWorkspace() {
+        return config != null ? normalizeWorkspacePath(config.getWorkspacePath()) : workspace;
     }
 
     private String checkProtectedPath(Path resolvedPath, String originalPath) {

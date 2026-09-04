@@ -2,10 +2,12 @@ package io.jobclaw.tools;
 
 import io.jobclaw.config.Config;
 import io.jobclaw.agent.AgentExecutionContext;
+import io.jobclaw.security.SecurityGuard;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.io.BufferedReader;
@@ -37,15 +39,22 @@ public class ExecTool {
     private static final int MAX_INLINE_SCRIPT_COMMAND_LENGTH = 2000;
     private static final int MAX_INLINE_SCRIPT_LINES = 8;
     private final Config config;
+    private final SecurityGuard securityGuard;
 
     public ExecTool(Config config) {
+        this(config, new SecurityGuard(config));
+    }
+
+    @Autowired
+    public ExecTool(Config config, SecurityGuard securityGuard) {
         this.config = config;
+        this.securityGuard = securityGuard;
     }
 
     @Tool(name = "exec", description = "Deprecated. Use run_command instead. This legacy shell command tool will be removed.")
     public String execute(
         @ToolParam(description = "The shell command to execute") String command,
-        @ToolParam(description = "Working directory (optional, defaults to current directory)") String workingDir,
+        @ToolParam(description = "Working directory (optional, defaults to the current conversation workspace)") String workingDir,
         @ToolParam(description = "Timeout in seconds (optional, defaults to agent.toolCallTimeoutSeconds)") Integer timeout
     ) {
         if (command == null || command.isEmpty()) {
@@ -60,8 +69,14 @@ public class ExecTool {
         // Resolve working directory
         String cwd = resolveWorkingDirectory(workingDir);
 
-        // Security warning
-        logger.warn("Executing command without SecurityGuard: {}", command);
+        String commandError = securityGuard.checkCommand(command);
+        if (commandError != null) {
+            return "Error: " + commandError;
+        }
+        String workingDirectoryError = securityGuard.checkWorkingDir(cwd);
+        if (workingDirectoryError != null) {
+            return "Error: " + workingDirectoryError;
+        }
 
         try {
             return executeCommand(command, cwd, timeout != null ? timeout : defaultTimeoutSeconds());

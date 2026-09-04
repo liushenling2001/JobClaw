@@ -218,10 +218,7 @@ public class Config {
         config.getAgent().setWorkspace("~/.jobclaw/workspace");
         config.getAgent().setModel("qwen3.5-plus");
         config.getAgent().setProvider("dashscope");
-        config.getAgent().setMaxTokens(16384);
         config.getAgent().setTemperature(0.7);
-        config.getAgent().setMaxToolIterations(20);
-        config.getAgent().setMaxRepairAttempts(1);
         config.getAgent().setMaxToolOutputLength(10000);
         config.getAgent().setToolCallTimeoutSeconds(300);
         config.getAgent().setLlmCallTimeoutSeconds(3600);
@@ -232,20 +229,8 @@ public class Config {
         config.getAgent().setContextRefTurnBudgetChars(45_000);
         config.getAgent().setContextRefPreviewChars(2_000);
         config.getAgent().setContextRefReadMaxChars(12_000);
-        // 上下文管理默认值（参考 TinyClaw）
-        config.getAgent().setContextWindow(128_000);
-        config.getAgent().setSummarizeMessageThreshold(200);
-        config.getAgent().setSummarizeTokenPercentage(60);
-        config.getAgent().setRecentMessagesToKeep(16);
-        config.getAgent().setMemoryTokenBudgetPercentage(20);
-        config.getAgent().setMemoryMinTokenBudget(1024);
-        config.getAgent().setMemoryMaxTokenBudget(16384);
-        config.getAgent().setContextMaxPromptTokenPercentage(60);
-        config.getAgent().setContextLongInputPromptTokenPercentage(50);
-        config.getAgent().setContextLongInputTokenPercentage(6);
-        config.getAgent().setContextMaxHistoryRetrieval(0);
-        config.getAgent().setContextMaxSummaryRetrieval(4);
-        config.getAgent().setContextMaxMemoryRetrieval(8);
+        config.getAgent().setCompactionTriggerPercentage(80);
+        config.getAgent().setCompactionRetainPercentage(16);
     }
 
     private static void setGatewayDefaults(Config config) {

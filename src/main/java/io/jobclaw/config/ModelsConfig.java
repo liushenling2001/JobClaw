@@ -41,17 +41,22 @@ public class ModelsConfig {
     public void setDefinitions(Map<String, ModelDefinition> definitions) { this.definitions = definitions; }
 
     public static class ModelDefinition {
+        public static final int DEFAULT_MAX_CONTEXT_SIZE = 128_000;
+        public static final int DEFAULT_MAX_TOKENS = 16_384;
+
         private String provider;
         private String model;
-        private Integer maxContextSize;
-        private Integer maxTokens;
+        private Integer maxContextSize = DEFAULT_MAX_CONTEXT_SIZE;
+        private Integer maxTokens = DEFAULT_MAX_TOKENS;
         private String description;
 
         public ModelDefinition() {}
         public ModelDefinition(String provider, String model, Integer maxContextSize) {
             this.provider = provider;
             this.model = model;
-            this.maxContextSize = maxContextSize;
+            this.maxContextSize = maxContextSize != null && maxContextSize > 0
+                    ? maxContextSize
+                    : DEFAULT_MAX_CONTEXT_SIZE;
         }
 
         public String getProvider() { return provider; }

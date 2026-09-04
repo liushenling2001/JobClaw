@@ -1,6 +1,7 @@
 package io.jobclaw.agent;
 
 import io.jobclaw.config.Config;
+import io.jobclaw.config.ModelsConfig;
 import io.jobclaw.context.ContextAssembler;
 import io.jobclaw.context.ContextAssemblyPolicy;
 import io.jobclaw.session.SessionManager;
@@ -22,10 +23,14 @@ import static org.mockito.Mockito.mock;
 class AgentLoopExecutionOptionsTest {
 
     @Test
-    void shouldApplyAgentDefinitionOverridesToExecutionOptions() throws Exception {
+    void shouldApplyAgentOverridesButUseModelCapacityForExecutionOptions() throws Exception {
         Config config = Config.defaultConfig();
         config.getAgent().setProvider("ollama");
         config.getAgent().setModel("llama3.1");
+        ModelsConfig.ModelDefinition customModel =
+                new ModelsConfig.ModelDefinition("ollama", "custom-model", 65_536);
+        customModel.setMaxTokens(8_192);
+        config.getModels().getDefinitions().put("custom-model", customModel);
         AgentLoop loop = new AgentLoop(
                 config,
                 new SessionManager(),
@@ -53,7 +58,7 @@ class AgentLoopExecutionOptionsTest {
         OpenAiChatOptions options = buildOpenAiOptions(method.invoke(loop, definition, config.getAgent().getModel()));
 
         assertEquals("custom-model", options.getModel());
-        assertEquals(4096, options.getMaxTokens());
+        assertEquals(8192, options.getMaxTokens());
         assertEquals(0.25, options.getTemperature());
     }
 

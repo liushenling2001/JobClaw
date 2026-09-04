@@ -236,11 +236,6 @@ public class WebConsoleController {
                 agentConfig.setTemperature(temperature);
             }
 
-            Integer maxTokens = integerValue(modelConfig.get("maxTokens"));
-            if (maxTokens != null) {
-                agentConfig.setMaxTokens(maxTokens);
-            }
-
             Integer toolCallTimeoutSeconds = integerValue(modelConfig.get("toolCallTimeoutSeconds"));
             if (toolCallTimeoutSeconds == null) {
                 Long timeoutMs = longValue(modelConfig.get("timeoutMs"));
@@ -889,7 +884,7 @@ public class WebConsoleController {
             ));
         }
         try {
-            ConfigLoader.save(configPath.toString(), config);
+            ConfigLoader.createInitial(configPath.toString());
             return ResponseEntity.ok(Map.of(
                     "success", true,
                     "path", configPath.toAbsolutePath().toString(),
@@ -1433,6 +1428,7 @@ public class WebConsoleController {
             modelInfo.put("provider", def.getProvider());
             modelInfo.put("model", def.getModel());
             modelInfo.put("maxContextSize", def.getMaxContextSize());
+            modelInfo.put("maxTokens", def.getMaxTokens());
             modelInfo.put("description", def.getDescription() != null ? def.getDescription() : "");
 
             // 濡偓閺屻儲褰佹笟娑樻櫌閺勵垰鎯佸鍙夊房閺?
@@ -1446,6 +1442,43 @@ public class WebConsoleController {
         }
 
         return ResponseEntity.ok(models);
+    }
+
+    @PutMapping("/models/{name}/limits")
+    public ResponseEntity<Map<String, Object>> updateModelLimits(@PathVariable String name,
+                                                                  @RequestBody UpdateModelLimitsRequest request) {
+        Map<String, Object> response = new HashMap<>();
+        ModelsConfig.ModelDefinition definition = config.getModels().getDefinitions().get(name);
+        if (definition == null) {
+            response.put("error", "Unknown model definition: " + name);
+            return ResponseEntity.status(404).body(response);
+        }
+        Integer contextWindow = request.getMaxContextSize();
+        Integer maxTokens = request.getMaxTokens();
+        if (contextWindow == null || contextWindow < 4_096) {
+            response.put("error", "maxContextSize must be at least 4096");
+            return ResponseEntity.badRequest().body(response);
+        }
+        if (maxTokens == null || maxTokens < 1 || maxTokens >= contextWindow) {
+            response.put("error", "maxTokens must be positive and smaller than maxContextSize");
+            return ResponseEntity.badRequest().body(response);
+        }
+        definition.setMaxContextSize(contextWindow);
+        definition.setMaxTokens(maxTokens);
+        try {
+            ConfigLoader.save(ConfigLoader.getConfigPath(), config);
+            if (definition.getModel() != null && definition.getModel().equals(config.getAgent().getModel())) {
+                addAgentClientReloadResult(response);
+            }
+            response.put("success", true);
+            response.put("maxContextSize", contextWindow);
+            response.put("maxTokens", maxTokens);
+            response.put("safePromptTokens", Math.max(0, contextWindow - maxTokens - Math.max(2_048, contextWindow / 50)));
+            return ResponseEntity.ok(response);
+        } catch (IOException e) {
+            response.put("error", e.getMessage());
+            return ResponseEntity.status(500).body(response);
+        }
     }
 
     // ==================== Config API ====================
@@ -1542,22 +1575,10 @@ public class WebConsoleController {
         response.put("model", agentConfig.getModel());
         response.put("reasoningEffort", QwenThinkingOptions.normalizeReasoningEffort(agentConfig.getReasoningEffort()));
         response.put("thinkingTokenBudget", agentConfig.getThinkingTokenBudget());
-        response.put("maxTokens", agentConfig.getMaxTokens());
         response.put("temperature", agentConfig.getTemperature());
-        response.put("maxToolIterations", agentConfig.getMaxToolIterations());
-        response.put("heartbeatEnabled", agentConfig.isHeartbeatEnabled());
         response.put("restrictToWorkspace", agentConfig.isRestrictToWorkspace());
-        response.put("contextWindow", agentConfig.getContextWindow());
-        response.put("recentMessagesToKeep", agentConfig.getRecentMessagesToKeep());
-        response.put("memoryTokenBudgetPercentage", agentConfig.getMemoryTokenBudgetPercentage());
-        response.put("memoryMinTokenBudget", agentConfig.getMemoryMinTokenBudget());
-        response.put("memoryMaxTokenBudget", agentConfig.getMemoryMaxTokenBudget());
-        response.put("contextMaxPromptTokenPercentage", agentConfig.getContextMaxPromptTokenPercentage());
-        response.put("contextLongInputPromptTokenPercentage", agentConfig.getContextLongInputPromptTokenPercentage());
-        response.put("contextLongInputTokenPercentage", agentConfig.getContextLongInputTokenPercentage());
-        response.put("contextMaxHistoryRetrieval", agentConfig.getContextMaxHistoryRetrieval());
-        response.put("contextMaxSummaryRetrieval", agentConfig.getContextMaxSummaryRetrieval());
-        response.put("contextMaxMemoryRetrieval", agentConfig.getContextMaxMemoryRetrieval());
+        response.put("compactionTriggerPercentage", agentConfig.getCompactionTriggerPercentage());
+        response.put("compactionRetainPercentage", agentConfig.getCompactionRetainPercentage());
 
         return ResponseEntity.ok(response);
     }
@@ -1573,9 +1594,6 @@ public class WebConsoleController {
             AgentConfig agentConfig = config.getAgent();
 
             // 閺囧瓨鏌婇柊宥囩枂
-            if (request.getMaxTokens() != null) {
-                agentConfig.setMaxTokens(request.getMaxTokens());
-            }
             if (request.getThinkingTokenBudget() != null) {
                 agentConfig.setThinkingTokenBudget(request.getThinkingTokenBudget());
             }
@@ -1586,47 +1604,25 @@ public class WebConsoleController {
             if (request.getTemperature() != null) {
                 agentConfig.setTemperature(request.getTemperature());
             }
-            if (request.getMaxToolIterations() != null) {
-                agentConfig.setMaxToolIterations(request.getMaxToolIterations());
-            }
-            if (request.getHeartbeatEnabled() != null) {
-                agentConfig.setHeartbeatEnabled(request.getHeartbeatEnabled());
-            }
             if (request.getRestrictToWorkspace() != null) {
                 agentConfig.setRestrictToWorkspace(request.getRestrictToWorkspace());
             }
-            if (request.getContextWindow() != null) {
-                agentConfig.setContextWindow(request.getContextWindow());
-            }
-            if (request.getRecentMessagesToKeep() != null) {
-                agentConfig.setRecentMessagesToKeep(request.getRecentMessagesToKeep());
-            }
-            if (request.getMemoryTokenBudgetPercentage() != null) {
-                agentConfig.setMemoryTokenBudgetPercentage(request.getMemoryTokenBudgetPercentage());
-            }
-            if (request.getMemoryMinTokenBudget() != null) {
-                agentConfig.setMemoryMinTokenBudget(request.getMemoryMinTokenBudget());
-            }
-            if (request.getMemoryMaxTokenBudget() != null) {
-                agentConfig.setMemoryMaxTokenBudget(request.getMemoryMaxTokenBudget());
-            }
-            if (request.getContextMaxPromptTokenPercentage() != null) {
-                agentConfig.setContextMaxPromptTokenPercentage(request.getContextMaxPromptTokenPercentage());
-            }
-            if (request.getContextLongInputPromptTokenPercentage() != null) {
-                agentConfig.setContextLongInputPromptTokenPercentage(request.getContextLongInputPromptTokenPercentage());
-            }
-            if (request.getContextLongInputTokenPercentage() != null) {
-                agentConfig.setContextLongInputTokenPercentage(request.getContextLongInputTokenPercentage());
-            }
-            if (request.getContextMaxHistoryRetrieval() != null) {
-                agentConfig.setContextMaxHistoryRetrieval(request.getContextMaxHistoryRetrieval());
-            }
-            if (request.getContextMaxSummaryRetrieval() != null) {
-                agentConfig.setContextMaxSummaryRetrieval(request.getContextMaxSummaryRetrieval());
-            }
-            if (request.getContextMaxMemoryRetrieval() != null) {
-                agentConfig.setContextMaxMemoryRetrieval(request.getContextMaxMemoryRetrieval());
+            if (request.getCompactionTriggerPercentage() != null
+                    || request.getCompactionRetainPercentage() != null) {
+                int trigger = request.getCompactionTriggerPercentage() != null
+                        ? request.getCompactionTriggerPercentage()
+                        : agentConfig.getCompactionTriggerPercentage();
+                int retain = request.getCompactionRetainPercentage() != null
+                        ? request.getCompactionRetainPercentage()
+                        : agentConfig.getCompactionRetainPercentage();
+                if (trigger < 1 || trigger > 99) {
+                    return ResponseEntity.badRequest().body(Map.of("error", "compactionTriggerPercentage must be between 1 and 99"));
+                }
+                if (retain < 1 || retain >= trigger) {
+                    return ResponseEntity.badRequest().body(Map.of("error", "compactionRetainPercentage must be positive and smaller than compactionTriggerPercentage"));
+                }
+                agentConfig.setCompactionTriggerPercentage(trigger);
+                agentConfig.setCompactionRetainPercentage(retain);
             }
 
             ConfigLoader.save(ConfigLoader.getConfigPath(), config);
@@ -2122,8 +2118,8 @@ public class WebConsoleController {
     @GetMapping("/feedback")
     public ResponseEntity<Map<String, Object>> getFeedbackConfig() {
         Map<String, Object> response = new HashMap<>();
-        response.put("feedbackEnabled", config.getAgent().isFeedbackEnabled());
-        response.put("promptOptimizationEnabled", config.getAgent().isPromptOptimizationEnabled());
+        response.put("feedbackEnabled", false);
+        response.put("promptOptimizationEnabled", false);
         response.put("optimizationStats", Map.of());
         return ResponseEntity.ok(response);
     }
@@ -2265,7 +2261,9 @@ public class WebConsoleController {
         }
         Map<String, Object> normalized = new LinkedHashMap<>();
         modelConfig.forEach((key, value) -> {
-            if (key != null && !key.isBlank() && value != null) {
+            if (key != null && !key.isBlank() && value != null
+                    && !"maxTokens".equals(key.trim())
+                    && !"contextWindow".equals(key.trim())) {
                 normalized.put(key.trim(), value);
             }
         });
@@ -2447,62 +2445,36 @@ public class WebConsoleController {
         public void setProvider(String provider) { this.provider = provider; }
     }
 
-    public static class UpdateAgentConfigRequest {
+    public static class UpdateModelLimitsRequest {
+        private Integer maxContextSize;
         private Integer maxTokens;
+
+        public Integer getMaxContextSize() { return maxContextSize; }
+        public void setMaxContextSize(Integer maxContextSize) { this.maxContextSize = maxContextSize; }
+        public Integer getMaxTokens() { return maxTokens; }
+        public void setMaxTokens(Integer maxTokens) { this.maxTokens = maxTokens; }
+    }
+
+    public static class UpdateAgentConfigRequest {
         private String reasoningEffort;
         private Integer thinkingTokenBudget;
         private Double temperature;
-        private Integer maxToolIterations;
-        private Boolean heartbeatEnabled;
         private Boolean restrictToWorkspace;
-        private Integer contextWindow;
-        private Integer recentMessagesToKeep;
-        private Integer memoryTokenBudgetPercentage;
-        private Integer memoryMinTokenBudget;
-        private Integer memoryMaxTokenBudget;
-        private Integer contextMaxPromptTokenPercentage;
-        private Integer contextLongInputPromptTokenPercentage;
-        private Integer contextLongInputTokenPercentage;
-        private Integer contextMaxHistoryRetrieval;
-        private Integer contextMaxSummaryRetrieval;
-        private Integer contextMaxMemoryRetrieval;
+        private Integer compactionTriggerPercentage;
+        private Integer compactionRetainPercentage;
 
-        public Integer getMaxTokens() { return maxTokens; }
-        public void setMaxTokens(Integer maxTokens) { this.maxTokens = maxTokens; }
         public String getReasoningEffort() { return reasoningEffort; }
         public void setReasoningEffort(String reasoningEffort) { this.reasoningEffort = reasoningEffort; }
         public Integer getThinkingTokenBudget() { return thinkingTokenBudget; }
         public void setThinkingTokenBudget(Integer thinkingTokenBudget) { this.thinkingTokenBudget = thinkingTokenBudget; }
         public Double getTemperature() { return temperature; }
         public void setTemperature(Double temperature) { this.temperature = temperature; }
-        public Integer getMaxToolIterations() { return maxToolIterations; }
-        public void setMaxToolIterations(Integer maxToolIterations) { this.maxToolIterations = maxToolIterations; }
-        public Boolean getHeartbeatEnabled() { return heartbeatEnabled; }
-        public void setHeartbeatEnabled(Boolean heartbeatEnabled) { this.heartbeatEnabled = heartbeatEnabled; }
         public Boolean getRestrictToWorkspace() { return restrictToWorkspace; }
         public void setRestrictToWorkspace(Boolean restrictToWorkspace) { this.restrictToWorkspace = restrictToWorkspace; }
-        public Integer getContextWindow() { return contextWindow; }
-        public void setContextWindow(Integer contextWindow) { this.contextWindow = contextWindow; }
-        public Integer getRecentMessagesToKeep() { return recentMessagesToKeep; }
-        public void setRecentMessagesToKeep(Integer recentMessagesToKeep) { this.recentMessagesToKeep = recentMessagesToKeep; }
-        public Integer getMemoryTokenBudgetPercentage() { return memoryTokenBudgetPercentage; }
-        public void setMemoryTokenBudgetPercentage(Integer memoryTokenBudgetPercentage) { this.memoryTokenBudgetPercentage = memoryTokenBudgetPercentage; }
-        public Integer getMemoryMinTokenBudget() { return memoryMinTokenBudget; }
-        public void setMemoryMinTokenBudget(Integer memoryMinTokenBudget) { this.memoryMinTokenBudget = memoryMinTokenBudget; }
-        public Integer getMemoryMaxTokenBudget() { return memoryMaxTokenBudget; }
-        public void setMemoryMaxTokenBudget(Integer memoryMaxTokenBudget) { this.memoryMaxTokenBudget = memoryMaxTokenBudget; }
-        public Integer getContextMaxPromptTokenPercentage() { return contextMaxPromptTokenPercentage; }
-        public void setContextMaxPromptTokenPercentage(Integer contextMaxPromptTokenPercentage) { this.contextMaxPromptTokenPercentage = contextMaxPromptTokenPercentage; }
-        public Integer getContextLongInputPromptTokenPercentage() { return contextLongInputPromptTokenPercentage; }
-        public void setContextLongInputPromptTokenPercentage(Integer contextLongInputPromptTokenPercentage) { this.contextLongInputPromptTokenPercentage = contextLongInputPromptTokenPercentage; }
-        public Integer getContextLongInputTokenPercentage() { return contextLongInputTokenPercentage; }
-        public void setContextLongInputTokenPercentage(Integer contextLongInputTokenPercentage) { this.contextLongInputTokenPercentage = contextLongInputTokenPercentage; }
-        public Integer getContextMaxHistoryRetrieval() { return contextMaxHistoryRetrieval; }
-        public void setContextMaxHistoryRetrieval(Integer contextMaxHistoryRetrieval) { this.contextMaxHistoryRetrieval = contextMaxHistoryRetrieval; }
-        public Integer getContextMaxSummaryRetrieval() { return contextMaxSummaryRetrieval; }
-        public void setContextMaxSummaryRetrieval(Integer contextMaxSummaryRetrieval) { this.contextMaxSummaryRetrieval = contextMaxSummaryRetrieval; }
-        public Integer getContextMaxMemoryRetrieval() { return contextMaxMemoryRetrieval; }
-        public void setContextMaxMemoryRetrieval(Integer contextMaxMemoryRetrieval) { this.contextMaxMemoryRetrieval = contextMaxMemoryRetrieval; }
+        public Integer getCompactionTriggerPercentage() { return compactionTriggerPercentage; }
+        public void setCompactionTriggerPercentage(Integer compactionTriggerPercentage) { this.compactionTriggerPercentage = compactionTriggerPercentage; }
+        public Integer getCompactionRetainPercentage() { return compactionRetainPercentage; }
+        public void setCompactionRetainPercentage(Integer compactionRetainPercentage) { this.compactionRetainPercentage = compactionRetainPercentage; }
     }
 
     public static class CreateCronJobRequest {

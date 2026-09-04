@@ -2,6 +2,7 @@ package io.jobclaw.context;
 
 import io.jobclaw.agent.AgentExecutionContext;
 import io.jobclaw.agent.ExecutionEvent;
+import io.jobclaw.agent.evolution.MemoryStore;
 import io.jobclaw.agent.experience.ExperienceMemory;
 import io.jobclaw.agent.experience.ExperienceMemoryMatch;
 import io.jobclaw.agent.experience.ExperienceMemoryRetriever;
@@ -34,19 +35,29 @@ public class DefaultContextAssembler implements ContextAssembler {
     private final int defaultRecentLimit;
     private final RetrievalService retrievalService;
     private final ExperienceMemoryRetriever experienceMemoryRetriever;
+    private final MemoryStore memoryStore;
 
     public DefaultContextAssembler(SessionManager sessionManager, int defaultRecentLimit, RetrievalService retrievalService) {
-        this(sessionManager, defaultRecentLimit, retrievalService, null);
+        this(sessionManager, defaultRecentLimit, retrievalService, null, null);
     }
 
     public DefaultContextAssembler(SessionManager sessionManager,
                                    int defaultRecentLimit,
                                    RetrievalService retrievalService,
                                    ExperienceMemoryRetriever experienceMemoryRetriever) {
+        this(sessionManager, defaultRecentLimit, retrievalService, experienceMemoryRetriever, null);
+    }
+
+    public DefaultContextAssembler(SessionManager sessionManager,
+                                   int defaultRecentLimit,
+                                   RetrievalService retrievalService,
+                                   ExperienceMemoryRetriever experienceMemoryRetriever,
+                                   MemoryStore memoryStore) {
         this.sessionManager = sessionManager;
         this.defaultRecentLimit = defaultRecentLimit;
         this.retrievalService = retrievalService;
         this.experienceMemoryRetriever = experienceMemoryRetriever;
+        this.memoryStore = memoryStore;
     }
 
     @Override
@@ -55,8 +66,9 @@ public class DefaultContextAssembler implements ContextAssembler {
         int recentLimit = options != null && options.recentMessageLimit() > 0
                 ? options.recentMessageLimit()
                 : defaultRecentLimit;
+        int recentTokenBudget = options != null ? Math.max(0, options.recentMessageTokenBudget()) : 0;
 
-        if (recentLimit > 0 && history.size() > recentLimit) {
+        if (recentTokenBudget <= 0 && recentLimit > 0 && history.size() > recentLimit) {
             int start = adjustStartIndexForToolIntegrity(history, history.size() - recentLimit);
             history = new ArrayList<>(history.subList(start, history.size()));
         }
@@ -75,7 +87,6 @@ public class DefaultContextAssembler implements ContextAssembler {
         int summaryBudget = Math.max(256, maxPromptTokens / SUMMARY_BUDGET_DIVISOR);
         int memoryBudget = Math.max(192, maxPromptTokens / MEMORY_BUDGET_DIVISOR);
         int retrievedSummaryBudget = Math.max(192, maxPromptTokens / RETRIEVED_SUMMARY_BUDGET_DIVISOR);
-        int historyBudget = Math.max(512, maxPromptTokens - summaryBudget - memoryBudget - retrievedSummaryBudget);
         int summaryLimit = options != null && options.retrievedSummaryLimit() > 0 ? options.retrievedSummaryLimit() : 3;
         int historyRetrievalLimit = options != null ? Math.max(0, options.retrievedHistoryLimit()) : 6;
         int memoryLimit = options != null && options.retrievedMemoryLimit() > 0 ? options.retrievedMemoryLimit() : 6;
@@ -114,15 +125,27 @@ public class DefaultContextAssembler implements ContextAssembler {
                     )));
         }
 
+        int factMemoryBudget = memoryBudget;
+        if (memoryStore != null) {
+            String memoryContext = memoryStore.getMemoryContext(currentUserInput, Math.max(96, memoryBudget / 2));
+            if (memoryContext != null && !memoryContext.isBlank()) {
+                assembled.add(Message.system("Memory:\n" + memoryContext));
+                factMemoryBudget = Math.max(96, memoryBudget / 2);
+            }
+        }
         if (!memoryFacts.isEmpty()) {
-            assembled.add(Message.system(buildMemoryFactContext(memoryFacts, memoryBudget)));
+            assembled.add(Message.system(buildMemoryFactContext(memoryFacts, factMemoryBudget)));
         }
 
         appendExperienceMemoryContext(assembled, sessionId, currentUserInput);
 
-        appendRetrievedHistory(assembled, retrievedHistory, history, historyBudget / 3);
+        appendRetrievedHistory(assembled, retrievedHistory, history, maxPromptTokens / 3);
 
-        history = trimRecentHistoryToBudget(history, Math.max(256, historyBudget - estimateMessagesTokens(assembled)));
+        int remainingHistoryBudget = Math.max(256, maxPromptTokens - estimateMessagesTokens(assembled));
+        if (recentTokenBudget > 0) {
+            remainingHistoryBudget = Math.min(remainingHistoryBudget, recentTokenBudget);
+        }
+        history = trimRecentHistoryToBudget(history, remainingHistoryBudget);
 
         assembled.addAll(history);
         return assembled;

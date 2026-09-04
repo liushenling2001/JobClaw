@@ -1,0 +1,1 @@
+import{a as s}from"./useToast-CEZAhxlk.js";const r={list(){return s.get("/skills").then(t=>t.data)},get(t){return s.get(`/skills/${t}`).then(e=>e.data)},save(t,e){return s.put(`/skills/${t}`,{content:e}).then(l=>l.data)},delete(t){return s.delete(`/skills/${t}`).then(e=>e.data)}};export{r as s};

@@ -14,7 +14,6 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DefaultContextAssemblyPolicyTest {
 
@@ -30,65 +29,55 @@ class DefaultContextAssemblyPolicyTest {
 
         ContextAssemblyOptions options = policy.buildOptions("session-1", "short question");
 
-        assertTrue(options.retrievedSummaryLimit() >= 4);
-        assertTrue(options.retrievedHistoryLimit() <= 4);
+        assertEquals(4, options.retrievedSummaryLimit());
+        assertEquals(0, options.retrievedHistoryLimit());
+        assertEquals(102_400, options.maxPromptTokens());
+        assertEquals(20_480, options.recentMessageTokenBudget());
     }
 
     @Test
-    void shrinksRecentAndHistoryForLongUserInput() {
+    void reservesModelOutputWithinTheUnifiedTrigger() {
         AgentConfig config = new AgentConfig();
         config.setContextWindow(32_000);
         SessionManager sessionManager = new SessionManager();
         SummaryService summaryService = new StubSummaryService(false);
 
-        DefaultContextAssemblyPolicy policy =
-                new DefaultContextAssemblyPolicy(config, sessionManager, summaryService);
+        DefaultContextAssemblyPolicy policy = new DefaultContextAssemblyPolicy(
+                config, sessionManager, summaryService, () -> 32_000, () -> 8_000);
 
         ContextAssemblyOptions options = policy.buildOptions("session-2", "x".repeat(9000));
 
-        assertTrue(options.maxPromptTokens() <= 19_200);
-        assertTrue(options.recentMessageLimit() <= 10);
-        assertTrue(options.retrievedHistoryLimit() <= 4);
+        assertEquals(21_952, options.maxPromptTokens());
+        assertEquals(21_952, options.recentMessageTokenBudget());
+        assertEquals(0, options.retrievedHistoryLimit());
     }
 
     @Test
-    void respectsConfiguredRetrievalAndPromptPercentages() {
+    void respectsOnlyTheUnifiedContextPercentages() {
         AgentConfig config = new AgentConfig();
         config.setContextWindow(40_000);
-        config.setContextMaxPromptTokenPercentage(50);
-        config.setContextLongInputPromptTokenPercentage(40);
-        config.setContextLongInputTokenPercentage(4);
-        config.setContextMaxHistoryRetrieval(3);
-        config.setContextMaxSummaryRetrieval(5);
-        config.setContextMaxMemoryRetrieval(2);
+        config.setCompactionTriggerPercentage(70);
+        config.setCompactionRetainPercentage(20);
         SessionManager sessionManager = new SessionManager();
         SummaryService summaryService = new StubSummaryService(true);
 
-        DefaultContextAssemblyPolicy policy =
-                new DefaultContextAssemblyPolicy(config, sessionManager, summaryService);
+        DefaultContextAssemblyPolicy policy = new DefaultContextAssemblyPolicy(
+                config, sessionManager, summaryService, () -> 40_000, () -> 4_000);
 
         ContextAssemblyOptions options = policy.buildOptions("session-3", "x".repeat(8000));
 
-        assertTrue(options.maxPromptTokens() <= 16_000);
-        assertTrue(options.retrievedHistoryLimit() <= 3);
-        assertTrue(options.retrievedSummaryLimit() <= 5);
-        assertTrue(options.retrievedMemoryLimit() <= 2);
+        assertEquals(28_000, options.maxPromptTokens());
+        assertEquals(8_000, options.recentMessageTokenBudget());
+        assertEquals(4, options.retrievedSummaryLimit());
+        assertEquals(8, options.retrievedMemoryLimit());
     }
 
     @Test
-    void normalizesInvalidPolicyValues() {
+    void fallsBackToUnifiedDefaultsForInvalidPercentages() {
         AgentConfig config = new AgentConfig();
         config.setContextWindow(0);
-        config.setRecentMessagesToKeep(1);
-        config.setMemoryTokenBudgetPercentage(0);
-        config.setMemoryMinTokenBudget(-1);
-        config.setMemoryMaxTokenBudget(32);
-        config.setContextMaxPromptTokenPercentage(0);
-        config.setContextLongInputPromptTokenPercentage(200);
-        config.setContextLongInputTokenPercentage(0);
-        config.setContextMaxHistoryRetrieval(0);
-        config.setContextMaxSummaryRetrieval(99);
-        config.setContextMaxMemoryRetrieval(-5);
+        config.setCompactionTriggerPercentage(0);
+        config.setCompactionRetainPercentage(0);
         SessionManager sessionManager = new SessionManager();
         SummaryService summaryService = new StubSummaryService(false);
 
@@ -97,11 +86,12 @@ class DefaultContextAssemblyPolicyTest {
 
         ContextAssemblyOptions options = policy.buildOptions("session-4", "x".repeat(2000));
 
-        assertEquals(4096, options.maxPromptTokens());
-        assertEquals(8, options.recentMessageLimit());
+        assertEquals(102_400, options.maxPromptTokens());
+        assertEquals(0, options.recentMessageLimit());
+        assertEquals(102_400, options.recentMessageTokenBudget());
         assertEquals(0, options.retrievedHistoryLimit());
-        assertEquals(3, options.retrievedSummaryLimit());
-        assertEquals(1, options.retrievedMemoryLimit());
+        assertEquals(2, options.retrievedSummaryLimit());
+        assertEquals(8, options.retrievedMemoryLimit());
     }
 
     private static class StubSummaryService implements SummaryService {

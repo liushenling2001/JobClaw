@@ -42,7 +42,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.client.advisor.ToolCallingAdvisor;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
@@ -365,6 +364,7 @@ public class AgentLoop {
         this.activeManifestRegistry = activeManifestRegistry != null ? activeManifestRegistry : new ActiveManifestRegistry();
         this.resultStore = resultStore != null ? resultStore : new NoopResultStore();
         this.modelOverride = model;
+        this.runTrajectoryCompactor = new RunTrajectoryCompactor(config.getAgent(), this.resultStore);
 
         try {
             reloadDefaultClient(chatClient);
@@ -384,7 +384,7 @@ public class AgentLoop {
         this.contextAssemblyPolicy = contextAssemblyPolicy;
 
         // 设置上下文窗口
-        this.contextBuilder.setContextWindow(config.getAgent().getContextWindow());
+        this.contextBuilder.setContextWindow(ModelRuntimeConfig.contextWindow(config, this.model));
 
         // 获取记忆存储
         MemoryStore memoryStore = contextBuilder.getMemoryStore();
@@ -400,10 +400,9 @@ public class AgentLoop {
                 memoryStore,
                 memoryEvolver,
                 summaryService,
-                () -> ModelRuntimeConfig.contextWindow(config, config.getAgent().getModel())
+                () -> ModelRuntimeConfig.contextWindow(config, config.getAgent().getModel()),
+                () -> ModelRuntimeConfig.maxTokens(config, config.getAgent().getModel())
         );
-        this.runTrajectoryCompactor = new RunTrajectoryCompactor(config.getAgent(), this.resultStore);
-
         // 初始化 THINK_STREAM 缓冲区
         this.toolExecutionExecutor = Executors.newCachedThreadPool(r -> {
             Thread thread = new Thread(r, "jobclaw-tool-call");
@@ -584,7 +583,14 @@ public class AgentLoop {
                 ensureNotCancelled();
                 refreshActiveSkillFrame(promptMessages, scope.sessionKey(), scope.runId());
                 refreshActiveManifestFrame(promptMessages, scope.sessionKey(), scope.runId());
-                runTrajectoryCompactor.compactIfNeeded(promptMessages, scope.sessionKey(), scope.runId(), userContent);
+                runTrajectoryCompactor.compactIfNeeded(
+                        promptMessages,
+                        scope.sessionKey(),
+                        scope.runId(),
+                        userContent,
+                        ModelRuntimeConfig.contextWindow(config, executionClientBundle.model()),
+                        ModelRuntimeConfig.maxTokens(config, executionClientBundle.model())
+                );
                 String attemptResponse = runModelAttempt(
                         executionClientBundle,
                         promptMessages,
@@ -2249,6 +2255,8 @@ public class AgentLoop {
         int fullResponseStartLength = fullResponse != null ? fullResponse.length() : 0;
         AtomicInteger streamChunkCount = new AtomicInteger();
         AtomicInteger reasoningChunkCount = new AtomicInteger();
+        AtomicInteger completionTokenCount = new AtomicInteger(-1);
+        AtomicLong firstResponseNanos = new AtomicLong();
         String streamSegmentId = "seg-" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
         AtomicLong toolRoundRevision = new AtomicLong();
         ToolCallback[] attemptTools = trackToolRoundBoundaries(tools, toolRoundRevision);
@@ -2290,12 +2298,18 @@ public class AgentLoop {
                 .messages(requestMessages)
                 .toolCallbacks(attemptTools)
                 .options(options)
+                .advisors(advisor -> advisor
+                        .param(ContextManagingToolCallingAdvisor.SESSION_ID_CONTEXT_KEY, sessionKey)
+                        .param(ContextManagingToolCallingAdvisor.RUN_ID_CONTEXT_KEY,
+                                String.valueOf(AgentExecutionContext.getCurrentRunId())))
                 .stream()
                 .chatResponse();
 
         try {
             responseStream.toStream().forEach(chatResponse -> {
                 ensureNotCancelled();
+                firstResponseNanos.compareAndSet(0L, System.nanoTime());
+                updateCompletionTokenCount(chatResponse, completionTokenCount);
                 StreamResponseParts responseParts = extractStreamResponseParts(chatResponse);
                 String reasoning = responseParts.reasoning();
                 if (!reasoning.isEmpty()) {
@@ -2429,7 +2443,47 @@ public class AgentLoop {
                 streamChunkCount.get(),
                 attemptResponse.length(),
                 previewForLog(attemptResponse.toString()));
+        emitModelMetrics(eventCallback, sessionKey, executionClientBundle,
+                completionTokenCount.get(), firstResponseNanos.get());
         return attemptResponse.toString();
+    }
+
+    private void updateCompletionTokenCount(ChatResponse chatResponse, AtomicInteger completionTokenCount) {
+        if (chatResponse == null || chatResponse.getMetadata() == null
+                || chatResponse.getMetadata().getUsage() == null) {
+            return;
+        }
+        Integer completionTokens = chatResponse.getMetadata().getUsage().getCompletionTokens();
+        if (completionTokens != null && completionTokens >= 0) {
+            completionTokenCount.accumulateAndGet(completionTokens, Math::max);
+        }
+    }
+
+    private void emitModelMetrics(Consumer<ExecutionEvent> eventCallback,
+                                  String sessionKey,
+                                  ExecutionClientBundle executionClientBundle,
+                                  int completionTokens,
+                                  long firstResponseNanos) {
+        if (eventCallback == null) {
+            return;
+        }
+        long durationMs = firstResponseNanos > 0L
+                ? Math.max(1L, (System.nanoTime() - firstResponseNanos) / 1_000_000L)
+                : 0L;
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("model", executionClientBundle.model());
+        metadata.put("provider", executionClientBundle.providerName());
+        metadata.put("completionTokens", completionTokens >= 0 ? completionTokens : null);
+        metadata.put("generationDurationMs", durationMs);
+        if (completionTokens >= 0 && durationMs > 0L) {
+            metadata.put("tokensPerSecond", completionTokens * 1000.0d / durationMs);
+        }
+        eventCallback.accept(new ExecutionEvent(
+                sessionKey,
+                ExecutionEvent.EventType.MODEL_METRICS,
+                "",
+                metadata
+        ));
     }
 
     private String runNonStreamFallback(ExecutionClientBundle executionClientBundle,
@@ -2473,6 +2527,10 @@ public class AgentLoop {
                     .messages(promptMessages)
                     .toolCallbacks(tools)
                     .options(options)
+                    .advisors(advisor -> advisor
+                            .param(ContextManagingToolCallingAdvisor.SESSION_ID_CONTEXT_KEY, sessionKey)
+                            .param(ContextManagingToolCallingAdvisor.RUN_ID_CONTEXT_KEY,
+                                    String.valueOf(AgentExecutionContext.getCurrentRunId())))
                     .call()
                     .chatResponse();
             ensureNotCancelled();
@@ -2533,6 +2591,8 @@ public class AgentLoop {
                 reason,
                 fallbackResponse.length(),
                 previewForLog(fallbackResponse.toString()));
+        // A non-stream response exposes only total request latency, not generation throughput.
+        emitModelMetrics(eventCallback, sessionKey, executionClientBundle, -1, 0L);
         return fallbackResponse.toString();
     }
 
@@ -3788,6 +3848,9 @@ public class AgentLoop {
         this.model = resolvedProvider.model();
         this.chatClient = nextChatClient;
         this.simpleChatClient = nextSimpleChatClient;
+        if (this.contextBuilder != null) {
+            this.contextBuilder.setContextWindow(ModelRuntimeConfig.contextWindow(config, this.model));
+        }
 
         if (resolvedProvider.fallbackUsed()) {
             logger.warn("requested provider not available, falling back to provider '{}'", resolvedProvider.providerName());
@@ -3839,9 +3902,6 @@ public class AgentLoop {
                 effectiveModel = definitionConfig.getModel();
                 int modelMaxTokens = ModelRuntimeConfig.maxTokens(config, effectiveModel);
                 effectiveMaxTokens = modelMaxTokens > 0 ? modelMaxTokens : null;
-            }
-            if (definitionConfig.getMaxTokens() != null && definitionConfig.getMaxTokens() > 0) {
-                effectiveMaxTokens = definitionConfig.getMaxTokens();
             }
             if (definitionConfig.getTemperature() != null) {
                 effectiveTemperature = definitionConfig.getTemperature();
@@ -3936,7 +3996,8 @@ public class AgentLoop {
                         ObservationRegistry.NOOP,
                         null,
                         null,
-                        ToolCallingAdvisor.builder().toolCallingManager(toolCallingManager))
+                        ContextManagingToolCallingAdvisor.builder(config, runTrajectoryCompactor)
+                                .toolCallingManager(toolCallingManager))
                 .build();
     }
 

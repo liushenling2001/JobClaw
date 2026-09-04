@@ -13,12 +13,12 @@ agent:
   workspace: "~/.jobclaw/workspace"
   model: "qwen3.5-plus"
   provider: "dashscope"
-  maxTokens: 32768        # LLM 响应最大 token 数
   temperature: 0.7        # LLM 温度参数
-  maxToolIterations: 20   # 最大工具调用次数
+  compactionTriggerPercentage: 80
+  compactionRetainPercentage: 16
 ```
 
-这些配置会被 `AgentLoop` 使用，通过 `OpenAiChatOptions` 传递给 LLM Provider。
+模型上下文窗口与最大输出在 `models.definitions` 中配置。Agent 只保留统一的上下文压缩比例。
 
 ### 新增文件
 

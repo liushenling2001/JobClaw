@@ -131,6 +131,39 @@ run.bat
 
 JobClaw 通过 `config.json` 管理 provider、模型、工作区和运行参数。`application.yml` 中的 Spring AI 配置主要作为 Spring 启动占位和默认值，实际运行以 JobClaw 配置为准。
 
+`onboard` 或前端“新建配置”生成的是精简配置，只写入当前模型及其容量、当前 Provider、工作区和统一上下文压缩比例。例如：
+
+```json
+{
+  "models": {
+    "definitions": {
+      "qwen3.5-plus": {
+        "provider": "dashscope",
+        "model": "qwen3.5-plus",
+        "maxContextSize": 128000,
+        "maxTokens": 16384
+      }
+    }
+  },
+  "agent": {
+    "workspace": "~/.jobclaw/workspace",
+    "model": "qwen3.5-plus",
+    "provider": "dashscope",
+    "restrictToWorkspace": true,
+    "compactionTriggerPercentage": 80,
+    "compactionRetainPercentage": 16
+  },
+  "providers": {
+    "dashscope": {
+      "apiKey": "",
+      "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    }
+  }
+}
+```
+
+未写入的网关、工具、通道、经验记忆等参数使用程序默认值；只有通过前端或手工修改后，差异项才会落盘。工具事件截断、重复调用保护和 `context_ref` 分片等框架内部参数不再写入用户配置。保存旧配置时，已废弃字段和这些内部参数会被自动清理。
+
 典型 provider 包括：
 
 - DashScope OpenAI compatible

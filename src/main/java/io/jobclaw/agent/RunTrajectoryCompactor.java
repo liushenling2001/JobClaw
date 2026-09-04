@@ -1,6 +1,7 @@
 package io.jobclaw.agent;
 
 import io.jobclaw.config.AgentConfig;
+import io.jobclaw.context.ContextBudgetPolicy;
 import io.jobclaw.context.result.ContextRef;
 import io.jobclaw.context.result.NoopResultStore;
 import io.jobclaw.context.result.ResultStore;
@@ -24,15 +25,6 @@ final class RunTrajectoryCompactor {
 
     private static final Logger logger = LoggerFactory.getLogger(RunTrajectoryCompactor.class);
     private static final String SUMMARY_MARKER = "JOBCLAW_RUN_TRAJECTORY_SUMMARY";
-    private static final int DEFAULT_CONTEXT_WINDOW = 128_000;
-    private static final int DEFAULT_PROMPT_PERCENTAGE = 60;
-    private static final int DEFAULT_SUMMARIZE_PERCENTAGE = 60;
-    private static final int MAX_TRIGGER_TOKENS = 32_000;
-    private static final int MIN_TRIGGER_TOKENS = 4_096;
-    private static final int TARGET_PERCENTAGE = 60;
-    private static final int MIN_RECENT_MESSAGES_TO_KEEP = 1;
-    private static final int DEFAULT_RECENT_MESSAGES_TO_KEEP = 8;
-    private static final int MAX_RECENT_MESSAGES_TO_KEEP = 24;
     private static final int MAX_STATE_CARD_TOKENS = 4_000;
     private static final int MAX_FACTS_PER_CATEGORY = 10;
     private static final int MAX_CHECKPOINTS = 8;
@@ -55,34 +47,60 @@ final class RunTrajectoryCompactor {
     }
 
     void compactIfNeeded(List<Message> promptMessages, String sessionKey, String runId, String currentUserContent) {
-        if (promptMessages == null || promptMessages.size() < 8) {
+        compactIfNeeded(promptMessages, sessionKey, runId, currentUserContent,
+                config != null ? config.getContextWindow() : ContextBudgetPolicy.DEFAULT_CONTEXT_WINDOW,
+                config != null ? config.getMaxTokens() : 0);
+    }
+
+    void compactIfNeeded(List<Message> promptMessages,
+                         String sessionKey,
+                         String runId,
+                         String currentUserContent,
+                         int contextWindow,
+                         int maxOutputTokens) {
+        compactIfNeeded(promptMessages, sessionKey, runId, currentUserContent,
+                contextWindow, maxOutputTokens, 0);
+    }
+
+    void compactIfNeeded(List<Message> promptMessages,
+                         String sessionKey,
+                         String runId,
+                         String currentUserContent,
+                         int contextWindow,
+                         int maxOutputTokens,
+                         int requestOverheadTokens) {
+        if (promptMessages == null || promptMessages.isEmpty()) {
             return;
         }
 
-        int beforeTokens = estimateMessagesTokens(promptMessages);
-        int triggerTokens = triggerTokens();
-        int messageThreshold = messageThreshold();
-        if (beforeTokens <= triggerTokens && promptMessages.size() <= messageThreshold) {
+        int overheadTokens = Math.max(0, requestOverheadTokens);
+        int beforeTokens = saturatedAdd(estimateMessagesTokens(promptMessages), overheadTokens);
+        int triggerTokens = triggerTokens(contextWindow, maxOutputTokens);
+        if (beforeTokens <= triggerTokens) {
             return;
         }
 
         List<MessageGroup> groups = groupMessages(promptMessages);
         Set<Integer> protectedGroups = protectedGroups(groups, currentUserContent);
         Set<Integer> retainedGroups = new LinkedHashSet<>(protectedGroups);
-        addRecentGroups(groups, retainedGroups, recentMessagesToKeep());
+        int retainTokens = retainTokens(contextWindow);
+        addRecentGroupsWithinTokenBudget(groups, retainedGroups, retainTokens);
 
-        CompactionDraft draft = buildDraft(groups, retainedGroups, currentUserContent, beforeTokens, null);
-        int targetTokens = targetTokens(triggerTokens);
+        int summaryTokenBudget = stateCardTokenBudget(contextWindow);
+        CompactionDraft draft = buildDraft(groups, retainedGroups, currentUserContent,
+                beforeTokens, null, summaryTokenBudget);
 
-        // Second stage: if the normal recent window is still too large, move the
-        // oldest optional groups into the archive until the target is met.
-        while (draft.estimatedTokens() > targetTokens) {
+        // The retained tail is a budget, not a promise. System/current-task anchors can
+        // push the request above the pressure threshold, so trim optional tail groups
+        // until the replacement converges below it.
+        while (saturatedAdd(draft.estimatedTokens(), overheadTokens) > triggerTokens) {
             Integer removable = oldestOptionalGroup(retainedGroups, protectedGroups, groups.size());
             if (removable == null) {
                 break;
             }
             retainedGroups.remove(removable);
-            draft = buildDraft(groups, retainedGroups, currentUserContent, beforeTokens, null);
+            draft = buildDraft(groups, retainedGroups, currentUserContent,
+                    beforeTokens, null, summaryTokenBudget);
         }
 
         if (draft.omitted().isEmpty()) {
@@ -90,16 +108,17 @@ final class RunTrajectoryCompactor {
         }
 
         ContextRef archiveRef = archiveTrajectory(sessionKey, runId, draft.omitted());
-        draft = buildDraft(groups, retainedGroups, currentUserContent, beforeTokens, archiveRef);
+        draft = buildDraft(groups, retainedGroups, currentUserContent,
+                beforeTokens, archiveRef, summaryTokenBudget);
 
         promptMessages.clear();
         promptMessages.addAll(draft.messages());
-        int afterTokens = estimateMessagesTokens(promptMessages);
+        int afterTokens = saturatedAdd(estimateMessagesTokens(promptMessages), overheadTokens);
         if (afterTokens > triggerTokens) {
             logger.warn("run trajectory remains above trigger after compaction session={} run={} tokensAfter={} triggerTokens={} protectedGroups={}",
                     sessionKey, runId, afterTokens, triggerTokens, protectedGroups.size());
         }
-        logger.info("run trajectory compacted session={} run={} messagesBefore={} messagesAfter={} tokensBefore={} tokensAfter={} triggerTokens={} targetTokens={} omitted={} archiveRef={}",
+        logger.info("run trajectory compacted session={} run={} messagesBefore={} messagesAfter={} tokensBefore={} tokensAfter={} triggerTokens={} retainTokens={} overheadTokens={} omitted={} archiveRef={}",
                 sessionKey,
                 runId,
                 groups.stream().mapToInt(group -> group.messages().size()).sum(),
@@ -107,7 +126,8 @@ final class RunTrajectoryCompactor {
                 beforeTokens,
                 afterTokens,
                 triggerTokens,
-                targetTokens,
+                retainTokens,
+                overheadTokens,
                 draft.omitted().size(),
                 archiveRef != null ? archiveRef.getRefId() : "");
     }
@@ -116,7 +136,8 @@ final class RunTrajectoryCompactor {
                                        Set<Integer> retainedGroups,
                                        String currentUserContent,
                                        int beforeTokens,
-                                       ContextRef archiveRef) {
+                                       ContextRef archiveRef,
+                                       int summaryTokenBudget) {
         List<Message> omitted = new ArrayList<>();
         List<Message> retained = new ArrayList<>();
         for (int i = 0; i < groups.size(); i++) {
@@ -130,7 +151,8 @@ final class RunTrajectoryCompactor {
             }
         }
 
-        String summary = buildSummary(currentUserContent, omitted, beforeTokens, archiveRef);
+        String summary = buildSummary(currentUserContent, omitted, beforeTokens,
+                archiveRef, summaryTokenBudget);
         List<Message> compacted = insertSummary(retained, summary);
         return new CompactionDraft(compacted, omitted, estimateMessagesTokens(compacted));
     }
@@ -166,7 +188,6 @@ final class RunTrajectoryCompactor {
     private Set<Integer> protectedGroups(List<MessageGroup> groups, String currentUserContent) {
         Set<Integer> keep = new LinkedHashSet<>();
         if (!groups.isEmpty()) {
-            keep.add(0);
             keep.add(groups.size() - 1);
         }
         for (int i = 0; i < groups.size(); i++) {
@@ -186,11 +207,17 @@ final class RunTrajectoryCompactor {
         return keep;
     }
 
-    private void addRecentGroups(List<MessageGroup> groups, Set<Integer> retainedGroups, int recentMessageLimit) {
-        int retainedMessages = 0;
-        for (int i = groups.size() - 1; i >= 0 && retainedMessages < recentMessageLimit; i--) {
+    private void addRecentGroupsWithinTokenBudget(List<MessageGroup> groups,
+                                                   Set<Integer> retainedGroups,
+                                                   int tokenBudget) {
+        int retainedTokens = 0;
+        for (int i = groups.size() - 1; i >= 0; i--) {
+            int groupTokens = estimateMessagesTokens(groups.get(i).messages());
+            if (retainedTokens > 0 && saturatedAdd(retainedTokens, groupTokens) > tokenBudget) {
+                break;
+            }
             retainedGroups.add(i);
-            retainedMessages += groups.get(i).messages().size();
+            retainedTokens = saturatedAdd(retainedTokens, groupTokens);
         }
     }
 
@@ -243,7 +270,8 @@ final class RunTrajectoryCompactor {
     private String buildSummary(String currentUserContent,
                                 List<Message> omitted,
                                 int beforeTokens,
-                                ContextRef archiveRef) {
+                                ContextRef archiveRef,
+                                int summaryTokenBudget) {
         SummaryFacts facts = new SummaryFacts();
         int omittedTokens = 0;
         int assistantMessages = 0;
@@ -297,7 +325,7 @@ final class RunTrajectoryCompactor {
         sb.append("- Retrieve archived detail through context_ref instead of restoring the full trajectory.\n");
         sb.append("\n");
         appendList(sb, "Latest compacted checkpoints (newest first)", checkpoints);
-        return truncateToTokenBudget(sb.toString(), stateCardTokenBudget());
+        return truncateToTokenBudget(sb.toString(), summaryTokenBudget);
     }
 
     private void appendList(StringBuilder sb, String title, Iterable<String> values) {
@@ -313,47 +341,19 @@ final class RunTrajectoryCompactor {
         sb.append("\n");
     }
 
-    private int triggerTokens() {
-        int contextWindow = config != null && config.getContextWindow() > 0
-                ? config.getContextWindow()
-                : DEFAULT_CONTEXT_WINDOW;
-        int promptPercentage = percentage(
-                config != null ? config.getContextMaxPromptTokenPercentage() : 0,
-                DEFAULT_PROMPT_PERCENTAGE
-        );
-        int summarizePercentage = percentage(
-                config != null ? config.getSummarizeTokenPercentage() : 0,
-                DEFAULT_SUMMARIZE_PERCENTAGE
-        );
-        long promptBudget = (long) contextWindow * promptPercentage / 100L;
-        long summarizeBudget = (long) contextWindow * summarizePercentage / 100L;
-        long configuredBudget = Math.min(promptBudget, summarizeBudget);
-        return (int) Math.min(MAX_TRIGGER_TOKENS, Math.max(MIN_TRIGGER_TOKENS, configuredBudget));
+    int triggerTokens(int configuredContextWindow, int maxOutputTokens) {
+        return ContextBudgetPolicy.triggerTokens(config, configuredContextWindow, maxOutputTokens);
     }
 
-    private int targetTokens(int triggerTokens) {
-        return Math.max(2_048, triggerTokens * TARGET_PERCENTAGE / 100);
+    int retainTokens(int configuredContextWindow) {
+        return ContextBudgetPolicy.retainTokens(config, configuredContextWindow);
     }
 
-    private int stateCardTokenBudget() {
-        return Math.min(MAX_STATE_CARD_TOKENS, Math.max(1_024, targetTokens(triggerTokens()) / 3));
-    }
-
-    private int messageThreshold() {
-        return config != null && config.getSummarizeMessageThreshold() > 0
-                ? Math.max(8, config.getSummarizeMessageThreshold())
-                : 200;
-    }
-
-    private int recentMessagesToKeep() {
-        int configured = config != null && config.getRecentMessagesToKeep() > 0
-                ? config.getRecentMessagesToKeep()
-                : DEFAULT_RECENT_MESSAGES_TO_KEEP;
-        return Math.min(MAX_RECENT_MESSAGES_TO_KEEP, Math.max(MIN_RECENT_MESSAGES_TO_KEEP, configured));
-    }
-
-    private int percentage(int configured, int fallback) {
-        return configured > 0 && configured <= 100 ? configured : fallback;
+    private int stateCardTokenBudget(int configuredContextWindow) {
+        int contextWindow = configuredContextWindow > 0
+                ? configuredContextWindow
+                : ContextBudgetPolicy.DEFAULT_CONTEXT_WINDOW;
+        return Math.min(MAX_STATE_CARD_TOKENS, Math.max(1_024, contextWindow / 50));
     }
 
     private int estimateMessagesTokens(List<Message> messages) {
@@ -364,7 +364,7 @@ final class RunTrajectoryCompactor {
         return total >= Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) total;
     }
 
-    private int estimateTextTokens(String content) {
+    int estimateTextTokens(String content) {
         if (content == null || content.isEmpty()) {
             return 0;
         }
@@ -381,6 +381,11 @@ final class RunTrajectoryCompactor {
             }
         }
         return cjkChars + (otherChars + 3) / 4;
+    }
+
+    private int saturatedAdd(int left, int right) {
+        long result = (long) left + right;
+        return result >= Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) result;
     }
 
     private String truncateToTokenBudget(String value, int tokenBudget) {
@@ -423,7 +428,34 @@ final class RunTrajectoryCompactor {
     }
 
     private String text(Message message) {
-        return message != null && message.getText() != null ? message.getText() : "";
+        if (message == null) {
+            return "";
+        }
+        StringBuilder value = new StringBuilder(message.getText() != null ? message.getText() : "");
+        if (message instanceof AssistantMessage assistantMessage) {
+            for (AssistantMessage.ToolCall call : assistantMessage.getToolCalls()) {
+                value.append("\n[tool_call id=").append(call.id())
+                        .append(" name=").append(call.name()).append("]\n")
+                        .append(call.arguments() != null ? call.arguments() : "");
+            }
+            appendMetadataText(value, assistantMessage, "reasoningContent");
+            appendMetadataText(value, assistantMessage, "reasoning_content");
+            appendMetadataText(value, assistantMessage, "reasoning");
+        } else if (message instanceof ToolResponseMessage toolResponseMessage) {
+            for (ToolResponseMessage.ToolResponse response : toolResponseMessage.getResponses()) {
+                value.append("\n[tool_result id=").append(response.id())
+                        .append(" name=").append(response.name()).append("]\n")
+                        .append(response.responseData() != null ? response.responseData() : "");
+            }
+        }
+        return value.toString();
+    }
+
+    private void appendMetadataText(StringBuilder value, Message message, String key) {
+        Object metadataValue = message.getMetadata().get(key);
+        if (metadataValue instanceof String text && !text.isBlank()) {
+            value.append("\n[").append(key).append("]\n").append(text);
+        }
     }
 
     private String clean(String value) {

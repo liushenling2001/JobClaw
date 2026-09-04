@@ -2,10 +2,13 @@ package io.jobclaw.runtime.provider;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.jobclaw.config.Config;
+import okhttp3.mockwebserver.MockResponse;
+import okhttp3.mockwebserver.MockWebServer;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -71,5 +74,25 @@ class ModelDiscoveryServiceTest {
                 .isEqualTo("http://localhost:8000/v1/models");
         assertThat(service.buildEndpoint("ollama", "http://localhost:11434/v1", true))
                 .isEqualTo("http://localhost:11434/api/tags");
+    }
+
+    @Test
+    void discoversFromTemporaryFormAddressAndKey() throws Exception {
+        try (MockWebServer server = new MockWebServer()) {
+            server.enqueue(new MockResponse()
+                    .setHeader("Content-Type", "application/json")
+                    .setBody("{\"data\":[{\"id\":\"draft-model\"}]}"));
+            server.start();
+
+            ModelDiscoveryService.DiscoveryResult result = service.discover(
+                    "openrouter", server.url("/v1").toString(), "draft-key");
+
+            var request = server.takeRequest(2, TimeUnit.SECONDS);
+            assertThat(request).isNotNull();
+            assertThat(request.getPath()).isEqualTo("/v1/models");
+            assertThat(request.getHeader("Authorization")).isEqualTo("Bearer draft-key");
+            assertThat(result.models()).extracting(ModelDiscoveryService.DiscoveredModel::id)
+                    .containsExactly("draft-model");
+        }
     }
 }

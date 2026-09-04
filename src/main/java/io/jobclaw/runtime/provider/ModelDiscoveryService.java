@@ -46,36 +46,42 @@ public class ModelDiscoveryService {
     }
 
     public DiscoveryResult discover(String providerName) throws IOException {
+        return discover(providerName, null, null);
+    }
+
+    public DiscoveryResult discover(String providerName, String apiBase, String apiKey) throws IOException {
         String provider = normalizeProvider(providerName);
         ProvidersConfig.ProviderConfig providerConfig = config.getProviderConfigByName(provider);
         if (providerConfig == null) {
             throw new IllegalArgumentException("Unknown provider: " + providerName);
         }
-        if (providerConfig.getApiBase() == null || providerConfig.getApiBase().isBlank()) {
+        String resolvedApiBase = firstNonBlank(apiBase, providerConfig.getApiBase());
+        String resolvedApiKey = firstNonBlank(apiKey, providerConfig.getApiKey());
+        if (resolvedApiBase == null) {
             throw new IllegalArgumentException("Provider '" + provider + "' has no API Base URL");
         }
 
         try {
-            return requestModels(provider, providerConfig, false);
+            return requestModels(provider, resolvedApiBase, resolvedApiKey, false);
         } catch (ModelDiscoveryException firstFailure) {
             if (!"ollama".equals(provider)) {
                 throw firstFailure;
             }
-            return requestModels(provider, providerConfig, true);
+            return requestModels(provider, resolvedApiBase, resolvedApiKey, true);
         }
     }
 
     private DiscoveryResult requestModels(String provider,
-                                          ProvidersConfig.ProviderConfig providerConfig,
+                                          String apiBase,
+                                          String apiKey,
                                           boolean ollamaNative) throws IOException {
-        String endpoint = buildEndpoint(provider, providerConfig.getApiBase(), ollamaNative);
+        String endpoint = buildEndpoint(provider, apiBase, ollamaNative, apiKey);
         Request.Builder request = new Request.Builder()
                 .url(endpoint)
                 .get()
                 .header("Accept", "application/json")
                 .header("User-Agent", "JobClaw/1.0");
 
-        String apiKey = providerConfig.getApiKey();
         if (apiKey != null && !apiKey.isBlank()) {
             if ("anthropic".equals(provider)) {
                 request.header("x-api-key", apiKey)
@@ -100,6 +106,12 @@ public class ModelDiscoveryService {
     }
 
     String buildEndpoint(String provider, String apiBase, boolean ollamaNative) {
+        ProvidersConfig.ProviderConfig providerConfig = config.getProviderConfigByName(provider);
+        String apiKey = providerConfig == null ? null : providerConfig.getApiKey();
+        return buildEndpoint(provider, apiBase, ollamaNative, apiKey);
+    }
+
+    private String buildEndpoint(String provider, String apiBase, boolean ollamaNative, String apiKey) {
         String normalizedBase = apiBase.trim().replaceAll("/+$", "");
         if (ollamaNative) {
             normalizedBase = normalizedBase.replaceFirst("/v1$", "");
@@ -108,7 +120,6 @@ public class ModelDiscoveryService {
 
         String endpoint = normalizedBase.endsWith("/models") ? normalizedBase : normalizedBase + "/models";
         if ("gemini".equals(provider)) {
-            String apiKey = config.getProviderConfigByName(provider).getApiKey();
             if (apiKey != null && !apiKey.isBlank()) {
                 HttpUrl url = HttpUrl.parse(endpoint);
                 if (url != null) {
@@ -117,6 +128,16 @@ public class ModelDiscoveryService {
             }
         }
         return endpoint;
+    }
+
+    private String firstNonBlank(String preferred, String fallback) {
+        if (preferred != null && !preferred.isBlank()) {
+            return preferred.trim();
+        }
+        if (fallback != null && !fallback.isBlank()) {
+            return fallback.trim();
+        }
+        return null;
     }
 
     List<DiscoveredModel> parseModels(String body) throws IOException {

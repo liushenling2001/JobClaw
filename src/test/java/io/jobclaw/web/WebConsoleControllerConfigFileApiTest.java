@@ -1,5 +1,7 @@
 package io.jobclaw.web;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.jobclaw.agent.AgentLoop;
 import io.jobclaw.agent.AgentOrchestrator;
 import io.jobclaw.agent.ExecutionTraceService;
@@ -36,6 +38,8 @@ import static org.mockito.Mockito.when;
 
 class WebConsoleControllerConfigFileApiTest {
 
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
     @TempDir
     Path tempDir;
 
@@ -62,6 +66,12 @@ class WebConsoleControllerConfigFileApiTest {
             assertTrue(Files.exists(configPath));
 
             String originalContent = Files.readString(configPath);
+            JsonNode createdConfig = MAPPER.readTree(originalContent);
+            assertEquals(3, createdConfig.size());
+            assertTrue(createdConfig.has("models"));
+            assertTrue(createdConfig.has("agent"));
+            assertTrue(createdConfig.has("providers"));
+            assertFalse(createdConfig.has("channels"));
             ResponseEntity<Map<String, Object>> duplicateResponse = controller.createConfigFile();
             Map<String, Object> duplicate = duplicateResponse.getBody();
             assertEquals(409, duplicateResponse.getStatusCode().value());
@@ -140,7 +150,6 @@ class WebConsoleControllerConfigFileApiTest {
                     Map.entry("reasoningEffort", "high"),
                     Map.entry("thinkingTokenBudget", 4096),
                     Map.entry("temperature", 0.2),
-                    Map.entry("maxTokens", 2048),
                     Map.entry("toolCallTimeoutSeconds", 120),
                     Map.entry("childAgentTimeoutMs", 600000)
             ));
@@ -159,12 +168,48 @@ class WebConsoleControllerConfigFileApiTest {
             assertEquals("high", config.getAgent().getReasoningEffort());
             assertEquals(4096, config.getAgent().getThinkingTokenBudget());
             assertEquals(0.2, config.getAgent().getTemperature());
-            assertEquals(2048, config.getAgent().getMaxTokens());
             assertEquals(120, config.getAgent().getToolCallTimeoutSeconds());
             assertEquals(600000L, config.getAgent().getChildAgentTimeoutMs());
             assertEquals("http://localhost:11434/v1", config.getProviders().getOllama().getApiBase());
             assertEquals("sk-local-test", config.getProviders().getOllama().getApiKey());
             assertTrue(Files.exists(Path.of(ConfigLoader.getConfigPath())));
+            verify(agentLoop).reloadDefaultClient();
+        } finally {
+            System.setProperty("user.home", originalHome);
+        }
+    }
+
+    @Test
+    void shouldPersistModelLimitsAndHotReloadActiveModel() throws Exception {
+        String originalHome = System.getProperty("user.home");
+        System.setProperty("user.home", tempDir.toString());
+        try {
+            Config config = Config.defaultConfig();
+            config.getAgent().setProvider("ollama");
+            config.getAgent().setModel("llama3.1");
+            AgentLoop agentLoop = mock(AgentLoop.class);
+            when(agentLoop.reloadDefaultClient()).thenReturn(new ResolvedProviderConfig(
+                    "ollama", "llama3.1", "", "http://localhost:11434/v1",
+                    "http://localhost:11434/v1", true, false));
+
+            WebConsoleController controller = controller(config, agentLoop);
+            WebConsoleController.UpdateModelLimitsRequest request =
+                    new WebConsoleController.UpdateModelLimitsRequest();
+            request.setMaxContextSize(262_144);
+            request.setMaxTokens(32_768);
+
+            ResponseEntity<Map<String, Object>> response = controller.updateModelLimits("llama3.1", request);
+
+            assertEquals(200, response.getStatusCode().value());
+            assertEquals(true, response.getBody().get("success"));
+            assertEquals(262_144, config.getModels().getDefinitions().get("llama3.1").getMaxContextSize());
+            assertEquals(32_768, config.getModels().getDefinitions().get("llama3.1").getMaxTokens());
+            String saved = Files.readString(Path.of(ConfigLoader.getConfigPath()));
+            assertTrue(saved.contains("\"maxContextSize\" : 262144"));
+            assertTrue(saved.contains("\"maxTokens\" : 32768"));
+            JsonNode agent = MAPPER.readTree(saved).path("agent");
+            assertFalse(agent.has("maxTokens"));
+            assertFalse(agent.has("contextWindow"));
             verify(agentLoop).reloadDefaultClient();
         } finally {
             System.setProperty("user.home", originalHome);

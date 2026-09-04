@@ -1,5 +1,7 @@
 package io.jobclaw.config;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -14,57 +16,43 @@ public class AgentConfig {
     private String thinkingMode;
     private String reasoningEffort;
     private int thinkingTokenBudget;
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
     private int maxTokens;
     private double temperature;
-    private int maxToolIterations;
-    private int maxRepairAttempts;
     private boolean restrictToWorkspace;
-    private boolean heartbeatEnabled;
-    private boolean feedbackEnabled;
-    private boolean promptOptimizationEnabled;
-    private boolean collaborationEnabled;
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
     private int maxToolOutputLength;
     private int toolCallTimeoutSeconds;
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
     private boolean toolRepeatGuardEnabled;
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
     private int toolRepeatGuardThreshold;
     private int llmCallTimeoutSeconds;
     private long childAgentTimeoutMs;
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
     private int childAgentResultMaxChars;
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
     private boolean contextRefEnabled;
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
     private int contextRefThresholdChars;
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
     private int contextRefTurnBudgetChars;
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
     private int contextRefPreviewChars;
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
     private int contextRefReadMaxChars;
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
     private int contextRefReadTurnBudgetChars;
     private List<String> commandBlacklist;
 
     // ==================== 上下文管理配置 ====================
     /** 上下文窗口大小（token 数），默认 128K */
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
     private int contextWindow;
-    /** 触发摘要的消息数量阈值 */
-    private int summarizeMessageThreshold;
-    /** 触发摘要的 Token 比例（百分比） */
-    private int summarizeTokenPercentage;
-    /** 摘要后保留的最近消息数 */
-    private int recentMessagesToKeep;
-    /** 记忆 token 预算占上下文窗口的百分比 */
-    private int memoryTokenBudgetPercentage;
-    /** 记忆最小 token 预算 */
-    private int memoryMinTokenBudget;
-    /** 记忆最大 token 预算 */
-    private int memoryMaxTokenBudget;
-    /** prompt 可用 token 预算占上下文窗口的百分比 */
-    private int contextMaxPromptTokenPercentage;
-    /** 长输入时 prompt 可用 token 预算占上下文窗口的百分比 */
-    private int contextLongInputPromptTokenPercentage;
-    /** 判定为长输入的 token 百分比阈值 */
-    private int contextLongInputTokenPercentage;
-    /** history retrieval 最大条数 */
-    private int contextMaxHistoryRetrieval;
-    /** summary retrieval 最大条数 */
-    private int contextMaxSummaryRetrieval;
-    /** memory retrieval 最大条数 */
-    private int contextMaxMemoryRetrieval;
+    /** 工具循环轨迹达到模型上下文窗口的此百分比时触发压缩 */
+    private int compactionTriggerPercentage;
+    /** 压缩时原样保留的近期轨迹占模型上下文窗口的百分比 */
+    private int compactionRetainPercentage;
 
     public AgentConfig() {
         this.workspace = "~/.jobclaw/workspace";
@@ -75,13 +63,7 @@ public class AgentConfig {
         this.thinkingTokenBudget = 0;
         this.maxTokens = 16384;
         this.temperature = 0.7;
-        this.maxToolIterations = 20;
-        this.maxRepairAttempts = 1;
         this.restrictToWorkspace = true;
-        this.heartbeatEnabled = false;
-        this.feedbackEnabled = false;
-        this.promptOptimizationEnabled = false;
-        this.collaborationEnabled = true;
         this.maxToolOutputLength = 10000; // 工具结果在前端事件中的展示截断长度，不截断模型流程内容
         this.toolCallTimeoutSeconds = 300;
         this.toolRepeatGuardEnabled = true;
@@ -96,20 +78,10 @@ public class AgentConfig {
         this.contextRefReadMaxChars = 12_000;
         this.contextRefReadTurnBudgetChars = 45_000;
         this.commandBlacklist = new ArrayList<>();
-        // 上下文管理默认值（参考 TinyClaw）
+        // 唯一的上下文压力策略：达到 80% 时压缩，保留 16% 近期原文。
         this.contextWindow = 128_000;
-        this.summarizeMessageThreshold = 200;
-        this.summarizeTokenPercentage = 60;
-        this.recentMessagesToKeep = 16;
-        this.memoryTokenBudgetPercentage = 20;
-        this.memoryMinTokenBudget = 1024;
-        this.memoryMaxTokenBudget = 16384;
-        this.contextMaxPromptTokenPercentage = 60;
-        this.contextLongInputPromptTokenPercentage = 50;
-        this.contextLongInputTokenPercentage = 6;
-        this.contextMaxHistoryRetrieval = 0;
-        this.contextMaxSummaryRetrieval = 4;
-        this.contextMaxMemoryRetrieval = 8;
+        this.compactionTriggerPercentage = 80;
+        this.compactionRetainPercentage = 16;
     }
 
     public String getWorkspace() {
@@ -176,60 +148,12 @@ public class AgentConfig {
         this.temperature = temperature;
     }
 
-    public int getMaxToolIterations() {
-        return maxToolIterations;
-    }
-
-    public void setMaxToolIterations(int maxToolIterations) {
-        this.maxToolIterations = maxToolIterations;
-    }
-
-    public int getMaxRepairAttempts() {
-        return maxRepairAttempts;
-    }
-
-    public void setMaxRepairAttempts(int maxRepairAttempts) {
-        this.maxRepairAttempts = maxRepairAttempts;
-    }
-
     public boolean isRestrictToWorkspace() {
         return restrictToWorkspace;
     }
 
     public void setRestrictToWorkspace(boolean restrictToWorkspace) {
         this.restrictToWorkspace = restrictToWorkspace;
-    }
-
-    public boolean isHeartbeatEnabled() {
-        return heartbeatEnabled;
-    }
-
-    public void setHeartbeatEnabled(boolean heartbeatEnabled) {
-        this.heartbeatEnabled = heartbeatEnabled;
-    }
-
-    public boolean isFeedbackEnabled() {
-        return feedbackEnabled;
-    }
-
-    public void setFeedbackEnabled(boolean feedbackEnabled) {
-        this.feedbackEnabled = feedbackEnabled;
-    }
-
-    public boolean isPromptOptimizationEnabled() {
-        return promptOptimizationEnabled;
-    }
-
-    public void setPromptOptimizationEnabled(boolean promptOptimizationEnabled) {
-        this.promptOptimizationEnabled = promptOptimizationEnabled;
-    }
-
-    public boolean isCollaborationEnabled() {
-        return collaborationEnabled;
-    }
-
-    public void setCollaborationEnabled(boolean collaborationEnabled) {
-        this.collaborationEnabled = collaborationEnabled;
     }
 
     public int getMaxToolOutputLength() {
@@ -353,99 +277,20 @@ public class AgentConfig {
         this.contextWindow = contextWindow;
     }
 
-    public int getSummarizeMessageThreshold() {
-        return summarizeMessageThreshold;
+    public int getCompactionTriggerPercentage() {
+        return compactionTriggerPercentage;
     }
 
-    public void setSummarizeMessageThreshold(int summarizeMessageThreshold) {
-        this.summarizeMessageThreshold = summarizeMessageThreshold;
+    public void setCompactionTriggerPercentage(int compactionTriggerPercentage) {
+        this.compactionTriggerPercentage = compactionTriggerPercentage;
     }
 
-    public int getSummarizeTokenPercentage() {
-        return summarizeTokenPercentage;
+    public int getCompactionRetainPercentage() {
+        return compactionRetainPercentage;
     }
 
-    public void setSummarizeTokenPercentage(int summarizeTokenPercentage) {
-        this.summarizeTokenPercentage = summarizeTokenPercentage;
+    public void setCompactionRetainPercentage(int compactionRetainPercentage) {
+        this.compactionRetainPercentage = compactionRetainPercentage;
     }
 
-    public int getRecentMessagesToKeep() {
-        return recentMessagesToKeep;
-    }
-
-    public void setRecentMessagesToKeep(int recentMessagesToKeep) {
-        this.recentMessagesToKeep = recentMessagesToKeep;
-    }
-
-    public int getMemoryTokenBudgetPercentage() {
-        return memoryTokenBudgetPercentage;
-    }
-
-    public void setMemoryTokenBudgetPercentage(int memoryTokenBudgetPercentage) {
-        this.memoryTokenBudgetPercentage = memoryTokenBudgetPercentage;
-    }
-
-    public int getMemoryMinTokenBudget() {
-        return memoryMinTokenBudget;
-    }
-
-    public void setMemoryMinTokenBudget(int memoryMinTokenBudget) {
-        this.memoryMinTokenBudget = memoryMinTokenBudget;
-    }
-
-    public int getMemoryMaxTokenBudget() {
-        return memoryMaxTokenBudget;
-    }
-
-    public void setMemoryMaxTokenBudget(int memoryMaxTokenBudget) {
-        this.memoryMaxTokenBudget = memoryMaxTokenBudget;
-    }
-
-    public int getContextMaxPromptTokenPercentage() {
-        return contextMaxPromptTokenPercentage;
-    }
-
-    public void setContextMaxPromptTokenPercentage(int contextMaxPromptTokenPercentage) {
-        this.contextMaxPromptTokenPercentage = contextMaxPromptTokenPercentage;
-    }
-
-    public int getContextLongInputPromptTokenPercentage() {
-        return contextLongInputPromptTokenPercentage;
-    }
-
-    public void setContextLongInputPromptTokenPercentage(int contextLongInputPromptTokenPercentage) {
-        this.contextLongInputPromptTokenPercentage = contextLongInputPromptTokenPercentage;
-    }
-
-    public int getContextLongInputTokenPercentage() {
-        return contextLongInputTokenPercentage;
-    }
-
-    public void setContextLongInputTokenPercentage(int contextLongInputTokenPercentage) {
-        this.contextLongInputTokenPercentage = contextLongInputTokenPercentage;
-    }
-
-    public int getContextMaxHistoryRetrieval() {
-        return contextMaxHistoryRetrieval;
-    }
-
-    public void setContextMaxHistoryRetrieval(int contextMaxHistoryRetrieval) {
-        this.contextMaxHistoryRetrieval = contextMaxHistoryRetrieval;
-    }
-
-    public int getContextMaxSummaryRetrieval() {
-        return contextMaxSummaryRetrieval;
-    }
-
-    public void setContextMaxSummaryRetrieval(int contextMaxSummaryRetrieval) {
-        this.contextMaxSummaryRetrieval = contextMaxSummaryRetrieval;
-    }
-
-    public int getContextMaxMemoryRetrieval() {
-        return contextMaxMemoryRetrieval;
-    }
-
-    public void setContextMaxMemoryRetrieval(int contextMaxMemoryRetrieval) {
-        this.contextMaxMemoryRetrieval = contextMaxMemoryRetrieval;
-    }
 }

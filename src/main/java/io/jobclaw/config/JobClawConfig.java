@@ -57,11 +57,7 @@ public class JobClawConfig {
     @Bean
     @ConditionalOnMissingBean
     public SecurityGuard securityGuard(Config config) {
-        return new SecurityGuard(
-                config.getAgent().getWorkspace(),
-                config.getAgent().isRestrictToWorkspace(),
-                config.getAgent().getCommandBlacklist()
-        );
+        return new SecurityGuard(config);
     }
 
     @Bean
@@ -105,12 +101,14 @@ public class JobClawConfig {
     public ContextAssembler contextAssembler(Config config,
                                              SessionManager sessionManager,
                                              RetrievalService retrievalService,
-                                             ExperienceMemoryRetriever experienceMemoryRetriever) {
+                                             ExperienceMemoryRetriever experienceMemoryRetriever,
+                                             ContextBuilder contextBuilder) {
         return new DefaultContextAssembler(
                 sessionManager,
-                config.getAgent().getRecentMessagesToKeep(),
+                0,
                 retrievalService,
-                experienceMemoryRetriever
+                experienceMemoryRetriever,
+                contextBuilder.getMemoryStore()
         );
     }
 
@@ -127,7 +125,13 @@ public class JobClawConfig {
     public ContextAssemblyPolicy contextAssemblyPolicy(Config config,
                                                        SessionManager sessionManager,
                                                        SummaryService summaryService) {
-        return new DefaultContextAssemblyPolicy(config.getAgent(), sessionManager, summaryService);
+        return new DefaultContextAssemblyPolicy(
+                config.getAgent(),
+                sessionManager,
+                summaryService,
+                () -> ModelRuntimeConfig.contextWindow(config, config.getAgent().getModel()),
+                () -> ModelRuntimeConfig.maxTokens(config, config.getAgent().getModel())
+        );
     }
 
     @Bean

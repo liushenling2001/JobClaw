@@ -7,6 +7,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -27,8 +29,16 @@ public class ModelDiscoveryController {
 
     @GetMapping("/{provider}/models")
     public ResponseEntity<?> discoverModels(@PathVariable String provider) {
+        return discoverModels(provider, null);
+    }
+
+    @PostMapping("/{provider}/models/discover")
+    public ResponseEntity<?> discoverModels(@PathVariable String provider,
+                                            @RequestBody(required = false) DiscoveryRequest request) {
         try {
-            return ResponseEntity.ok(modelDiscoveryService.discover(provider));
+            String apiBase = request == null ? null : request.apiBase();
+            String apiKey = request == null ? null : request.apiKey();
+            return ResponseEntity.ok(modelDiscoveryService.discover(provider, apiBase, apiKey));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         } catch (ModelDiscoveryService.ModelDiscoveryException e) {
@@ -41,5 +51,8 @@ public class ModelDiscoveryController {
             logger.warn("Model discovery failed for provider={}", provider, e);
             return ResponseEntity.status(502).body(Map.of("error", "Model discovery failed: " + e.getMessage()));
         }
+    }
+
+    public record DiscoveryRequest(String apiBase, String apiKey) {
     }
 }

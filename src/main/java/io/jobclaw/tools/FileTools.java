@@ -2,6 +2,7 @@ package io.jobclaw.tools;
 
 import io.jobclaw.config.Config;
 import io.jobclaw.agent.AgentExecutionContext;
+import io.jobclaw.security.SecurityGuard;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
@@ -11,6 +12,7 @@ import org.apache.poi.xwpf.usermodel.XWPFParagraph;
 import org.apache.poi.xwpf.usermodel.XWPFRun;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
@@ -38,10 +40,17 @@ public class FileTools {
     private static final int ESTIMATED_WORD_PAGE_CHAR_COUNT = 1800;
 
     private final Config config;
+    private final SecurityGuard securityGuard;
     private final Tika tika;
 
     public FileTools(Config config) {
+        this(config, new SecurityGuard(config));
+    }
+
+    @Autowired
+    public FileTools(Config config, SecurityGuard securityGuard) {
         this.config = config;
+        this.securityGuard = securityGuard;
         this.tika = new Tika();
     }
 
@@ -442,14 +451,20 @@ public class FileTools {
 
     private Path resolvePath(String path) {
         Path workspace = currentWorkingDirectory();
+        Path resolved;
         if (path == null || path.isBlank()) {
-            return workspace.normalize();
+            resolved = workspace.normalize();
+        } else {
+            Path input = Paths.get(cleanPathArgument(path));
+            resolved = input.isAbsolute()
+                    ? input.normalize()
+                    : workspace.resolve(input).normalize();
         }
-        Path input = Paths.get(cleanPathArgument(path));
-        if (input.isAbsolute()) {
-            return input.normalize();
+        String securityError = securityGuard.checkFilePath(resolved.toString());
+        if (securityError != null) {
+            throw new SecurityException(securityError);
         }
-        return workspace.resolve(input).normalize();
+        return resolved;
     }
 
     private Path requireReadablePath(String path, String... allowedExtensions) throws Exception {

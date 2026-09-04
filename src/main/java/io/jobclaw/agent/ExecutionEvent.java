@@ -17,6 +17,7 @@ public class ExecutionEvent {
         TOOL_END,
         TOOL_OUTPUT,
         TOOL_ERROR,
+        MODEL_METRICS,
         ERROR,
         FINAL_RESPONSE,
         CUSTOM

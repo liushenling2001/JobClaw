@@ -3,6 +3,7 @@ package io.jobclaw.agent;
 import io.jobclaw.config.AgentConfig;
 import io.jobclaw.context.result.ContextRef;
 import io.jobclaw.context.result.FileResultStore;
+import io.jobclaw.runtime.tool.ToolRuntime;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -12,6 +13,7 @@ import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -23,6 +25,52 @@ class RunTrajectoryCompactorTest {
 
     @TempDir
     Path tempDir;
+
+    @Test
+    void shouldScaleTriggerWithModelContextInsteadOfUsingAnAbsoluteCap() {
+        AgentConfig config = new AgentConfig();
+        RunTrajectoryCompactor compactor = new RunTrajectoryCompactor(config);
+
+        assertEquals(80_000, compactor.triggerTokens(100_000, 16_384));
+        assertEquals(209_715, compactor.triggerTokens(262_144, 32_768));
+        assertEquals(800_000, compactor.triggerTokens(1_000_000, 32_768));
+        assertEquals(16_000, compactor.retainTokens(100_000));
+        assertEquals(41_943, compactor.retainTokens(262_144));
+    }
+
+    @Test
+    void shouldCountOnlyTheContextReferenceEnvelopeInsteadOfItsStoredContentLength() {
+        RunTrajectoryCompactor compactor = new RunTrajectoryCompactor(new AgentConfig());
+        ContextRef ref = new ContextRef(
+                "ref-large-result",
+                "session-ref",
+                "run-ref",
+                "tool",
+                "read_pdf",
+                Instant.now(),
+                2_000_000,
+                "preview ".repeat(250)
+        );
+
+        String modelResponse = ToolRuntime.toContextReferenceResponse(ref);
+
+        assertTrue(modelResponse.contains("contentLength: 2000000"));
+        assertTrue(compactor.estimateTextTokens(modelResponse) < 1_000);
+    }
+
+    @Test
+    void shouldCountOnlyTheContextReferenceSliceThatActuallyFlowsBackToTheModel() {
+        RunTrajectoryCompactor compactor = new RunTrajectoryCompactor(new AgentConfig());
+        String returnedSlice = "Context reference: ref-large-result\n"
+                + "Source: read_pdf\n"
+                + "Range: 12000-24000 of 2000000\n\n"
+                + "文".repeat(12_000);
+
+        int estimatedTokens = compactor.estimateTextTokens(returnedSlice);
+
+        assertTrue(estimatedTokens >= 12_000);
+        assertTrue(estimatedTokens < 12_100);
+    }
 
     @Test
     void shouldReplaceOldRunTrajectoryWithStateCard() {
@@ -94,7 +142,6 @@ class RunTrajectoryCompactorTest {
     void shouldKeepToolCallAndToolResponseInTheSameMessageGroup() {
         AgentConfig config = new AgentConfig();
         config.setContextWindow(8_000);
-        config.setRecentMessagesToKeep(2);
         RunTrajectoryCompactor compactor = new RunTrajectoryCompactor(config, new FileResultStore(tempDir));
         String currentTask = "读取文件后生成报告";
         AssistantMessage toolCall = AssistantMessage.builder()
@@ -129,6 +176,43 @@ class RunTrajectoryCompactorTest {
         assertTrue(toolCallIndex >= 0);
         assertTrue(toolCallIndex + 1 < messages.size());
         assertInstanceOf(ToolResponseMessage.class, messages.get(toolCallIndex + 1));
+    }
+
+    @Test
+    void shouldCountAndArchiveLargeToolResponses() {
+        AgentConfig config = new AgentConfig();
+        config.setCompactionTriggerPercentage(80);
+        config.setCompactionRetainPercentage(16);
+        FileResultStore resultStore = new FileResultStore(tempDir);
+        RunTrajectoryCompactor compactor = new RunTrajectoryCompactor(config, resultStore);
+        String currentTask = "读取数据并完成分析";
+        AssistantMessage toolCall = AssistantMessage.builder()
+                .content("")
+                .toolCalls(List.of(new AssistantMessage.ToolCall(
+                        "call-large", "function", "read_file", "{\"path\":\"large.txt\"}")))
+                .build();
+        String largeResult = "large-tool-payload ".repeat(5_000);
+        ToolResponseMessage toolResponse = ToolResponseMessage.builder()
+                .responses(List.of(new ToolResponseMessage.ToolResponse(
+                        "call-large", "read_file", largeResult)))
+                .build();
+        List<Message> messages = new ArrayList<>();
+        messages.add(new SystemMessage("system"));
+        messages.add(new UserMessage(currentTask));
+        messages.add(toolCall);
+        messages.add(toolResponse);
+        messages.add(new AssistantMessage("工具读取已经完成"));
+        messages.add(new UserMessage("根据读取结果继续"));
+
+        compactor.compactIfNeeded(messages, "session-large-tool", "run-large-tool",
+                currentTask, 20_000, 2_000);
+
+        assertTrue(joined(messages).contains("JOBCLAW_RUN_TRAJECTORY_SUMMARY"));
+        List<ContextRef> archives = resultStore.list("session-large-tool", "run-large-tool", 10);
+        assertEquals(1, archives.size());
+        String archived = resultStore.find(archives.get(0).getRefId()).orElseThrow().getContent();
+        assertTrue(archived.contains("call-large"));
+        assertTrue(archived.contains("large-tool-payload"));
     }
 
     @Test

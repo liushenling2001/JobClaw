@@ -26,7 +26,7 @@ class RunCommandToolTest {
     void shouldUseSessionWorkingDirectoryWhenWorkingDirIsOmitted() throws Exception {
         AgentExecutionContext.setCurrentContext(new AgentExecutionContext.ExecutionScope(
                 "web:test", null, null, null, null, null, null, null, tempDir.toRealPath().toString()));
-        RunCommandTool tool = new RunCommandTool(Config.defaultConfig());
+        RunCommandTool tool = new RunCommandTool(unrestrictedConfig());
         String command = System.getProperty("os.name").toLowerCase().contains("win") ? "cd" : "pwd";
 
         String result = tool.execute(command, null, 5);
@@ -36,7 +36,7 @@ class RunCommandToolTest {
 
     @Test
     void shouldReturnErrorWhenCommandExitsNonZero() {
-        RunCommandTool tool = new RunCommandTool(Config.defaultConfig());
+        RunCommandTool tool = new RunCommandTool(unrestrictedConfig());
         String command = System.getProperty("os.name").toLowerCase().contains("win")
                 ? "exit /b 7"
                 : "exit 7";
@@ -48,7 +48,7 @@ class RunCommandToolTest {
 
     @Test
     void shouldRejectLargeInlineScriptsSoAgentCanRepairWithScriptFile() {
-        RunCommandTool tool = new RunCommandTool(Config.defaultConfig());
+        RunCommandTool tool = new RunCommandTool(unrestrictedConfig());
         StringBuilder command = new StringBuilder("python - <<EOF\n");
         for (int i = 0; i < 20; i++) {
             command.append("print('line ").append(i).append("')\n");
@@ -63,7 +63,7 @@ class RunCommandToolTest {
 
     @Test
     void shouldRedactSecretsFromCommandOutput() {
-        RunCommandTool tool = new RunCommandTool(Config.defaultConfig());
+        RunCommandTool tool = new RunCommandTool(unrestrictedConfig());
         String command = System.getProperty("os.name").toLowerCase().contains("win")
                 ? "echo OPENAI_API_KEY=sk-test1234567890abcdef"
                 : "printf 'OPENAI_API_KEY=sk-test1234567890abcdef\\n'";
@@ -76,7 +76,7 @@ class RunCommandToolTest {
 
     @Test
     void shouldRejectSensitiveCredentialFileReads() {
-        RunCommandTool tool = new RunCommandTool(Config.defaultConfig());
+        RunCommandTool tool = new RunCommandTool(unrestrictedConfig());
         String command = System.getProperty("os.name").toLowerCase().contains("win")
                 ? "type .env"
                 : "cat .env";
@@ -94,7 +94,7 @@ class RunCommandToolTest {
         Files.writeString(skillRoot.resolve("SKILL.md"), "sample");
         Files.writeString(scriptsDir.resolve("run-task.cmd"), "@echo off");
 
-        RunCommandTool tool = new RunCommandTool(Config.defaultConfig());
+        RunCommandTool tool = new RunCommandTool(unrestrictedConfig());
         String result = tool.execute(".\\scripts\\run-task.ps1 -Task demo", skillRoot.toString(), 5);
 
         if (System.getProperty("os.name").toLowerCase().contains("win")) {
@@ -114,7 +114,7 @@ class RunCommandToolTest {
         Files.writeString(skillRoot.resolve("SKILL.md"), "sample");
         Files.writeString(scriptsDir.resolve("run-task.cmd"), "@echo off");
 
-        RunCommandTool tool = new RunCommandTool(Config.defaultConfig());
+        RunCommandTool tool = new RunCommandTool(unrestrictedConfig());
         String result = tool.execute(
                 "cd /d \"" + skillRoot + "\" && .\\scripts\\run-task.ps1 -Task demo",
                 System.getProperty("user.dir"),
@@ -130,7 +130,7 @@ class RunCommandToolTest {
         Files.createDirectories(skillRoot.resolve("scripts"));
         Files.writeString(skillRoot.resolve("SKILL.md"), "sample");
 
-        RunCommandTool tool = new RunCommandTool(Config.defaultConfig());
+        RunCommandTool tool = new RunCommandTool(unrestrictedConfig());
         String result = tool.execute("Set-Content scripts/run_task.py fixed", skillRoot.toString(), 5);
 
         assertTrue(result.startsWith("Error: Refusing to modify skill implementation files"));
@@ -142,7 +142,7 @@ class RunCommandToolTest {
         Files.createDirectories(skillRoot.resolve("scripts"));
         Files.writeString(skillRoot.resolve("SKILL.md"), "sample");
 
-        RunCommandTool tool = new RunCommandTool(Config.defaultConfig());
+        RunCommandTool tool = new RunCommandTool(unrestrictedConfig());
         String result = tool.execute(
                 "cd /d \"" + skillRoot + "\" && Set-Content scripts/run_task.py fixed",
                 System.getProperty("user.dir"),
@@ -164,9 +164,49 @@ class RunCommandToolTest {
         Files.writeString(skillRoot.resolve("SKILL.md"), "sample");
         Files.writeString(scriptsDir.resolve("run-task.cmd"), "@echo off\r\necho ok\r\n");
 
-        RunCommandTool tool = new RunCommandTool(Config.defaultConfig());
+        RunCommandTool tool = new RunCommandTool(unrestrictedConfig());
         String result = tool.execute(".\\scripts\\run-task.cmd > run.log", skillRoot.toString(), 5);
 
         assertFalse(result.startsWith("Error: Refusing to modify skill implementation files"));
+    }
+
+    @Test
+    void shouldRejectWorkingDirectoryOutsideCurrentSessionWorkspace() throws Exception {
+        Path workspace = Files.createDirectories(tempDir.resolve("workspace"));
+        Path outside = Files.createDirectories(tempDir.resolve("outside"));
+        Config config = Config.defaultConfig();
+        config.getAgent().setWorkspace(workspace.toString());
+        config.getAgent().setRestrictToWorkspace(true);
+        AgentExecutionContext.setCurrentContext(new AgentExecutionContext.ExecutionScope(
+                "web:restricted", null, null, null, null, null, null, null, workspace.toString()));
+
+        String result = new RunCommandTool(config).execute("echo blocked", outside.toString(), 5);
+
+        assertTrue(result.startsWith("Error: Access denied"));
+    }
+
+    @Test
+    void shouldAllowInstalledSkillOutsideConversationWorkspace() throws Exception {
+        Path globalWorkspace = Files.createDirectories(tempDir.resolve("global"));
+        Path sessionWorkspace = Files.createDirectories(tempDir.resolve("project"));
+        Path skillRoot = Files.createDirectories(globalWorkspace.resolve("skills").resolve("sample-skill"));
+        Files.writeString(skillRoot.resolve("SKILL.md"), "sample");
+        Config config = Config.defaultConfig();
+        config.getAgent().setWorkspace(globalWorkspace.toString());
+        config.getAgent().setRestrictToWorkspace(true);
+        AgentExecutionContext.setCurrentContext(new AgentExecutionContext.ExecutionScope(
+                "web:skill", null, null, null, null, null, null, null, sessionWorkspace.toString()));
+        String command = System.getProperty("os.name").toLowerCase().contains("win") ? "cd" : "pwd";
+
+        String result = new RunCommandTool(config).execute(command, skillRoot.toString(), 5);
+
+        assertFalse(result.startsWith("Error: Access denied"));
+        assertFalse(result.isBlank());
+    }
+
+    private Config unrestrictedConfig() {
+        Config config = Config.defaultConfig();
+        config.getAgent().setRestrictToWorkspace(false);
+        return config;
     }
 }

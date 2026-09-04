@@ -15,6 +15,7 @@ import java.time.Instant;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 class ContextBuilderAgentWorkflowPromptTest {
 
@@ -65,7 +66,7 @@ class ContextBuilderAgentWorkflowPromptTest {
     }
 
     @Test
-    void shouldOmitStatefulConversationSummaryFromSystemPrompt() throws Exception {
+    void shouldLeaveConversationSummaryInjectionToContextAssembler() throws Exception {
         Path workspace = Files.createTempDirectory("context-builder-stateful-summary");
         Config config = Config.defaultConfig();
         config.getAgent().setWorkspace(workspace.toString());
@@ -92,8 +93,8 @@ class ContextBuilderAgentWorkflowPromptTest {
 
         String prompt = builder.buildSystemPrompt(sessionKey, "处理 D:\\new\\docs");
 
-        assertTrue(prompt.contains("Historical summary was omitted"));
-        assertTrue(prompt.contains("current-run tool results"));
+        assertFalse(prompt.contains("# Conversation Summary"));
+        assertFalse(prompt.contains("old-mf"));
         assertTrue(prompt.contains("inputDir, fields, outputDir, outputPath, and manifestId must come from the current user message"));
     }
 

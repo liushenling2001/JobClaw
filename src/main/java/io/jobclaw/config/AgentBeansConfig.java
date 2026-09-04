@@ -1,6 +1,7 @@
 package io.jobclaw.config;
 
 import io.jobclaw.agent.AgentLoop;
+import io.jobclaw.agent.ContextBuilder;
 import io.jobclaw.agent.completion.CompletionRegistry;
 import io.jobclaw.agent.manifest.ActiveManifestRegistry;
 import io.jobclaw.agent.skill.ActiveSkillRegistry;
@@ -175,12 +176,14 @@ public class AgentBeansConfig {
     public ContextAssembler contextAssembler(Config config,
                                              SessionManager sessionManager,
                                              RetrievalService retrievalService,
-                                             ExperienceMemoryRetriever experienceMemoryRetriever) {
+                                             ExperienceMemoryRetriever experienceMemoryRetriever,
+                                             ContextBuilder contextBuilder) {
         return new DefaultContextAssembler(
                 sessionManager,
-                config.getAgent().getRecentMessagesToKeep(),
+                0,
                 retrievalService,
-                experienceMemoryRetriever
+                experienceMemoryRetriever,
+                contextBuilder.getMemoryStore()
         );
     }
 
@@ -193,7 +196,8 @@ public class AgentBeansConfig {
                 config.getAgent(),
                 sessionManager,
                 summaryService,
-                () -> ModelRuntimeConfig.contextWindow(config, config.getAgent().getModel())
+                () -> ModelRuntimeConfig.contextWindow(config, config.getAgent().getModel()),
+                () -> ModelRuntimeConfig.maxTokens(config, config.getAgent().getModel())
         );
     }
 

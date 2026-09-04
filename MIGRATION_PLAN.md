@@ -241,9 +241,9 @@ public class AgentLoop {
   "agent": {
     "model": "qwen-plus",
     "provider": "dashscope",
-    "maxToolIterations": 10,
-    "maxTokens": 4000,
-    "temperature": 0.7
+    "temperature": 0.7,
+    "compactionTriggerPercentage": 80,
+    "compactionRetainPercentage": 16
   }
 }
 ```
@@ -251,7 +251,8 @@ public class AgentLoop {
 **AgentScope 配置** (保持不变，内部适配):
 - API Key → 传递给 DashScopeChatModel
 - Model Name → 传递给 modelName
-- Temperature/MaxTokens → 通过 GenerateOptions 配置
+- Temperature → 通过 GenerateOptions 配置
+- MaxTokens/ContextWindow → 从 `models.definitions` 的模型定义读取
 
 **影响文件**:
 - `src/main/java/io/jobclaw/config/Config.java` → 添加 AgentScope 相关配置项

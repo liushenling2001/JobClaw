@@ -1,7 +1,9 @@
 package io.jobclaw.config;
 
 import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.github.cdimascio.dotenv.Dotenv;
 import org.springframework.stereotype.Component;
@@ -10,6 +12,11 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
+import java.util.Iterator;
+import java.util.LinkedHashSet;
+import java.util.Map;
+import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.DoubleConsumer;
 import java.util.function.IntConsumer;
@@ -37,6 +44,7 @@ public class ConfigLoader {
     public static Config load(String path) throws IOException {
         Config config = loadFromFile(path);
         applyEnvironmentOverrides(config);
+        ModelRuntimeConfig.normalizeDefinitions(config);
         printLoadedConfigSummary(path, config);
         return config;
     }
@@ -98,8 +106,157 @@ public class ConfigLoader {
     public static void save(String path, Config config) throws IOException {
         File configFile = new File(path);
         ensureParentDirectory(configFile);
-        String json = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(config);
+        String json = serialize(config);
         Files.writeString(configFile.toPath(), json);
+    }
+
+    /** Creates a minimal default configuration without overwriting an existing file. */
+    public static Config createInitial(String path) throws IOException {
+        File configFile = new File(path);
+        ensureParentDirectory(configFile);
+        Config config = Config.defaultConfig();
+        Files.writeString(configFile.toPath(), serialize(config), StandardOpenOption.CREATE_NEW);
+        return config;
+    }
+
+    private static String serialize(Config config) throws IOException {
+        return objectMapper.writerWithDefaultPrettyPrinter()
+                .writeValueAsString(toPersistentTree(config));
+    }
+
+    static ObjectNode toPersistentTree(Config config) {
+        Config actualConfig = config != null ? config : Config.defaultConfig();
+        ModelRuntimeConfig.normalizeDefinitions(actualConfig);
+
+        ObjectNode actual = objectMapper.valueToTree(actualConfig);
+        ObjectNode defaults = objectMapper.valueToTree(Config.defaultConfig());
+        ObjectNode differences = pruneDefaults(actual, defaults);
+        ObjectNode result = objectMapper.createObjectNode();
+
+        appendModels(result, actual, defaults);
+        appendAgent(result, actual, differences);
+        appendProviders(result, actual, defaults);
+
+        Iterator<Map.Entry<String, JsonNode>> fields = differences.fields();
+        while (fields.hasNext()) {
+            Map.Entry<String, JsonNode> field = fields.next();
+            if (!Set.of("models", "agent", "providers").contains(field.getKey())) {
+                result.set(field.getKey(), field.getValue());
+            }
+        }
+        return result;
+    }
+
+    private static void appendModels(ObjectNode result, ObjectNode actual, ObjectNode defaults) {
+        ObjectNode definitions = objectMapper.createObjectNode();
+        JsonNode actualDefinitions = actual.path("models").path("definitions");
+        JsonNode defaultDefinitions = defaults.path("models").path("definitions");
+        String activeModel = actual.path("agent").path("model").asText("");
+        Set<String> names = new LinkedHashSet<>();
+        actualDefinitions.fieldNames().forEachRemaining(name -> {
+            if (name.equals(activeModel) || !actualDefinitions.path(name).equals(defaultDefinitions.path(name))) {
+                names.add(name);
+            }
+        });
+        if (!activeModel.isBlank() && actualDefinitions.has(activeModel)) {
+            names.add(activeModel);
+        }
+        for (String name : names) {
+            ObjectNode definition = actualDefinitions.path(name).deepCopy();
+            removeNullFields(definition);
+            definitions.set(name, definition);
+        }
+        if (!definitions.isEmpty()) {
+            ObjectNode models = objectMapper.createObjectNode();
+            models.set("definitions", definitions);
+            result.set("models", models);
+        }
+    }
+
+    private static void appendAgent(ObjectNode result, ObjectNode actual, ObjectNode differences) {
+        ObjectNode source = (ObjectNode) actual.path("agent");
+        ObjectNode agent = differences.has("agent")
+                ? differences.withObject("agent").deepCopy()
+                : objectMapper.createObjectNode();
+        copyField(source, agent, "workspace");
+        copyField(source, agent, "model");
+        copyField(source, agent, "provider");
+        copyField(source, agent, "restrictToWorkspace");
+        copyField(source, agent, "compactionTriggerPercentage");
+        copyField(source, agent, "compactionRetainPercentage");
+        result.set("agent", agent);
+    }
+
+    private static void appendProviders(ObjectNode result, ObjectNode actual, ObjectNode defaults) {
+        ObjectNode providers = objectMapper.createObjectNode();
+        JsonNode actualProviders = actual.path("providers");
+        JsonNode defaultProviders = defaults.path("providers");
+        String activeProvider = actual.path("agent").path("provider").asText("");
+        actualProviders.fieldNames().forEachRemaining(name -> {
+            JsonNode provider = actualProviders.path(name);
+            if (name.equals(activeProvider) || !provider.equals(defaultProviders.path(name))) {
+                ObjectNode persisted = provider.deepCopy();
+                removeNullFields(persisted);
+                providers.set(name, persisted);
+            }
+        });
+        if (!providers.isEmpty()) {
+            result.set("providers", providers);
+        }
+    }
+
+    private static ObjectNode pruneDefaults(ObjectNode actual, ObjectNode defaults) {
+        ObjectNode result = objectMapper.createObjectNode();
+        Iterator<Map.Entry<String, JsonNode>> fields = actual.fields();
+        while (fields.hasNext()) {
+            Map.Entry<String, JsonNode> field = fields.next();
+            JsonNode value = pruneNode(field.getValue(), defaults.get(field.getKey()));
+            if (value != null) {
+                result.set(field.getKey(), value);
+            }
+        }
+        return result;
+    }
+
+    private static JsonNode pruneNode(JsonNode actual, JsonNode defaults) {
+        if (actual == null || actual.isNull()) {
+            return defaults == null || defaults.isNull() ? null : actual;
+        }
+        if (actual.isObject()) {
+            ObjectNode pruned = objectMapper.createObjectNode();
+            Iterator<Map.Entry<String, JsonNode>> fields = actual.fields();
+            while (fields.hasNext()) {
+                Map.Entry<String, JsonNode> field = fields.next();
+                JsonNode defaultChild = defaults != null && defaults.isObject()
+                        ? defaults.get(field.getKey())
+                        : null;
+                JsonNode child = pruneNode(field.getValue(), defaultChild);
+                if (child != null) {
+                    pruned.set(field.getKey(), child);
+                }
+            }
+            return pruned.isEmpty() ? null : pruned;
+        }
+        return actual.equals(defaults) ? null : actual.deepCopy();
+    }
+
+    private static void copyField(ObjectNode source, ObjectNode target, String name) {
+        if (source.has(name)) {
+            target.set(name, source.get(name));
+        }
+    }
+
+    private static void removeNullFields(ObjectNode node) {
+        Set<String> nullFields = new LinkedHashSet<>();
+        node.fields().forEachRemaining(field -> {
+            if (field.getValue().isObject()) {
+                removeNullFields((ObjectNode) field.getValue());
+            }
+            if (field.getValue() == null || field.getValue().isNull()) {
+                nullFields.add(field.getKey());
+            }
+        });
+        node.remove(nullFields);
     }
 
     private static void ensureParentDirectory(File file) {
@@ -175,19 +332,9 @@ public class ConfigLoader {
         applyStringOverride("JOBCLAW_AGENT_MODEL", config.getAgent()::setModel);
         applyStringOverride("JOBCLAW_AGENT_REASONING_EFFORT", config.getAgent()::setReasoningEffort);
         applyIntOverride("JOBCLAW_AGENT_THINKING_TOKEN_BUDGET", config.getAgent()::setThinkingTokenBudget);
-        applyIntOverride("JOBCLAW_AGENT_MAX_TOKENS", config.getAgent()::setMaxTokens);
         applyDoubleOverride("JOBCLAW_AGENT_TEMPERATURE", config.getAgent()::setTemperature);
-        applyIntOverride("JOBCLAW_AGENT_CONTEXT_WINDOW", config.getAgent()::setContextWindow);
-        applyIntOverride("JOBCLAW_AGENT_RECENT_MESSAGES_TO_KEEP", config.getAgent()::setRecentMessagesToKeep);
-        applyIntOverride("JOBCLAW_AGENT_MEMORY_TOKEN_BUDGET_PERCENTAGE", config.getAgent()::setMemoryTokenBudgetPercentage);
-        applyIntOverride("JOBCLAW_AGENT_MEMORY_MIN_TOKEN_BUDGET", config.getAgent()::setMemoryMinTokenBudget);
-        applyIntOverride("JOBCLAW_AGENT_MEMORY_MAX_TOKEN_BUDGET", config.getAgent()::setMemoryMaxTokenBudget);
-        applyIntOverride("JOBCLAW_AGENT_CONTEXT_MAX_PROMPT_TOKEN_PERCENTAGE", config.getAgent()::setContextMaxPromptTokenPercentage);
-        applyIntOverride("JOBCLAW_AGENT_CONTEXT_LONG_INPUT_PROMPT_TOKEN_PERCENTAGE", config.getAgent()::setContextLongInputPromptTokenPercentage);
-        applyIntOverride("JOBCLAW_AGENT_CONTEXT_LONG_INPUT_TOKEN_PERCENTAGE", config.getAgent()::setContextLongInputTokenPercentage);
-        applyIntOverride("JOBCLAW_AGENT_CONTEXT_MAX_HISTORY_RETRIEVAL", config.getAgent()::setContextMaxHistoryRetrieval);
-        applyIntOverride("JOBCLAW_AGENT_CONTEXT_MAX_SUMMARY_RETRIEVAL", config.getAgent()::setContextMaxSummaryRetrieval);
-        applyIntOverride("JOBCLAW_AGENT_CONTEXT_MAX_MEMORY_RETRIEVAL", config.getAgent()::setContextMaxMemoryRetrieval);
+        applyIntOverride("JOBCLAW_AGENT_COMPACTION_TRIGGER_PERCENTAGE", config.getAgent()::setCompactionTriggerPercentage);
+        applyIntOverride("JOBCLAW_AGENT_COMPACTION_RETAIN_PERCENTAGE", config.getAgent()::setCompactionRetainPercentage);
     }
 
     private static void applyChannelOverrides(Config config) {

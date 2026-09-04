@@ -18,8 +18,40 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SessionSummarizerStructuredParseTest {
+
+    @Test
+    void usesTheUnifiedTriggerAndRetainBudgets() throws Exception {
+        Path tempMemoryStore = Files.createTempDirectory("jobclaw-memory-store");
+        AgentConfig agentConfig = new AgentConfig();
+        SessionSummarizer summarizer = new SessionSummarizer(
+                new SessionManager(),
+                null,
+                agentConfig,
+                new MemoryStore(tempMemoryStore.toString()),
+                null,
+                new NoopSummaryService(),
+                () -> 100_000,
+                () -> 16_384
+        );
+        List<io.jobclaw.providers.Message> belowTrigger = List.of(
+                io.jobclaw.providers.Message.user("文".repeat(79_000))
+        );
+        List<io.jobclaw.providers.Message> aboveTrigger = List.of(
+                io.jobclaw.providers.Message.user("文".repeat(79_000)),
+                io.jobclaw.providers.Message.assistant("文".repeat(2_000))
+        );
+        List<io.jobclaw.providers.Message> history = java.util.stream.IntStream.range(0, 10)
+                .mapToObj(index -> io.jobclaw.providers.Message.user("文".repeat(2_000)))
+                .toList();
+
+        assertFalse(summarizer.shouldSummarize(belowTrigger));
+        assertTrue(summarizer.shouldSummarize(aboveTrigger));
+        assertEquals(3, summarizer.retainedStartIndex(history, 16_000));
+    }
 
     @Test
     void parsesStructuredChunkSections() throws Exception {

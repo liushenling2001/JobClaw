@@ -3,6 +3,7 @@ package io.jobclaw.agent;
 import io.jobclaw.agent.evolution.MemoryEvolver;
 import io.jobclaw.agent.evolution.MemoryStore;
 import io.jobclaw.config.AgentConfig;
+import io.jobclaw.context.ContextBudgetPolicy;
 import io.jobclaw.conversation.MessageChunk;
 import io.jobclaw.conversation.StoredMessage;
 import io.jobclaw.providers.Message;
@@ -24,17 +25,13 @@ import java.util.function.IntSupplier;
  * 会话摘要器，负责管理会话摘要和历史记录压缩。
  *
  * 核心功能：
- * - 监控会话历史长度，自动触发摘要
+ * - 在统一上下文压力阈值下自动触发摘要
  * - 生成会话摘要以压缩上下文
  * - 支持批量摘要和分批处理
  * - 保留最近消息，删除已摘要的历史
  *
- * 触发条件：
- * - 消息数量超过阈值（从 AgentConfig 读取）
- * - Token 数量超过上下文窗口的一定比例（从 AgentConfig 读取）
- *
  * 摘要策略：
- * 1. 保留最近的 N 条消息（从 AgentConfig 读取）
+ * 1. 按统一的近期 token 预算保留原始消息
  * 2. 对较早的消息生成摘要
  * 3. 如果消息量大，采用分批摘要策略
  * 4. 合并多个批次的摘要为最终摘要
@@ -99,6 +96,7 @@ public class SessionSummarizer {
     private final AgentLoop agentLoop;
     private final AgentConfig agentConfig;
     private final IntSupplier contextWindowSupplier;
+    private final IntSupplier maxOutputTokensSupplier;
     private final Set<String> summarizing;
     private final MemoryStore memoryStore;
     private final MemoryEvolver memoryEvolver;
@@ -118,7 +116,7 @@ public class SessionSummarizer {
                              MemoryEvolver memoryEvolver,
                              SummaryService summaryService) {
         this(sessions, agentLoop, agentConfig, memoryStore, memoryEvolver,
-                summaryService, agentConfig::getContextWindow);
+                summaryService, agentConfig::getContextWindow, () -> 0);
     }
 
     public SessionSummarizer(SessionManager sessions, AgentLoop agentLoop,
@@ -126,10 +124,21 @@ public class SessionSummarizer {
                              MemoryEvolver memoryEvolver,
                              SummaryService summaryService,
                              IntSupplier contextWindowSupplier) {
+        this(sessions, agentLoop, agentConfig, memoryStore, memoryEvolver,
+                summaryService, contextWindowSupplier, () -> 0);
+    }
+
+    public SessionSummarizer(SessionManager sessions, AgentLoop agentLoop,
+                             AgentConfig agentConfig, MemoryStore memoryStore,
+                             MemoryEvolver memoryEvolver,
+                             SummaryService summaryService,
+                             IntSupplier contextWindowSupplier,
+                             IntSupplier maxOutputTokensSupplier) {
         this.sessions = sessions;
         this.agentLoop = agentLoop;
         this.agentConfig = agentConfig;
         this.contextWindowSupplier = contextWindowSupplier;
+        this.maxOutputTokensSupplier = maxOutputTokensSupplier;
         this.memoryStore = memoryStore;
         this.memoryEvolver = memoryEvolver;
         this.summaryService = summaryService;
@@ -139,7 +148,7 @@ public class SessionSummarizer {
     /**
      * 根据需要触发会话摘要。
      *
-     * 检查会话历史长度和 Token 数，如果超过阈值则启动异步摘要。
+     * 检查会话历史的 Token 压力，如果达到统一阈值则启动异步摘要。
      *
      * @param sessionKey 会话键
      */
@@ -159,12 +168,12 @@ public class SessionSummarizer {
      * @param history 会话历史
      * @return 需要摘要返回 true，否则返回 false
      */
-    private boolean shouldSummarize(List<Message> history) {
+    boolean shouldSummarize(List<Message> history) {
         int tokenEstimate = estimateTokens(history);
         int contextWindow = contextWindowSupplier.getAsInt();
-        int threshold = contextWindow * agentConfig.getSummarizeTokenPercentage() / 100;
-
-        return history.size() > agentConfig.getSummarizeMessageThreshold() || tokenEstimate > threshold;
+        int threshold = ContextBudgetPolicy.triggerTokens(
+                agentConfig, contextWindow, maxOutputTokensSupplier.getAsInt());
+        return tokenEstimate > threshold;
     }
 
     /**
@@ -202,8 +211,8 @@ public class SessionSummarizer {
         long summarizedSequence = summaryService.getSessionSummary(sessionKey)
                 .map(SessionSummaryRecord::sourceChunkEndSequence)
                 .orElse(0L);
-        int keepRecent = agentConfig.getRecentMessagesToKeep();
-        int eligibleEndExclusive = history.size() - keepRecent;
+        int retainTokens = ContextBudgetPolicy.retainTokens(agentConfig, contextWindowSupplier.getAsInt());
+        int eligibleEndExclusive = retainedStartIndex(history, retainTokens);
 
         if (eligibleEndExclusive <= summarizedSequence) {
             return;
@@ -241,6 +250,20 @@ public class SessionSummarizer {
         int startIndex = (int) Math.max(0, summarizedSequence);
         int endIndex = Math.max(startIndex, eligibleEndExclusive);
         return new ArrayList<>(history.subList(startIndex, endIndex));
+    }
+
+    int retainedStartIndex(List<Message> history, int tokenBudget) {
+        int retainedTokens = 0;
+        int start = history.size();
+        for (int i = history.size() - 1; i >= 0; i--) {
+            int messageTokens = estimateToken(history.get(i).getContent()) + 8;
+            if (retainedTokens > 0 && retainedTokens + messageTokens > tokenBudget) {
+                break;
+            }
+            retainedTokens += messageTokens;
+            start = i;
+        }
+        return start;
     }
 
     /**
@@ -734,7 +757,7 @@ public class SessionSummarizer {
     private int estimateTokens(List<Message> messages) {
         int total = 0;
         for (Message message : messages) {
-            total += estimateToken(message.getContent());
+            total += estimateToken(message.getContent()) + 8;
         }
         return total;
     }

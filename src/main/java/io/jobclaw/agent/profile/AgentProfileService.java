@@ -5,7 +5,6 @@ import io.jobclaw.agent.AgentRole;
 import io.jobclaw.agent.catalog.AgentCatalogEntry;
 import io.jobclaw.agent.catalog.AgentCatalogService;
 import io.jobclaw.config.Config;
-import io.jobclaw.config.ModelRuntimeConfig;
 import io.jobclaw.config.ProvidersConfig;
 import io.jobclaw.runtime.provider.QwenThinkingOptions;
 import org.springframework.stereotype.Service;
@@ -143,7 +142,6 @@ public class AgentProfileService {
         modelConfig.put("reasoningEffort", QwenThinkingOptions.normalizeReasoningEffort(config.getAgent().getReasoningEffort()));
         modelConfig.put("thinkingTokenBudget", config.getAgent().getThinkingTokenBudget());
         modelConfig.put("temperature", config.getAgent().getTemperature());
-        modelConfig.put("maxTokens", ModelRuntimeConfig.maxTokens(config, config.getAgent().getModel()));
         modelConfig.put("timeoutMs", config.getAgent().getToolCallTimeoutSeconds() * 1000L);
         modelConfig.put("toolCallTimeoutSeconds", config.getAgent().getToolCallTimeoutSeconds());
         modelConfig.put("childAgentTimeoutMs", config.getAgent().getChildAgentTimeoutMs());
@@ -164,6 +162,8 @@ public class AgentProfileService {
         }
         defaultModelConfig().forEach(merged::putIfAbsent);
         merged.remove("apiKey");
+        merged.remove("maxTokens");
+        merged.remove("contextWindow");
         return Map.copyOf(merged);
     }
 

@@ -7,18 +7,20 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 class AgentConfigTest {
 
     @Test
-    void shouldDefaultMaxRepairAttemptsToOne() {
+    void shouldDefaultUnifiedContextPolicy() {
         AgentConfig config = new AgentConfig();
 
-        assertEquals(1, config.getMaxRepairAttempts());
+        assertEquals(80, config.getCompactionTriggerPercentage());
+        assertEquals(16, config.getCompactionRetainPercentage());
         assertEquals(3600, config.getLlmCallTimeoutSeconds());
     }
 
     @Test
-    void shouldIncludeMaxRepairAttemptsInDefaultConfig() {
+    void shouldIncludeUnifiedContextPolicyInDefaultConfig() {
         Config config = Config.defaultConfig();
 
-        assertEquals(1, config.getAgent().getMaxRepairAttempts());
+        assertEquals(80, config.getAgent().getCompactionTriggerPercentage());
+        assertEquals(16, config.getAgent().getCompactionRetainPercentage());
         assertEquals(3600, config.getAgent().getLlmCallTimeoutSeconds());
     }
 }

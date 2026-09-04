@@ -10,7 +10,6 @@ import io.jobclaw.session.SessionManager;
 import io.jobclaw.skills.SkillInfo;
 import io.jobclaw.skills.SkillSelectionPolicy;
 import io.jobclaw.skills.SkillsService;
-import io.jobclaw.summary.SessionSummaryRecord;
 import io.jobclaw.summary.SummaryService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -38,10 +37,8 @@ import java.util.regex.Pattern;
  * - identity/runtime/workspace information
  * - bootstrap files such as AGENTS.md / SOUL.md
  * - installed skills summary
- * - long-term memory context
- * - session summary
  *
- * Historical message assembly has moved to ContextAssembler.
+ * Historical messages and session summaries belong to ContextAssembler.
  */
 @Component
 public class ContextBuilder {
@@ -54,16 +51,11 @@ public class ContextBuilder {
     private static final String[] BOOTSTRAP_FILES = {
             "AGENTS.md", "SOUL.md", "USER.md", "IDENTITY.md"
     };
-    private static final Pattern HISTORICAL_EXECUTION_STATE_PATTERN = Pattern.compile(
-            "(?i)(manifestId|artifactPath|context_ref|refId|pending\\s*=|running\\s*=|done\\s*=|failed\\s*=|inputDir|outputDir|output_path|intermediate_path|\\.jsonl|\\.xlsx|\\.pdf|[A-Z]:\\\\)"
-    );
-
     private final Config config;
     private final SessionManager sessionManager;
     private final MemoryStore memoryStore;
     private final SkillsService skillsService;
     private final SkillSelectionPolicy skillSelectionPolicy;
-    private final SummaryService summaryService;
     private final MCPService mcpService;
     private final Map<String, String> fileContentCache;
     private final String workspace;
@@ -79,7 +71,6 @@ public class ContextBuilder {
         this.sessionManager = sessionManager;
         this.skillsService = skillsService;
         this.skillSelectionPolicy = new SkillSelectionPolicy();
-        this.summaryService = summaryService;
         this.mcpService = mcpService;
         this.fileContentCache = new ConcurrentHashMap<>();
         this.workspace = ConfigLoader.expandHome(config.getAgent().getWorkspace());
@@ -128,36 +119,9 @@ public class ContextBuilder {
         addSectionIfNotBlank(parts, buildSkillsSection(currentMessage));
         addSectionIfNotBlank(parts, buildMcpSection());
 
-        int memoryBudget = calculateMemoryTokenBudget();
-        String memoryContext = memoryStore.getMemoryContext(currentMessage, memoryBudget);
-        if (memoryContext != null && !memoryContext.isEmpty()) {
-            parts.add("# Memory\n\n" + memoryContext);
-        }
-
-        String summary = resolveSessionSummary(sessionKey);
-        if (summary != null && !summary.isBlank()) {
-            parts.add("# Conversation Summary\n\n" + buildSafeConversationSummary(summary));
-        }
-
         addSectionIfNotBlank(parts, buildManifestSection(sessionKey, currentMessage));
         parts.add(buildCurrentSessionInfo(sessionKey));
         return String.join(SECTION_SEPARATOR, parts);
-    }
-
-    private String resolveSessionSummary(String sessionKey) {
-        if (summaryService != null) {
-            return summaryService.getSessionSummary(sessionKey)
-                    .map(SessionSummaryRecord::summaryText)
-                    .filter(value -> !value.isBlank())
-                    .orElse(sessionManager.getSummary(sessionKey));
-        }
-        return sessionManager.getSummary(sessionKey);
-    }
-
-    private int calculateMemoryTokenBudget() {
-        int budget = contextWindow * config.getAgent().getMemoryTokenBudgetPercentage() / 100;
-        return Math.max(config.getAgent().getMemoryMinTokenBudget(),
-                Math.min(config.getAgent().getMemoryMaxTokenBudget(), budget));
     }
 
     private String buildSkillsSection(String currentMessage) {
@@ -343,18 +307,6 @@ public class ContextBuilder {
         sb.append("Session: ").append(sessionKey).append("\n");
         sb.append("Time: ").append(Instant.now()).append("\n");
         return sb.toString();
-    }
-
-    private String buildSafeConversationSummary(String summary) {
-        if (summary == null || summary.isBlank()) {
-            return "";
-        }
-        if (HISTORICAL_EXECUTION_STATE_PATTERN.matcher(summary).find()) {
-            return "Historical summary was omitted from the execution context because it contains prior task state "
-                    + "(paths, manifest ids, artifact paths, or pending/done counters). "
-                    + "Treat the current user message and current-run tool results as the only executable task state.";
-        }
-        return summary;
     }
 
     private String buildManifestSection(String sessionKey, String currentMessage) {

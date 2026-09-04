@@ -2,10 +2,12 @@ package io.jobclaw.tools;
 
 import io.jobclaw.config.Config;
 import io.jobclaw.agent.AgentExecutionContext;
+import io.jobclaw.security.SecurityGuard;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.io.BufferedReader;
@@ -75,15 +77,22 @@ public class RunCommandTool {
             "(?i)(>>|>)\\s*[^\\r\\n]*(skill\\.md|\\.env|scripts/|runtime/|assets/)"
     );
     private final Config config;
+    private final SecurityGuard securityGuard;
 
     public RunCommandTool(Config config) {
+        this(config, new SecurityGuard(config));
+    }
+
+    @Autowired
+    public RunCommandTool(Config config, SecurityGuard securityGuard) {
         this.config = config;
+        this.securityGuard = securityGuard;
     }
 
     @Tool(name = "run_command", description = "Execute a shell command and return output. Use this tool when you need to: 1) Run system commands, 2) Execute scripts (Python, Bash, etc.), 3) Invoke skill scripts. For skill scripts, follow the skill instructions exactly, set workingDir to the base-path returned by the skills tool, and set timeout for long-running jobs.")
     public String execute(
         @ToolParam(description = "The shell command to execute. For skill scripts, use the command entrypoint documented by the skill instead of inventing or editing implementation files.") String command,
-        @ToolParam(description = "Working directory (optional, defaults to current directory). Use the base-path from skills invoke for skill scripts") String workingDir,
+        @ToolParam(description = "Working directory (optional, defaults to the current conversation workspace). Use the base-path from skills invoke for skill scripts") String workingDir,
         @ToolParam(description = "Timeout in seconds (optional, defaults to agent.toolCallTimeoutSeconds)") Integer timeout
     ) {
         if (command == null || command.isEmpty()) {
@@ -104,7 +113,7 @@ public class RunCommandTool {
         }
 
         // Security warning
-        logger.warn("Executing command without SecurityGuard: {}", command);
+        logger.debug("Executing guarded command: {}", command);
 
         try {
             return executeCommand(command, cwd, timeout != null ? timeout : defaultTimeoutSeconds());
@@ -147,6 +156,15 @@ public class RunCommandTool {
     }
 
     private String validateCommandSafety(String command, String cwd) {
+        String commandError = securityGuard.checkCommand(command);
+        if (commandError != null) {
+            return "Error: " + commandError;
+        }
+        String workingDirectoryError = securityGuard.checkWorkingDir(cwd);
+        if (workingDirectoryError != null && !isInstalledSkillPath(cwd)) {
+            return "Error: " + workingDirectoryError;
+        }
+
         Matcher sensitiveRead = SENSITIVE_FILE_READ_PATTERN.matcher(command);
         if (sensitiveRead.find()) {
             return "Error: Refusing to read sensitive credential file via shell command. "
@@ -169,6 +187,16 @@ public class RunCommandTool {
         }
 
         return null;
+    }
+
+    private boolean isInstalledSkillPath(String cwd) {
+        try {
+            Path skillRoot = Paths.get(config.getWorkspacePath(), "skills").toAbsolutePath().normalize();
+            Path workingPath = Paths.get(cwd).toAbsolutePath().normalize();
+            return workingPath.startsWith(skillRoot) && findSkillRoot(workingPath) != null;
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     private Path findSkillRoot(String cwd, String command) {
