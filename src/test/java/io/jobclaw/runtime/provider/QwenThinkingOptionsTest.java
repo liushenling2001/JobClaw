@@ -61,7 +61,7 @@ class QwenThinkingOptionsTest {
     }
 
     @Test
-    void shouldPreferReasoningEffortOverLegacyTokenBudget() {
+    void shouldPreferExplicitTokenBudgetOverReasoningEffort() {
         Map<String, Object> options = QwenThinkingOptions.extraBody(
                 "openrouter",
                 "qwen",
@@ -71,7 +71,7 @@ class QwenThinkingOptionsTest {
                 "medium"
         );
 
-        assertEquals(Map.of("reasoning", Map.of("effort", "medium")), options);
+        assertEquals(Map.of("thinking_token_budget", 8192), options);
     }
 
     @Test
@@ -130,7 +130,7 @@ class QwenThinkingOptionsTest {
     }
 
     @Test
-    void shouldNotSendVllmBudgetToOfficialOpenRouterEndpoint() {
+    void shouldMapThinkingBudgetToOfficialOpenRouterField() {
         Map<String, Object> options = QwenThinkingOptions.extraBody(
                 "openrouter",
                 "qwen/qwen3.5",
@@ -139,7 +139,21 @@ class QwenThinkingOptionsTest {
                 8192
         );
 
-        assertTrue(options.isEmpty());
+        assertEquals(Map.of("reasoning", Map.of("max_tokens", 8192)), options);
+    }
+
+    @Test
+    void shouldMapThinkingBudgetToDashScopeField() {
+        Map<String, Object> options = QwenThinkingOptions.extraBody(
+                "dashscope",
+                "qwen3.5-plus",
+                "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "enabled",
+                8192,
+                "high"
+        );
+
+        assertEquals(Map.of("enable_thinking", true, "thinking_budget", 8192), options);
     }
 
     @Test

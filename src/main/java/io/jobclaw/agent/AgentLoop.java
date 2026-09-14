@@ -12,6 +12,8 @@ import io.jobclaw.agent.completion.CompletionGateResult;
 import io.jobclaw.agent.completion.CompletionRegistry;
 import io.jobclaw.agent.manifest.ActiveManifestRegistry;
 import io.jobclaw.agent.skill.ActiveSkillRegistry;
+import io.jobclaw.agent.turn.FinalizationNudgeGuard;
+import io.jobclaw.agent.turn.TurnExecutionLedger;
 import io.jobclaw.agent.userinput.UserInputRequest;
 import io.jobclaw.agent.userinput.UserInputRequestRegistry;
 import io.jobclaw.context.ContextAssembler;
@@ -506,6 +508,7 @@ public class AgentLoop {
                 reasoningEffortOverride
         );
         AgentExecutionContext.setCurrentContext(scope);
+        TurnExecutionLedger turnLedger = new TurnExecutionLedger(sessionKey, scope.runId());
         userInputRequestRegistry.clear(sessionKey, scope.runId());
         boolean userMessagePersisted = false;
         boolean assistantMessagePersisted = false;
@@ -514,7 +517,7 @@ public class AgentLoop {
         int managedManifestContinuations = 0;
         boolean managedManifestHandoffIssued = false;
         int managedCreateRepairAttempts = 0;
-        boolean artifactCompletionPromptIssued = false;
+        FinalizationNudgeGuard finalizationGuard = new FinalizationNudgeGuard();
         ArtifactCompletionTracker artifactCompletionTracker = new ArtifactCompletionTracker();
 
         try {
@@ -528,6 +531,8 @@ public class AgentLoop {
                     definition != null ? definition.getCode() : "default",
                     config.getAgent().getModel(),
                     userContent != null ? userContent.length() : 0);
+            emitTurnLifecycleEvent(eventCallback, sessionKey, ExecutionEvent.EventType.TURN_START,
+                    turnLedger, "Turn started");
             long startTime = System.currentTimeMillis();
 
             // 发布思考开始事件
@@ -542,18 +547,21 @@ public class AgentLoop {
 
             // 创建工具回调（支持工具过滤）
             ToolCallback[] rawTools = filterToolsByDefinition(definition, userContent, sessionKey);
+            ensureRequiredBaseToolsAvailable(definition, rawTools);
             ToolCallback[] directTools = wrapToolCallbacks(
                     rawTools,
                     sessionKey,
                     eventCallback,
-                    artifactCompletionTracker
+                    artifactCompletionTracker,
+                    turnLedger
             );
             ToolCallback[] discoveryTools = createToolDiscoveryCallbacks(
                     definition,
                     rawTools,
                     sessionKey,
                     eventCallback,
-                    artifactCompletionTracker
+                    artifactCompletionTracker,
+                    turnLedger
             );
             ToolCallback[] tools = concatToolCallbacks(directTools, discoveryTools);
 
@@ -581,6 +589,7 @@ public class AgentLoop {
             String finalResponse = "";
             while (true) {
                 ensureNotCancelled();
+                turnLedger.beginModelAttempt();
                 refreshActiveSkillFrame(promptMessages, scope.sessionKey(), scope.runId());
                 refreshActiveManifestFrame(promptMessages, scope.sessionKey(), scope.runId());
                 runTrajectoryCompactor.compactIfNeeded(
@@ -599,11 +608,13 @@ public class AgentLoop {
                         sessionKey,
                         eventCallback,
                         fullResponse,
-                        true
+                        true,
+                        turnLedger
                 );
 
                 Optional<UserInputRequest> pendingUserInput = userInputRequestRegistry.getPending(scope.sessionKey(), scope.runId());
                 if (pendingUserInput.isPresent()) {
+                    turnLedger.markStatus(TurnExecutionLedger.Status.WAITING_USER);
                     String waitingResponse = emitUserInputRequired(sessionKey, pendingUserInput.get(), eventCallback, startTime);
                     sessionManager.finalizeAssistantMessage(sessionKey, waitingResponse);
                     assistantMessagePersisted = true;
@@ -632,6 +643,7 @@ public class AgentLoop {
                 if (!managedContinuationPrompt.isBlank()) {
                     managedManifestContinuations++;
                     if (managedManifestContinuations > MANAGED_MANIFEST_MAX_CONTINUATIONS) {
+                        turnLedger.markStatus(TurnExecutionLedger.Status.FAILED);
                         String errorResponse = "Error: managed manifest did not finish after "
                                 + MANAGED_MANIFEST_MAX_CONTINUATIONS
                                 + " continuation attempt(s). Check the manifest status and continue the task.";
@@ -664,6 +676,7 @@ public class AgentLoop {
                                 fullResponse
                         );
                         if (runnerResult.error()) {
+                            turnLedger.markStatus(TurnExecutionLedger.Status.FAILED);
                             if (eventCallback != null) {
                                 eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.ERROR, runnerResult.message()));
                             }
@@ -672,6 +685,7 @@ public class AgentLoop {
                             return runnerResult.message();
                         }
                         if (runnerResult.waitingForUserInput()) {
+                            turnLedger.markStatus(TurnExecutionLedger.Status.WAITING_USER);
                             Optional<UserInputRequest> pendingRunnerInput = userInputRequestRegistry.getPending(scope.sessionKey(), scope.runId());
                             String waitingResponse = pendingRunnerInput
                                     .map(request -> emitUserInputRequired(sessionKey, request, eventCallback, startTime))
@@ -708,59 +722,59 @@ public class AgentLoop {
                     }
                 }
 
-                String artifactGuardPrompt = buildArtifactCompletionGuardPrompt(
-                        scope.sessionKey(),
-                        scope.runId(),
-                        userContent,
-                        attemptResponse,
-                        artifactCompletionTracker,
-                        artifactCompletionPromptIssued
-                );
-                if (!artifactGuardPrompt.isBlank()) {
-                    artifactCompletionPromptIssued = true;
-                    logger.info("artifact completion guard retry session={} run={} promptChars={} candidateChars={} writeEvidence={}",
-                            sessionKey,
-                            scope.runId(),
-                            artifactGuardPrompt.length(),
-                            attemptResponse != null ? attemptResponse.length() : 0,
-                            artifactCompletionTracker.hasWriteEvidence());
-                    promptMessages.add(new AssistantMessage(attemptResponse));
-                    promptMessages.add(new UserMessage(artifactGuardPrompt));
-                    continue;
-                }
-
                 CompletionGateResult gateResult = completionRegistry.evaluateForFinal(sessionKey, scope.runId(), attemptResponse);
-                if (gateResult.passed()) {
-                    finalResponse = attemptResponse;
-                    break;
-                }
+                if (!gateResult.passed()) {
+                    if (!gateResult.canRetry()) {
+                        turnLedger.markStatus(TurnExecutionLedger.Status.FAILED);
+                        String errorResponse = "Error: completion checks failed after "
+                                + gateResult.failedAttempts() + " attempt(s).\n\n"
+                                + gateResult.toModelMessage();
+                        logger.warn("agent run completion-check failed session={} run={} attempts={} responseChars={}",
+                                sessionKey,
+                                scope.runId(),
+                                gateResult.failedAttempts(),
+                                attemptResponse != null ? attemptResponse.length() : 0);
+                        if (eventCallback != null) {
+                            eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.ERROR, errorResponse));
+                        }
+                        sessionManager.finalizeAssistantMessage(sessionKey, partialOrErrorResponse(fullResponse, errorResponse));
+                        assistantMessagePersisted = true;
+                        return errorResponse;
+                    }
 
-                if (!gateResult.canRetry()) {
-                    String errorResponse = "Error: completion checks failed after "
-                            + gateResult.failedAttempts() + " attempt(s).\n\n"
-                            + gateResult.toModelMessage();
-                    logger.warn("agent run completion-check failed session={} run={} attempts={} responseChars={}",
+                    String gateMessage = buildCompletionRecoveryPrompt(gateResult, attemptResponse);
+                    logger.info("agent run completion-check retry session={} run={} attempts={} recoveryPromptChars={} candidateChars={}",
                             sessionKey,
                             scope.runId(),
                             gateResult.failedAttempts(),
+                            gateMessage.length(),
                             attemptResponse != null ? attemptResponse.length() : 0);
-                    if (eventCallback != null) {
-                        eventCallback.accept(new ExecutionEvent(sessionKey, ExecutionEvent.EventType.ERROR, errorResponse));
-                    }
-                    sessionManager.finalizeAssistantMessage(sessionKey, partialOrErrorResponse(fullResponse, errorResponse));
-                    assistantMessagePersisted = true;
-                    return errorResponse;
+                    appendTurnContinuation(promptMessages, attemptResponse, gateMessage);
+                    continue;
                 }
 
-                String gateMessage = buildCompletionRecoveryPrompt(gateResult, attemptResponse);
-                logger.info("agent run completion-check retry session={} run={} attempts={} recoveryPromptChars={} candidateChars={}",
-                        sessionKey,
-                        scope.runId(),
-                        gateResult.failedAttempts(),
-                        gateMessage.length(),
-                        attemptResponse != null ? attemptResponse.length() : 0);
-                promptMessages.add(new AssistantMessage(attemptResponse));
-                promptMessages.add(new UserMessage(gateMessage));
+                String artifactGuardPrompt = gateResult.registered() ? "" : buildArtifactCompletionGuardPrompt(
+                        scope.sessionKey(), scope.runId(), userContent, attemptResponse,
+                        artifactCompletionTracker, finalizationGuard.hasIssued());
+                String nudgePrompt = finalizationGuard.continuationPrompt(
+                        gateResult, artifactGuardPrompt,
+                        turnLedger.lastAssistantSegment(),
+                        userInputRequestRegistry.getPending(sessionKey, scope.runId()).isPresent(),
+                        activeExecutionRegistry.activeTools(sessionKey) > 0
+                                || activeExecutionRegistry.activeSubagents(sessionKey) > 0);
+                if (!nudgePrompt.isEmpty()) {
+                    logger.info("finalization nudge session={} run={} artifact={} promise={} candidateChars={} usedTools={}",
+                            sessionKey, scope.runId(), !artifactGuardPrompt.isBlank(),
+                            nudgePrompt.contains("JOBCLAW_PROMISE_CONTINUATION"),
+                            turnLedger.lastAssistantSegment().length(), turnLedger.usedToolNames());
+                    emitTurnLifecycleEvent(eventCallback, sessionKey, ExecutionEvent.EventType.TURN_STATUS,
+                            turnLedger, "One-time finalization check");
+                    appendTurnContinuation(promptMessages, attemptResponse, nudgePrompt);
+                    continue;
+                }
+                turnLedger.markStatus(TurnExecutionLedger.Status.COMPLETED);
+                finalResponse = attemptResponse;
+                break;
             }
 
             long elapsed = System.currentTimeMillis() - startTime;
@@ -794,6 +808,9 @@ public class AgentLoop {
             return response;
 
         } catch (Exception e) {
+            turnLedger.markStatus(e instanceof CancellationException || containsInterruptedException(e)
+                    ? TurnExecutionLedger.Status.CANCELLED
+                    : TurnExecutionLedger.Status.FAILED);
             logger.error("agent run failed session={} run={} elapsedMs={} accumulatedChars={}",
                     sessionKey,
                     scope.runId(),
@@ -830,6 +847,8 @@ public class AgentLoop {
             }
             return errorResponse;
         } finally {
+            emitTurnLifecycleEvent(eventCallback, sessionKey, ExecutionEvent.EventType.TURN_END,
+                    turnLedger, "Turn ended");
             toolRuntime.clearRunState(scope.sessionKey(), scope.runId());
             activeSkillRegistry.clear(scope.sessionKey(), scope.runId());
             activeManifestRegistry.clear(scope.sessionKey(), scope.runId());
@@ -1184,6 +1203,32 @@ public class AgentLoop {
             sb.append("\n```");
         }
         return sb.toString();
+    }
+
+    private void appendTurnContinuation(List<Message> promptMessages,
+                                        String attemptResponse,
+                                        String continuationPrompt) {
+        if (attemptResponse != null && !attemptResponse.isBlank()) {
+            promptMessages.add(new AssistantMessage(attemptResponse));
+        }
+        promptMessages.add(new UserMessage(continuationPrompt));
+    }
+
+    private void emitTurnLifecycleEvent(Consumer<ExecutionEvent> eventCallback,
+                                        String sessionKey,
+                                        ExecutionEvent.EventType type,
+                                        TurnExecutionLedger ledger,
+                                        String content) {
+        if (eventCallback == null || ledger == null) {
+            return;
+        }
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("source", "turn-lifecycle");
+        metadata.put("status", ledger.status().name());
+        metadata.put("usedTools", ledger.usedToolNames());
+        metadata.put("evidenceIds", ledger.successfulEvidenceIds());
+        metadata.put("failedToolCalls", ledger.failedToolCalls());
+        eventCallback.accept(new ExecutionEvent(sessionKey, type, content, metadata));
     }
 
     private String buildArtifactCompletionGuardPrompt(String sessionKey,
@@ -2248,6 +2293,19 @@ public class AgentLoop {
                                    Consumer<ExecutionEvent> eventCallback,
                                    StringBuilder fullResponse,
                                    boolean checkpointAssistantDraft) {
+        return runModelAttempt(executionClientBundle, promptMessages, tools, options, sessionKey,
+                eventCallback, fullResponse, checkpointAssistantDraft, null);
+    }
+
+    private String runModelAttempt(ExecutionClientBundle executionClientBundle,
+                                   List<Message> promptMessages,
+                                   ToolCallback[] tools,
+                                   ChatOptions.Builder<?> options,
+                                   String sessionKey,
+                                   Consumer<ExecutionEvent> eventCallback,
+                                   StringBuilder fullResponse,
+                                   boolean checkpointAssistantDraft,
+                                   TurnExecutionLedger turnLedger) {
         StringBuilder attemptResponse = new StringBuilder();
         StringBuilder rawResponse = new StringBuilder();
         ensureNotCancelled();
@@ -2291,7 +2349,7 @@ public class AgentLoop {
                     fullResponse,
                     checkpointAssistantDraft,
                     fullResponseStartLength,
-                    "streaming-disabled");
+                    "streaming-disabled", streamSegmentId, turnLedger);
         }
 
         Flux<ChatResponse> responseStream = executionClientBundle.chatClient().prompt()
@@ -2306,7 +2364,9 @@ public class AgentLoop {
                 .chatResponse();
 
         try {
-            responseStream.toStream().forEach(chatResponse -> {
+            // Capture the tool boundary before toStream queues the chunk for consumption.
+            responseStream.map(response -> Map.entry(response, toolRoundRevision.get())).toStream().forEach(chunk -> {
+                ChatResponse chatResponse = chunk.getKey();
                 ensureNotCancelled();
                 firstResponseNanos.compareAndSet(0L, System.nanoTime());
                 updateCompletionTokenCount(chatResponse, completionTokenCount);
@@ -2372,6 +2432,9 @@ public class AgentLoop {
                                 previewForLog(delta),
                                 attemptResponse.length());
                     }
+                    if (turnLedger != null) {
+                        turnLedger.recordAssistantContent(delta, chunk.getValue());
+                    }
                     attemptResponse.append(delta);
                     fullResponse.append(delta);
                     emitVisibleDelta(eventCallback, sessionKey, streamSegmentId, delta);
@@ -2401,7 +2464,7 @@ public class AgentLoop {
                         fullResponse,
                         checkpointAssistantDraft,
                         fullResponseStartLength,
-                        "spring-ai-stream-aggregation");
+                        "spring-ai-stream-aggregation", streamSegmentId, turnLedger);
             }
             WebClientResponseException responseException = findWebClientResponseException(e);
             if (responseException != null) {
@@ -2416,6 +2479,9 @@ public class AgentLoop {
                         responseException.getResponseBodyAsString());
             }
             throw enrichLlmRuntimeException(e, executionClientBundle);
+        }
+        if (turnLedger != null) {
+            turnLedger.syncToolRevision(toolRoundRevision.get());
         }
         if (attemptResponse.isEmpty()) {
             logger.warn("LLM stream returned no visible content; retrying once with non-stream call session={} provider={} model={} chunks={}",
@@ -2434,7 +2500,7 @@ public class AgentLoop {
                     checkpointAssistantDraft,
                     fullResponseStartLength,
                     "empty-stream",
-                    streamSegmentId);
+                    streamSegmentId, turnLedger);
         }
         logger.info("LLM stream complete session={} provider={} model={} chunks={} responseChars={} responsePreview={}",
                 sessionKey,
@@ -2512,6 +2578,23 @@ public class AgentLoop {
                                         int fullResponseStartLength,
                                         String reason,
                                         String streamSegmentId) {
+        return runNonStreamFallback(executionClientBundle, promptMessages, tools, options, sessionKey,
+                eventCallback, fullResponse, checkpointAssistantDraft, fullResponseStartLength, reason,
+                streamSegmentId, null);
+    }
+
+    private String runNonStreamFallback(ExecutionClientBundle executionClientBundle,
+                                        List<Message> promptMessages,
+                                        ToolCallback[] tools,
+                                        ChatOptions.Builder<?> options,
+                                        String sessionKey,
+                                        Consumer<ExecutionEvent> eventCallback,
+                                        StringBuilder fullResponse,
+                                        boolean checkpointAssistantDraft,
+                                        int fullResponseStartLength,
+                                        String reason,
+                                        String streamSegmentId,
+                                        TurnExecutionLedger turnLedger) {
         StringBuilder fallbackResponse = new StringBuilder();
         ensureNotCancelled();
         logger.info("LLM non-stream call start session={} provider={} model={} apiBase={} reason={} messages={} tools={}",
@@ -2541,6 +2624,10 @@ public class AgentLoop {
                 emitReasoningDelta(eventCallback, sessionKey, streamSegmentId, reasoning);
             }
             String delta = fallbackContent;
+            if (turnLedger != null) {
+                turnLedger.beginModelAttempt();
+                turnLedger.recordAssistantContent(delta, 0);
+            }
             logger.info("LLM non-stream raw response session={} provider={} model={} reason={} rawChars={} reasoningChars={} rawPreview={}",
                     sessionKey,
                     executionClientBundle.providerName(),
@@ -3039,7 +3126,8 @@ public class AgentLoop {
             sb.append("## Tool Restrictions\n");
             sb.append("You are only allowed to use: ");
             sb.append(String.join(", ", definition.getAllowedTools()));
-            sb.append("\n\n");
+            sb.append("\n");
+            sb.append("Use user_input only when it appears in the allowlist. Otherwise explain the concrete blocker.\n\n");
         } else {
             sb.append("## Tool Restrictions\n");
             sb.append("No agent-specific tool override is set. Reuse the main assistant toolset.\n\n");
@@ -3071,6 +3159,14 @@ public class AgentLoop {
                                              String sessionKey,
                                              Consumer<ExecutionEvent> eventCallback,
                                              ArtifactCompletionTracker artifactCompletionTracker) {
+        return wrapToolCallbacks(rawCallbacks, sessionKey, eventCallback, artifactCompletionTracker, null);
+    }
+
+    private ToolCallback[] wrapToolCallbacks(ToolCallback[] rawCallbacks,
+                                             String sessionKey,
+                                             Consumer<ExecutionEvent> eventCallback,
+                                             ArtifactCompletionTracker artifactCompletionTracker,
+                                             TurnExecutionLedger turnLedger) {
         if (rawCallbacks == null) {
             return rawCallbacks;
         }
@@ -3079,7 +3175,8 @@ public class AgentLoop {
 
         // 包装每个 ToolCallback，使其在执行时发布事件
         return java.util.Arrays.stream(rawCallbacks)
-                .map(callback -> wrapSingleCallback(callback, sessionKey, eventCallback, artifactCompletionTracker))
+                .map(callback -> wrapSingleCallback(callback, sessionKey, eventCallback,
+                        artifactCompletionTracker, turnLedger))
                 .toArray(ToolCallback[]::new);
     }
 
@@ -3088,6 +3185,16 @@ public class AgentLoop {
                                                         String sessionKey,
                                                         Consumer<ExecutionEvent> eventCallback,
                                                         ArtifactCompletionTracker artifactCompletionTracker) {
+        return createToolDiscoveryCallbacks(definition, selectedTools, sessionKey, eventCallback,
+                artifactCompletionTracker, null);
+    }
+
+    private ToolCallback[] createToolDiscoveryCallbacks(AgentDefinition definition,
+                                                        ToolCallback[] selectedTools,
+                                                        String sessionKey,
+                                                        Consumer<ExecutionEvent> eventCallback,
+                                                        ArtifactCompletionTracker artifactCompletionTracker,
+                                                        TurnExecutionLedger turnLedger) {
         if (definition != null
                 && definition.getAllowedTools() != null
                 && !definition.getAllowedTools().isEmpty()) {
@@ -3114,18 +3221,18 @@ public class AgentLoop {
                             target,
                             sessionKey,
                             eventCallback,
-                            artifactCompletionTracker
+                            artifactCompletionTracker,
+                            turnLedger
                     );
-                    String response = wrappedTarget.call(arguments);
-                    rememberSessionTools(sessionKey, new ToolCallback[]{target});
-                    return response;
+                    return wrappedTarget.call(arguments);
                 }
         );
         ToolCallback trackedSearch = wrapSingleCallback(
                 callbacks.search(),
                 sessionKey,
                 eventCallback,
-                artifactCompletionTracker
+                artifactCompletionTracker,
+                turnLedger
         );
         logger.info("optional tool discovery enabled catalogSize={} directTools={}",
                 catalog.size(),
@@ -3194,11 +3301,24 @@ public class AgentLoop {
                                             String sessionKey,
                                             Consumer<ExecutionEvent> eventCallback,
                                             ArtifactCompletionTracker artifactCompletionTracker) {
+        return wrapSingleCallback(callback, sessionKey, eventCallback, artifactCompletionTracker, null);
+    }
+
+    private ToolCallback wrapSingleCallback(ToolCallback callback,
+                                            String sessionKey,
+                                            Consumer<ExecutionEvent> eventCallback,
+                                            ArtifactCompletionTracker artifactCompletionTracker,
+                                            TurnExecutionLedger turnLedger) {
         AgentExecutionContext.ExecutionScope capturedScope = AgentExecutionContext.getCurrentScope();
         return new ToolCallback() {
             @Override
             public org.springframework.ai.tool.definition.ToolDefinition getToolDefinition() {
                 return callback.getToolDefinition();
+            }
+
+            @Override
+            public ToolMetadata getToolMetadata() {
+                return callback.getToolMetadata();
             }
 
             @Override
@@ -3227,6 +3347,10 @@ public class AgentLoop {
                                 result
                         );
                     }
+                    if (turnLedger != null) {
+                        turnLedger.recordToolResult(getToolDefinition().name(), result);
+                    }
+                    rememberSessionTools(sessionKey, new ToolCallback[]{callback});
                     if (shouldReturnManagedManifestControl(getToolDefinition().name(), effectiveRequest, result)) {
                         AgentLoop.logger.info("managed manifest tool boundary reached session={} run={} tool={} request={}",
                                 capturedScope != null ? capturedScope.sessionKey() : sessionKey,
@@ -3250,7 +3374,7 @@ public class AgentLoop {
     private ToolCallback wrapSingleCallback(ToolCallback callback,
                                             String sessionKey,
                                             Consumer<ExecutionEvent> eventCallback) {
-        return wrapSingleCallback(callback, sessionKey, eventCallback, null);
+        return wrapSingleCallback(callback, sessionKey, eventCallback, null, null);
     }
 
     /**
@@ -3276,10 +3400,28 @@ public class AgentLoop {
         ToolCallback[] selectedTools = Arrays.stream(allToolCallbacks)
                 .filter(tool -> selection.toolNames().contains(tool.getToolDefinition().name()))
                 .toArray(ToolCallback[]::new);
-        rememberSessionTools(sessionKey, selectedTools);
         logger.info("tool injection selected profiles={} sources={} tools={}",
                 selection.profiles(), selection.sources(), toolNames(selectedTools));
         return selectedTools;
+    }
+
+    private void ensureRequiredBaseToolsAvailable(AgentDefinition definition, ToolCallback[] selectedTools) {
+        if (definition != null
+                && definition.getAllowedTools() != null
+                && !definition.getAllowedTools().isEmpty()) {
+            return;
+        }
+        Set<String> selectedNames = Arrays.stream(selectedTools != null ? selectedTools : new ToolCallback[0])
+                .filter(callback -> callback != null && callback.getToolDefinition() != null)
+                .map(callback -> callback.getToolDefinition().name())
+                .collect(java.util.stream.Collectors.toSet());
+        List<String> missing = BASE_TOOL_NAMES.stream()
+                .filter(name -> !selectedNames.contains(name))
+                .sorted()
+                .toList();
+        if (!missing.isEmpty()) {
+            throw new IllegalStateException("Required base tools are unavailable: " + String.join(", ", missing));
+        }
     }
 
     private ToolSelection resolveDeterministicToolSelection(AgentDefinition definition, String userContent) {

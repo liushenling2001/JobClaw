@@ -16,6 +16,7 @@ import io.jobclaw.summary.SummaryService;
 import io.jobclaw.tools.ManifestTool;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.tool.metadata.ToolMetadata;
 import org.springframework.ai.tool.definition.ToolDefinition;
 
 import java.lang.reflect.Method;
@@ -173,7 +174,7 @@ class AgentLoopToolSelectionTest {
     }
 
     @Test
-    void shouldCarrySelectedToolsForwardWithinSameSession() throws Exception {
+    void shouldCarryInvokedToolsForwardWithinSameSession() throws Exception {
         AgentLoop loop = loopWithTools(
                 "skills", "context_ref", "manifest", "completion", "list_dir", "read_file", "run_command",
                 "write_file", "edit_file", "append_file", "read_pdf", "read_word", "read_excel", "exec"
@@ -183,17 +184,28 @@ class AgentLoopToolSelectionTest {
         List<String> firstNames = names(firstTurn);
         assertTrue(firstNames.contains("read_pdf"));
         assertTrue(firstNames.contains("read_word"));
+        invokeTrackedTool(loop, firstTurn, "read_pdf", "session-pdf");
 
         ToolCallback[] secondTurn = invokeFilterForSession(loop, null, "继续处理上面的内容", "session-pdf");
         List<String> secondNames = names(secondTurn);
         assertTrue(secondNames.contains("read_pdf"));
-        assertTrue(secondNames.contains("read_word"));
+        assertFalse(secondNames.contains("read_word"));
         assertFalse(secondNames.contains("exec"));
 
         ToolCallback[] otherSession = invokeFilterForSession(loop, null, "继续处理上面的内容", "session-other");
         List<String> otherNames = names(otherSession);
         assertFalse(otherNames.contains("read_pdf"));
         assertFalse(otherNames.contains("read_word"));
+    }
+
+    @Test
+    void shouldPreserveReturnDirectMetadataWhenTrackingToolCalls() throws Exception {
+        AgentLoop loop = loopWithTools("skills");
+        ToolCallback callback = tool("terminal_tool", ToolMetadata.builder().returnDirect(true).build());
+
+        ToolCallback wrapped = invokeWrappedTool(loop, callback, "session-terminal");
+
+        assertTrue(wrapped.getToolMetadata().returnDirect());
     }
 
     @Test
@@ -566,6 +578,36 @@ class AgentLoopToolSelectionTest {
         return (ToolCallback[]) method.invoke(loop, definition, selectedTools, sessionKey, null, null);
     }
 
+    private void invokeTrackedTool(AgentLoop loop,
+                                   ToolCallback[] callbacks,
+                                   String toolName,
+                                   String sessionKey) throws Exception {
+        ToolCallback callback = Arrays.stream(callbacks)
+                .filter(item -> toolName.equals(item.getToolDefinition().name()))
+                .findFirst()
+                .orElseThrow();
+        ToolCallback wrapped = invokeWrappedTool(loop, callback, sessionKey);
+        wrapped.call("{}");
+    }
+
+    private ToolCallback invokeWrappedTool(AgentLoop loop,
+                                           ToolCallback callback,
+                                           String sessionKey) throws Exception {
+        Class<?> trackerClass = Arrays.stream(AgentLoop.class.getDeclaredClasses())
+                .filter(type -> type.getSimpleName().equals("ArtifactCompletionTracker"))
+                .findFirst()
+                .orElseThrow();
+        Method method = AgentLoop.class.getDeclaredMethod(
+                "wrapSingleCallback",
+                ToolCallback.class,
+                String.class,
+                Consumer.class,
+                trackerClass
+        );
+        method.setAccessible(true);
+        return (ToolCallback) method.invoke(loop, callback, sessionKey, null, null);
+    }
+
     private String invokeManagedCreateRepair(AgentLoop loop,
                                              String sessionKey,
                                              String runId,
@@ -645,6 +687,10 @@ class AgentLoopToolSelectionTest {
     }
 
     private ToolCallback tool(String name) {
+        return tool(name, ToolMetadata.builder().build());
+    }
+
+    private ToolCallback tool(String name, ToolMetadata metadata) {
         return new ToolCallback() {
             @Override
             public ToolDefinition getToolDefinition() {
@@ -658,6 +704,11 @@ class AgentLoopToolSelectionTest {
             @Override
             public String call(String toolInput) {
                 return "";
+            }
+
+            @Override
+            public ToolMetadata getToolMetadata() {
+                return metadata;
             }
         };
     }

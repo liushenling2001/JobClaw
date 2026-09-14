@@ -1448,11 +1448,6 @@ public class WebConsoleController {
     public ResponseEntity<Map<String, Object>> updateModelLimits(@PathVariable String name,
                                                                   @RequestBody UpdateModelLimitsRequest request) {
         Map<String, Object> response = new HashMap<>();
-        ModelsConfig.ModelDefinition definition = config.getModels().getDefinitions().get(name);
-        if (definition == null) {
-            response.put("error", "Unknown model definition: " + name);
-            return ResponseEntity.status(404).body(response);
-        }
         Integer contextWindow = request.getMaxContextSize();
         Integer maxTokens = request.getMaxTokens();
         if (contextWindow == null || contextWindow < 4_096) {
@@ -1462,6 +1457,31 @@ public class WebConsoleController {
         if (maxTokens == null || maxTokens < 1 || maxTokens >= contextWindow) {
             response.put("error", "maxTokens must be positive and smaller than maxContextSize");
             return ResponseEntity.badRequest().body(response);
+        }
+        Map<String, ModelsConfig.ModelDefinition> definitions = config.getModels().getDefinitions();
+        ModelsConfig.ModelDefinition definition = definitions.get(name);
+        String requestedProvider = stringValue(request.getProvider());
+        String requestedModel = stringValue(request.getModel());
+        if (definition != null && requestedProvider != null && requestedModel != null
+                && (!requestedProvider.equalsIgnoreCase(definition.getProvider())
+                || !requestedModel.equals(definition.getModel()))) {
+            definition = null;
+        }
+        if (definition == null && requestedProvider != null && requestedModel != null) {
+            definition = definitions.values().stream()
+                    .filter(candidate -> requestedProvider.equalsIgnoreCase(candidate.getProvider())
+                            && requestedModel.equals(candidate.getModel()))
+                    .findFirst()
+                    .orElse(null);
+            if (definition == null) {
+                String definitionName = definitions.containsKey(name) ? requestedProvider + ":" + requestedModel : name;
+                definition = new ModelsConfig.ModelDefinition(requestedProvider, requestedModel, null);
+                definitions.put(definitionName, definition);
+            }
+        }
+        if (definition == null) {
+            response.put("error", "Unknown model definition: " + name);
+            return ResponseEntity.status(404).body(response);
         }
         definition.setMaxContextSize(contextWindow);
         definition.setMaxTokens(maxTokens);
@@ -2448,11 +2468,17 @@ public class WebConsoleController {
     public static class UpdateModelLimitsRequest {
         private Integer maxContextSize;
         private Integer maxTokens;
+        private String provider;
+        private String model;
 
         public Integer getMaxContextSize() { return maxContextSize; }
         public void setMaxContextSize(Integer maxContextSize) { this.maxContextSize = maxContextSize; }
         public Integer getMaxTokens() { return maxTokens; }
         public void setMaxTokens(Integer maxTokens) { this.maxTokens = maxTokens; }
+        public String getProvider() { return provider; }
+        public void setProvider(String provider) { this.provider = provider; }
+        public String getModel() { return model; }
+        public void setModel(String model) { this.model = model; }
     }
 
     public static class UpdateAgentConfigRequest {

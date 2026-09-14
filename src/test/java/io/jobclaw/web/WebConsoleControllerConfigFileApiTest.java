@@ -14,6 +14,7 @@ import io.jobclaw.agent.profile.AgentProfileService;
 import io.jobclaw.bus.MessageBus;
 import io.jobclaw.config.Config;
 import io.jobclaw.config.ConfigLoader;
+import io.jobclaw.config.ModelsConfig;
 import io.jobclaw.cron.CronService;
 import io.jobclaw.retrieval.RetrievalService;
 import io.jobclaw.runtime.provider.ResolvedProviderConfig;
@@ -211,6 +212,35 @@ class WebConsoleControllerConfigFileApiTest {
             assertFalse(agent.has("maxTokens"));
             assertFalse(agent.has("contextWindow"));
             verify(agentLoop).reloadDefaultClient();
+        } finally {
+            System.setProperty("user.home", originalHome);
+        }
+    }
+
+    @Test
+    void shouldPersistLimitsForDiscoveredModelDefinition() throws Exception {
+        String originalHome = System.getProperty("user.home");
+        System.setProperty("user.home", tempDir.toString());
+        try {
+            Config config = Config.defaultConfig();
+            WebConsoleController controller = controller(config, mock(AgentLoop.class));
+            WebConsoleController.UpdateModelLimitsRequest request =
+                    new WebConsoleController.UpdateModelLimitsRequest();
+            request.setProvider("openai");
+            request.setModel("qwen-flash-next");
+            request.setMaxContextSize(100_000);
+            request.setMaxTokens(8_192);
+
+            ResponseEntity<Map<String, Object>> response =
+                    controller.updateModelLimits("qwen-flash-next", request);
+
+            assertEquals(200, response.getStatusCode().value());
+            ModelsConfig.ModelDefinition definition =
+                    config.getModels().getDefinitions().get("qwen-flash-next");
+            assertEquals("openai", definition.getProvider());
+            assertEquals("qwen-flash-next", definition.getModel());
+            assertEquals(100_000, definition.getMaxContextSize());
+            assertEquals(8_192, definition.getMaxTokens());
         } finally {
             System.setProperty("user.home", originalHome);
         }

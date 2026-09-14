@@ -10,6 +10,9 @@ import java.util.Map;
 public class ExecutionEvent {
 
     public enum EventType {
+        TURN_START,
+        TURN_STATUS,
+        TURN_END,
         THINK_START,
         THINK_STREAM,
         THINK_END,

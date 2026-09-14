@@ -23,7 +23,7 @@ public class UserInputTool {
         this.registry = registry;
     }
 
-    @Tool(name = "user_input", description = "Request explicit user input and pause the current run. Use only when the task cannot safely continue without the user's answer, such as missing scope, credentials, a required decision, or a skill step that explicitly requires feedback.")
+    @Tool(name = "user_input", description = "Request explicit user input and pause the current run. Use only when the task cannot safely continue without the user's answer, such as missing scope, credentials, an irreversible decision, or a skill step that explicitly requires feedback. Never ask the user to classify the task, choose a tool profile, or confirm a safe reversible step that can be inferred from the request.")
     public String userInput(
             @ToolParam(description = "The concise question to ask the user.") String question,
             @ToolParam(description = "Why this answer is required before continuing.", required = false) String reason,

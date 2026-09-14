@@ -14,6 +14,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
 
 class AgentLoopSystemPromptOverlayTest {
 
@@ -32,7 +33,7 @@ class AgentLoopSystemPromptOverlayTest {
                 new FileConversationStore(conversationPath),
                 summaryService
         );
-        ContextBuilder contextBuilder = new ContextBuilder(config, sessionManager, null, summaryService, new MCPService());
+        ContextBuilder contextBuilder = new ContextBuilder(config, sessionManager, null, summaryService, mock(MCPService.class));
         AgentLoop agentLoop = new AgentLoop(
                 config,
                 sessionManager,
@@ -66,5 +67,7 @@ class AgentLoopSystemPromptOverlayTest {
         assertTrue(prompt.contains("JD Analyst"));
         assertTrue(prompt.contains("Focus on extracting structured requirements."));
         assertTrue(prompt.contains("No agent-specific tool override is set") || prompt.contains("You are only allowed to use: read_file"));
+        assertTrue(prompt.contains("Otherwise explain the concrete blocker."));
+        assertTrue(prompt.contains("Use user_input only when it appears in the allowlist"));
     }
 }

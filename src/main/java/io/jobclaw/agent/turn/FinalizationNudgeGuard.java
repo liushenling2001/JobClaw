@@ -1,0 +1,56 @@
+package io.jobclaw.agent.turn;
+
+import io.jobclaw.agent.completion.CompletionGateResult;
+import java.util.regex.Pattern;
+
+/** Shares one heuristic nudge per user turn; registered completion checks take precedence. */
+public final class FinalizationNudgeGuard {
+    public static final int MAX_CANDIDATE_CHARS = 240;
+    private static final Pattern PROMISE = Pattern.compile(
+            "(?:好的[，,。！!\\s]*)?"
+                    + "(?:让我先|我先|我(?:现在|接下来|下一步)(?:会|要|将)?先?|(?:接下来|下一步)[，,]?我(?:会|要|将)先?|我(?:会|要|将)先?|现在我先?)"
+                    + "(?:来|开始)?(?:检查|查看|读取|搜索|查找|列出|整理|分类|移动|重命名|创建|生成|保存|写入|修改|更新|删除|运行|执行|测试|提取|处理|打开|分析)"
+                    + "[^。！？!?\\r\\n]*[。！!…]*");
+    private static final Pattern NON_ACTION = Pattern.compile(
+            "[?？]|[`~<>\"“”‘’]|(?:如果|假如|若|等你|等您|等待|需要你|需要您|请你|请您|是否|确认|授权|无法|不能|已完成|完成了|说法|这句话|例如|示例|教程|建议)");
+    private boolean issued;
+
+    public boolean hasIssued() {
+        return issued;
+    }
+
+    public String continuationPrompt(CompletionGateResult completion, String artifactPrompt,
+                                     String lastSegment, boolean waitingForUser, boolean activeExecution) {
+        if (completion.registered() || issued || waitingForUser || activeExecution) {
+            return "";
+        }
+        boolean artifact = artifactPrompt != null && !artifactPrompt.isBlank();
+        boolean promise = matches(lastSegment);
+        if (!artifact && !promise) {
+            return "";
+        }
+        issued = true;
+        StringBuilder prompt = new StringBuilder("JOBCLAW_FINALIZATION_NUDGE\n");
+        if (artifact) {
+            prompt.append(artifactPrompt).append("\n\n");
+        }
+        if (promise) {
+            prompt.append("JOBCLAW_PROMISE_CONTINUATION\n"
+                + "Your last reply announced an action, but no tool call followed it. "
+                + "Continue only the current user request. If the announced action is required and authorized, "
+                + "execute it using the available tools instead of repeating the plan or previous answer. "
+                + "Do not redo work already completed. If user information or permission is needed, "
+                + "ask the concrete question using user_input when available; otherwise explain the blocker. "
+                + "If no further action is required, briefly clarify that.");
+        }
+        return prompt.toString();
+    }
+
+    static boolean matches(String content) {
+        if (content == null || content.length() > MAX_CANDIDATE_CHARS) {
+            return false;
+        }
+        String candidate = content.strip();
+        return !NON_ACTION.matcher(candidate).find() && PROMISE.matcher(candidate).matches();
+    }
+}

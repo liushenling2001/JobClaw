@@ -62,15 +62,27 @@ public final class QwenThinkingOptions {
         String reasoningEffort = normalizeReasoningEffort(configuredReasoningEffort);
         String provider = normalized(providerName);
         String baseUrl = normalized(apiBase);
+        boolean hasThinkingBudget = !DISABLED.equals(mode)
+                && thinkingTokenBudget != null
+                && thinkingTokenBudget > 0;
         if (provider.contains("dashscope") || baseUrl.contains("dashscope.aliyuncs.com")) {
-            return AUTO.equals(mode) ? Map.of() : Map.of("enable_thinking", ENABLED.equals(mode));
+            Map<String, Object> options = new LinkedHashMap<>();
+            if (!AUTO.equals(mode)) {
+                options.put("enable_thinking", ENABLED.equals(mode));
+            }
+            if (hasThinkingBudget) {
+                options.put("thinking_budget", thinkingTokenBudget);
+            }
+            return Map.copyOf(options);
         }
         if (baseUrl.contains("openrouter.ai")) {
             Map<String, Object> reasoning = new LinkedHashMap<>();
             if (!AUTO.equals(mode)) {
                 reasoning.put("enabled", ENABLED.equals(mode));
             }
-            if (!DISABLED.equals(mode) && !AUTO.equals(reasoningEffort)) {
+            if (hasThinkingBudget) {
+                reasoning.put("max_tokens", thinkingTokenBudget);
+            } else if (!DISABLED.equals(mode) && !AUTO.equals(reasoningEffort)) {
                 reasoning.put("effort", reasoningEffort);
             }
             return reasoning.isEmpty() ? Map.of() : Map.of("reasoning", Map.copyOf(reasoning));
@@ -83,11 +95,9 @@ public final class QwenThinkingOptions {
         if (!AUTO.equals(mode)) {
             options.put("chat_template_kwargs", Map.of("enable_thinking", ENABLED.equals(mode)));
         }
-        if (!DISABLED.equals(mode) && AUTO.equals(reasoningEffort)
-                && thinkingTokenBudget != null && thinkingTokenBudget > 0) {
+        if (hasThinkingBudget) {
             options.put("thinking_token_budget", thinkingTokenBudget);
-        }
-        if (!DISABLED.equals(mode) && !AUTO.equals(reasoningEffort)) {
+        } else if (!DISABLED.equals(mode) && !AUTO.equals(reasoningEffort)) {
             options.put("reasoning", Map.of("effort", reasoningEffort));
         }
         return Map.copyOf(options);
