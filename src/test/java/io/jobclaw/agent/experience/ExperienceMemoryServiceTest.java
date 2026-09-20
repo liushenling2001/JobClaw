@@ -12,7 +12,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ExperienceMemoryServiceTest {
 
     @Test
-    void shouldRecordHitsAndDowngradeLastInjectedMemoriesOnUserCorrection() {
+    void shouldRecordHitsWithoutTreatingGenericUserCorrectionAsContradiction() {
         ExperienceMemory memory = memory("exp-a", 0.8);
         InMemoryExperienceMemoryStore store = new InMemoryExperienceMemoryStore(List.of(memory));
         ExperienceMemoryService service = new ExperienceMemoryService(store);
@@ -22,8 +22,14 @@ class ExperienceMemoryServiceTest {
         assertEquals(1, afterHit.getHitCount());
         assertNotNull(afterHit.getLastHitAt());
 
-        service.markLastInjectedContradictedIfCorrection("session-a", "错了，不是这个文件夹，不要按旧经验");
+        ExperienceMemoryRetriever retriever = new ExperienceMemoryRetriever(service, new io.jobclaw.config.ExperienceConfig());
+        retriever.retrieve("session-a", "错了，页面颜色不对");
         ExperienceMemory afterCorrection = service.findById("exp-a").orElseThrow();
+        assertEquals(0, afterCorrection.getContradictionCount());
+        assertEquals(0.8, afterCorrection.getConfidence());
+
+        service.markContradicted(List.of("exp-a"));
+        afterCorrection = service.findById("exp-a").orElseThrow();
         assertEquals(1, afterCorrection.getContradictionCount());
         assertTrue(afterCorrection.getConfidence() < 0.8);
         assertNotNull(afterCorrection.getLastContradictedAt());

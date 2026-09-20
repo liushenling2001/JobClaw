@@ -66,8 +66,15 @@ public class JobClawConfig {
                                          SessionManager sessionManager,
                                          SkillsService skillsService,
                                          SummaryService summaryService,
-                                         MCPService mcpService) {
-        return new ContextBuilder(config, sessionManager, skillsService, summaryService, mcpService);
+                                         MCPService mcpService,
+                                         io.jobclaw.agent.evolution.MemoryStore memoryStore) {
+        return new ContextBuilder(config, sessionManager, skillsService, summaryService, mcpService, memoryStore);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public io.jobclaw.agent.evolution.MemoryStore memoryStore(Config config, io.jobclaw.workspace.WorkspaceRegistry workspaceRegistry) {
+        return new io.jobclaw.agent.evolution.MemoryStore(config.getWorkspacePath(), workspaceRegistry);
     }
 
     @Bean

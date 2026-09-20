@@ -2,6 +2,9 @@ package io.jobclaw.agent.experience;
 
 import io.jobclaw.agent.learning.LearningCandidate;
 import io.jobclaw.agent.learning.LearningCandidateType;
+import io.jobclaw.agent.evolution.MemoryStore;
+import io.jobclaw.agent.evolution.MemoryScope;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -11,25 +14,26 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.regex.Pattern;
 
 @Component
 public class ExperienceMemoryService {
 
-    private static final Pattern CORRECTION_PATTERN = Pattern.compile(
-            "(?i)(不是|不对|错了|不要这样|不要按|旧经验|旧路径|历史路径|又按|误导|wrong|incorrect|not this|do not reuse|old path)"
-    );
     private static final double CONTRADICTION_CONFIDENCE_PENALTY = 0.2;
 
     private final ExperienceMemoryStore store;
-    private final Map<String, List<String>> lastInjectedBySession = new ConcurrentHashMap<>();
+    private final MemoryStore memoryStore;
 
     public ExperienceMemoryService(ExperienceMemoryStore store) {
-        this.store = store;
+        this(store, null);
     }
 
-    public Optional<ExperienceMemory> applyAcceptedCandidate(LearningCandidate candidate) {
+    @Autowired
+    public ExperienceMemoryService(ExperienceMemoryStore store, MemoryStore memoryStore) {
+        this.store = store;
+        this.memoryStore = memoryStore;
+    }
+
+    public synchronized Optional<ExperienceMemory> applyAcceptedCandidate(LearningCandidate candidate) {
         if (candidate == null || candidate.getType() == null) {
             return Optional.empty();
         }
@@ -72,7 +76,7 @@ public class ExperienceMemoryService {
                 .findFirst();
     }
 
-    public List<ExperienceMemory> recordInjected(String sessionId, Collection<String> memoryIds) {
+    public synchronized List<ExperienceMemory> recordInjected(String sessionId, Collection<String> memoryIds) {
         if (sessionId == null || sessionId.isBlank() || memoryIds == null || memoryIds.isEmpty()) {
             return List.of();
         }
@@ -83,7 +87,6 @@ public class ExperienceMemoryService {
         if (ids.isEmpty()) {
             return List.of();
         }
-        lastInjectedBySession.put(sessionId, ids);
         Instant now = Instant.now();
         List<ExperienceMemory> memories = new ArrayList<>(store.list());
         List<ExperienceMemory> updated = new ArrayList<>();
@@ -99,19 +102,7 @@ public class ExperienceMemoryService {
         return updated;
     }
 
-    public List<ExperienceMemory> markLastInjectedContradictedIfCorrection(String sessionId, String userInput) {
-        if (sessionId == null || sessionId.isBlank() || userInput == null || userInput.isBlank()
-                || !CORRECTION_PATTERN.matcher(userInput).find()) {
-            return List.of();
-        }
-        List<String> ids = lastInjectedBySession.get(sessionId);
-        if (ids == null || ids.isEmpty()) {
-            return List.of();
-        }
-        return markContradicted(ids);
-    }
-
-    public List<ExperienceMemory> markContradicted(Collection<String> ids) {
+    public synchronized List<ExperienceMemory> markContradicted(Collection<String> ids) {
         if (ids == null || ids.isEmpty()) {
             return List.of();
         }
@@ -150,7 +141,7 @@ public class ExperienceMemoryService {
         return updateUserState(id, ExperienceMemoryUserState.AUTO, ExperienceMemoryStatus.ACTIVE);
     }
 
-    private Optional<ExperienceMemory> updateUserState(String id,
+    private synchronized Optional<ExperienceMemory> updateUserState(String id,
                                                        ExperienceMemoryUserState userState,
                                                        ExperienceMemoryStatus status) {
         if (id == null || id.isBlank()) {
@@ -178,6 +169,7 @@ public class ExperienceMemoryService {
         memory.setId(UUID.randomUUID().toString());
         memory.setSourceCandidateId(candidate.getId());
         memory.setType(type);
+        memory.setMetadata(candidate.getMetadata());
         memory.setStatus(ExperienceMemoryStatus.ACTIVE);
         memory.setTitle(candidate.getTitle());
         String taskPattern = firstNonBlank(metadataValue(candidate, "taskPattern"), candidate.getTitle());
@@ -203,7 +195,16 @@ public class ExperienceMemoryService {
         memory.setConfidence(candidate.getConfidence());
         memory.setCreatedAt(now);
         memory.setUpdatedAt(now);
-        memory.setMetadata(candidate.getMetadata());
+        if (memoryStore != null) {
+            MemoryScope owner = memoryStore.scopeFor(candidate.getSessionId());
+            memory.getMetadata().putIfAbsent("scope", "project");
+            if (!"user".equals(memory.getMetadata().get("scope"))) {
+                memory.getMetadata().putIfAbsent("workspace", owner.workspace());
+            }
+            if ("agent".equals(memory.getMetadata().get("scope"))) {
+                memory.getMetadata().putIfAbsent("agentId", owner.agentId());
+            }
+        }
         return memory;
     }
 

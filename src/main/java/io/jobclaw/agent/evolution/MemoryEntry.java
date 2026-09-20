@@ -22,9 +22,9 @@ import java.util.UUID;
  * - 访问计数：被检索到的次数，用于重要性衰减计算
  *
  * 综合得分计算：
- * score = importance × decayFactor × accessFactor
+ * score = importance × decayFactor
  * - decayFactor: 时间衰减，越近的记忆得分越高
- * - accessFactor: 访问频率，常被访问的记忆得分越高
+ * 访问次数仅用于诊断，不作为有效性证据。
  */
 public class MemoryEntry {
 
@@ -51,6 +51,27 @@ public class MemoryEntry {
 
     /** 访问计数 */
     private int accessCount;
+
+    private String scope;
+    private String workspace;
+    private String agentId;
+    private Instant updatedAt;
+    private List<Revision> revisions = new ArrayList<>();
+
+    public record Revision(String content, double importance, Instant replacedAt) { }
+
+    public String getScope() { return scope; }
+    public void setScope(String scope) { this.scope = scope; }
+    public String getWorkspace() { return workspace; }
+    public void setWorkspace(String workspace) { this.workspace = workspace; }
+    public String getAgentId() { return agentId; }
+    public void setAgentId(String agentId) { this.agentId = agentId; }
+    public Instant getUpdatedAt() { return updatedAt; }
+    public void setUpdatedAt(Instant updatedAt) { this.updatedAt = updatedAt; }
+    public List<Revision> getRevisions() { return revisions; }
+    public void setRevisions(List<Revision> revisions) {
+        this.revisions = revisions == null ? new ArrayList<>() : new ArrayList<>(revisions);
+    }
 
     /**
      * 默认构造函数（Jackson 反序列化需要）
@@ -163,15 +184,15 @@ public class MemoryEntry {
      * 综合考虑：
      * - 重要性评分（基础分）
      * - 时间衰减（越近越重要）
-     * - 访问频率（常被访问的更重要）
+     * 访问频率不参与排序。
      *
      * @return 综合得分
      */
     @JsonIgnore
     public double computeScore() {
         double decayFactor = computeTimeDecay();
-        double accessFactor = 1.0 + (Math.log(accessCount + 1) / Math.log(10));
-        return importance * decayFactor * accessFactor;
+        // Exposure is diagnostic data, not evidence that a memory was useful.
+        return importance * decayFactor;
     }
 
     /**
@@ -188,7 +209,8 @@ public class MemoryEntry {
      */
     @JsonIgnore
     public double computeTimeDecay() {
-        Duration age = Duration.between(createdAt, Instant.now());
+        Instant timestamp = updatedAt != null ? updatedAt : createdAt;
+        Duration age = Duration.between(timestamp != null ? timestamp : Instant.now(), Instant.now());
         long hours = age.toHours();
 
         if (hours < 24) {
@@ -216,16 +238,7 @@ public class MemoryEntry {
             return 0;
         }
 
-        int matchCount = 0;
-        String lowerContent = content.toLowerCase();
-
-        for (String keyword : keywords) {
-            if (lowerContent.contains(keyword.toLowerCase())) {
-                matchCount++;
-            }
-        }
-
-        return matchCount;
+        return MemoryRelevance.score(String.join(" ", keywords), content);
     }
 
     /**

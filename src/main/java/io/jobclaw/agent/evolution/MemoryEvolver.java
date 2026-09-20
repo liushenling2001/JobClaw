@@ -66,6 +66,10 @@ public class MemoryEvolver {
      * @param summary    会话摘要
      */
     public void quickExtractFromSummary(String sessionKey, String summary) {
+        quickExtractFromSummary(sessionKey, summary, memoryStore.scopeFor(sessionKey));
+    }
+
+    public void quickExtractFromSummary(String sessionKey, String summary, MemoryScope scope) {
         if (summary == null || summary.isEmpty()) {
             return;
         }
@@ -74,10 +78,10 @@ public class MemoryEvolver {
 
         for (String entry : extractedEntries) {
             // 检查是否已存在相似记忆
-            if (!isDuplicate(entry)) {
+            if (!isDuplicate(entry, scope)) {
                 double importance = calculateImportance(entry);
                 List<String> tags = extractTags(entry);
-                memoryStore.addEntry(entry, importance, tags, "session_summary");
+                memoryStore.addEntry(entry, importance, tags, "session_summary", "project", scope);
             }
         }
 
@@ -103,7 +107,7 @@ public class MemoryEvolver {
             String response = callLLM(prompt);
 
             if (response != null && !response.isEmpty()) {
-                parseAndAddEntries(response, "session_summary");
+                parseAndAddEntries(response, "session_summary", memoryStore.scopeFor(sessionKey));
                 logger.info("Extracted memory entries from session: {}", sessionKey);
             }
         } catch (Exception e) {
@@ -131,7 +135,8 @@ public class MemoryEvolver {
                 ? Math.min(1.0, currentImportance + delta)
                 : Math.max(0.0, currentImportance - delta);
 
-        entry.setImportance(newImportance);
+        memoryStore.updateEntry(entry.getId(), entry.getContent(), newImportance,
+                new MemoryScope(entry.getWorkspace(), entry.getAgentId()));
         logger.debug("Adjusted memory importance: id={}, old={}, new={}",
                 memoryId, currentImportance, newImportance);
     }
@@ -153,6 +158,10 @@ public class MemoryEvolver {
 
         for (MemoryEntry entry : entries) {
             Set<String> tagKey = normalizeTags(entry.getTags());
+            tagKey = new HashSet<>(tagKey);
+            tagKey.add("scope:" + entry.getScope());
+            tagKey.add("workspace:" + entry.getWorkspace());
+            tagKey.add("agent:" + entry.getAgentId());
             groupedByTags.computeIfAbsent(tagKey, k -> new ArrayList<>()).add(entry);
         }
 
@@ -325,8 +334,8 @@ public class MemoryEvolver {
      * @param newEntry 新的记忆条目
      * @return 存在相似记忆返回 true
      */
-    private boolean isDuplicate(String newEntry) {
-        List<MemoryEntry> existing = memoryStore.getEntries();
+    private boolean isDuplicate(String newEntry, MemoryScope scope) {
+        List<MemoryEntry> existing = memoryStore.getEntries(scope);
         String normalizedNew = normalizeText(newEntry);
 
         for (MemoryEntry entry : existing) {
@@ -348,7 +357,7 @@ public class MemoryEvolver {
      * @param response LLM 响应
      * @param source   来源标识
      */
-    private void parseAndAddEntries(String response, String source) {
+    private void parseAndAddEntries(String response, String source, MemoryScope scope) {
         String[] lines = response.split("\n");
 
         for (String line : lines) {
@@ -370,7 +379,7 @@ public class MemoryEvolver {
             }
 
             double importance = calculateImportance(content);
-            memoryStore.addEntry(content, importance, tags, source);
+            memoryStore.addEntry(content, importance, tags, source, "project", scope);
         }
     }
 
@@ -425,7 +434,9 @@ public class MemoryEvolver {
                 }
 
                 // 添加新记忆
-                memoryStore.addEntry(mergedContent, avgImportance, new ArrayList<>(allTags), "evolution");
+                MemoryEntry first = entries.get(0);
+                memoryStore.addEntry(mergedContent, avgImportance, new ArrayList<>(allTags), "evolution",
+                        first.getScope(), new MemoryScope(first.getWorkspace(), first.getAgentId()));
 
                 // 移除旧记忆
                 for (MemoryEntry entry : entries) {

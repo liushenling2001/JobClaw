@@ -127,7 +127,8 @@ public class DefaultContextAssembler implements ContextAssembler {
 
         int factMemoryBudget = memoryBudget;
         if (memoryStore != null) {
-            String memoryContext = memoryStore.getMemoryContext(currentUserInput, Math.max(96, memoryBudget / 2));
+            String memoryContext = memoryStore.getMemoryContext(currentUserInput, Math.max(96, memoryBudget / 2),
+                    memoryStore.scopeFor(sessionId));
             if (memoryContext != null && !memoryContext.isBlank()) {
                 assembled.add(Message.system("Memory:\n" + memoryContext));
                 factMemoryBudget = Math.max(96, memoryBudget / 2);
@@ -165,18 +166,19 @@ public class DefaultContextAssembler implements ContextAssembler {
             return;
         }
         List<ExperienceMemoryMatch> matches = experienceMemoryRetriever.retrieve(sessionId, currentUserInput);
-        String section = experienceMemoryRetriever.buildPromptSection(matches);
+        var prompt = experienceMemoryRetriever.preparePrompt(matches);
+        String section = prompt.text();
         if (section != null && !section.isBlank()) {
             assembled.add(Message.system(section));
-            List<ExperienceMemory> recorded = experienceMemoryRetriever.recordInjected(sessionId, matches);
+            List<ExperienceMemory> recorded = experienceMemoryRetriever.recordInjected(sessionId, prompt.matches());
             AgentExecutionContext.publishEvent(new ExecutionEvent(
                     sessionId,
                     ExecutionEvent.EventType.CUSTOM,
                     "Experience memory injected",
                     Map.of(
                             "event", "experience_memory_injected",
-                            "experienceIds", matches.stream().map(ExperienceMemoryMatch::id).toList(),
-                            "sanitized", matches.stream().anyMatch(ExperienceMemoryMatch::sanitized),
+                            "experienceIds", prompt.matches().stream().map(ExperienceMemoryMatch::id).toList(),
+                            "sanitized", prompt.matches().stream().anyMatch(ExperienceMemoryMatch::sanitized),
                             "recorded", recorded.size()
                     )
             ));

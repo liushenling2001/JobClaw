@@ -3,6 +3,7 @@ package io.jobclaw.tools;
 import io.jobclaw.agent.AgentExecutionContext;
 import io.jobclaw.agent.evolution.MemoryEntry;
 import io.jobclaw.agent.evolution.MemoryStore;
+import io.jobclaw.agent.evolution.MemoryScope;
 import io.jobclaw.agent.learning.LearningCandidate;
 import io.jobclaw.agent.learning.LearningCandidateStatus;
 import io.jobclaw.agent.learning.LearningCandidateStore;
@@ -38,36 +39,40 @@ public class MemoryTool {
     private final MemoryStore memoryStore;
     private final LearningCandidateStore learningCandidateStore;
 
-    @Autowired
     public MemoryTool(Config config, LearningCandidateStore learningCandidateStore) {
-        this.memoryStore = new MemoryStore(config.getWorkspacePath());
-        this.learningCandidateStore = learningCandidateStore;
+        this(new MemoryStore(config.getWorkspacePath()), learningCandidateStore);
     }
 
     public MemoryTool(Config config) {
-        this.memoryStore = new MemoryStore(config.getWorkspacePath());
-        this.learningCandidateStore = null;
+        this(config, null);
     }
 
-    @Tool(name = "memory", description = "Manage durable long-term memory. Use remember when the user explicitly asks to remember a fact, preference, rule, or future behavior. Supports actions: remember, search, list, forget.")
+    @Autowired
+    public MemoryTool(MemoryStore memoryStore, LearningCandidateStore learningCandidateStore) {
+        this.memoryStore = memoryStore;
+        this.learningCandidateStore = learningCandidateStore;
+    }
+
+    @Tool(name = "memory", description = "Manage durable long-term memory. Use remember for explicit user requests. Use search/list to find an existing memory ID, then update that ID when correcting it instead of adding a conflicting memory. Project and agent memories are restricted to the current workspace. Supports remember, update, search, list, forget.")
     public String execute(
-            @ToolParam(description = "Operation: remember/search/list/forget") String action,
-            @ToolParam(description = "Memory content for remember", required = false) String content,
+            @ToolParam(description = "Operation: remember/update/search/list/forget") String action,
+            @ToolParam(description = "Memory content for remember or update", required = false) String content,
             @ToolParam(description = "Search query for search", required = false) String query,
-            @ToolParam(description = "Memory id for forget", required = false) String id,
+            @ToolParam(description = "Existing memory id required for update or forget", required = false) String id,
             @ToolParam(description = "Comma-separated tags, for example user,project,preference", required = false) String tags,
-            @ToolParam(description = "Memory scope: user/project/agent", required = false) String scope,
+            @ToolParam(description = "Scope for remember: project (default), user (explicit cross-project preference), agent (current agent in this workspace). Update preserves the existing scope.", required = false) String scope,
             @ToolParam(description = "Importance from 0.0 to 1.0. Defaults to 0.8 for explicit user memory.", required = false) Double importance
     ) {
         if (action == null || action.isBlank()) {
-            return "Error: action is required (remember/search/list/forget)";
+            return "Error: action is required (remember/update/search/list/forget)";
         }
         return switch (action.trim().toLowerCase(Locale.ROOT)) {
             case "remember" -> remember(content, tags, scope, importance);
+            case "update" -> update(id, content, importance);
             case "search" -> search(query);
             case "list" -> list();
             case "forget" -> forget(id);
-            default -> "Error: unknown memory action '" + action + "'. Valid actions: remember, search, list, forget";
+            default -> "Error: unknown memory action '" + action + "'. Valid actions: remember, update, search, list, forget";
         };
     }
 
@@ -77,6 +82,9 @@ public class MemoryTool {
         }
         List<String> parsedTags = parseTags(tags);
         String normalizedScope = normalizeScope(scope);
+        if (normalizedScope == null) {
+            return "Error: scope must be user, project, or agent";
+        }
         if (!parsedTags.contains(normalizedScope)) {
             parsedTags.add(normalizedScope);
         }
@@ -85,7 +93,8 @@ public class MemoryTool {
         }
         double score = importance != null ? importance : 0.8d;
         String normalizedContent = content.trim();
-        memoryStore.addEntry(normalizedContent, score, parsedTags, "user_explicit");
+        MemoryEntry entry = memoryStore.addEntry(normalizedContent, score, parsedTags, "user_explicit",
+                normalizedScope, currentScope());
         Optional<LearningCandidate> candidate = maybeRecordLearningCandidate(
                 normalizedContent,
                 parsedTags,
@@ -95,7 +104,20 @@ public class MemoryTool {
         String suffix = candidate
                 .map(value -> "\nLearning candidate created: " + value.getId() + " (" + value.getType() + ", PENDING)")
                 .orElse("");
-        return "Remembered durable memory (" + normalizedScope + "): " + normalizedContent + suffix;
+        return "Remembered durable memory (" + normalizedScope + ", id=" + entry.getId() + "): " + normalizedContent + suffix;
+    }
+
+    private MemoryScope currentScope() {
+        return memoryStore.scopeFor(AgentExecutionContext.getCurrentSessionKey());
+    }
+
+    private String update(String id, String content, Double importance) {
+        if (id == null || id.isBlank() || content == null || content.isBlank()) {
+            return "Error: update requires an existing memory id and non-empty content; use search/list first";
+        }
+        MemoryEntry updated = memoryStore.updateEntry(id.trim(), content.trim(), importance, currentScope());
+        return updated == null ? "Error: memory not found in the current scope: " + id.trim()
+                : "Updated memory: " + updated.getId() + "\n" + updated.getContent();
     }
 
     private String search(String query) {
@@ -103,7 +125,7 @@ public class MemoryTool {
             return "Error: query is required for memory search";
         }
         String normalizedQuery = query.toLowerCase(Locale.ROOT);
-        List<MemoryEntry> matches = memoryStore.getEntries().stream()
+        List<MemoryEntry> matches = memoryStore.getEntries(currentScope()).stream()
                 .filter(entry -> entry.getContent() != null
                         && entry.getContent().toLowerCase(Locale.ROOT).contains(normalizedQuery))
                 .sorted(Comparator.comparingDouble(MemoryEntry::computeScore).reversed())
@@ -116,7 +138,7 @@ public class MemoryTool {
     }
 
     private String list() {
-        List<MemoryEntry> entries = memoryStore.getEntries().stream()
+        List<MemoryEntry> entries = memoryStore.getEntries(currentScope()).stream()
                 .sorted(Comparator.comparingDouble(MemoryEntry::computeScore).reversed())
                 .limit(DEFAULT_LIST_LIMIT)
                 .toList();
@@ -130,7 +152,7 @@ public class MemoryTool {
         if (id == null || id.isBlank()) {
             return "Error: id is required for memory forget";
         }
-        MemoryEntry removed = memoryStore.removeEntry(id.trim());
+        MemoryEntry removed = memoryStore.removeEntry(id.trim(), currentScope());
         if (removed == null) {
             return "Error: memory not found: " + id.trim();
         }
@@ -153,13 +175,13 @@ public class MemoryTool {
 
     private String normalizeScope(String scope) {
         if (scope == null || scope.isBlank()) {
-            return "user";
+            return "project";
         }
         String normalized = scope.trim().toLowerCase(Locale.ROOT);
         if (normalized.equals("project") || normalized.equals("agent") || normalized.equals("user")) {
             return normalized;
         }
-        return "user";
+        return null;
     }
 
     private Optional<LearningCandidate> maybeRecordLearningCandidate(String content,
@@ -180,6 +202,11 @@ public class MemoryTool {
         String fingerprint = learningFingerprint(content, type);
         boolean exists = candidates.stream().anyMatch(candidate ->
                 type == candidate.getType()
+                        && scope.equals(candidate.getMetadata().get("scope"))
+                        && java.util.Objects.equals("user".equals(scope) ? null : currentScope().workspace(),
+                                candidate.getMetadata().get("workspace"))
+                        && java.util.Objects.equals("agent".equals(scope) ? currentScope().agentId() : null,
+                                candidate.getMetadata().get("agentId"))
                         && fingerprint.equals(candidate.getMetadata().get("explicitMemoryFingerprint")));
         if (exists) {
             return Optional.empty();
@@ -203,6 +230,12 @@ public class MemoryTool {
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("source", "memory_tool_explicit");
         metadata.put("scope", scope);
+        if (!"user".equals(scope)) {
+            metadata.put("workspace", currentScope().workspace());
+        }
+        if ("agent".equals(scope)) {
+            metadata.put("agentId", currentScope().agentId());
+        }
         metadata.put("explicitMemoryFingerprint", fingerprint);
         metadata.put("toolSequence", List.of("memory"));
         candidate.setMetadata(metadata);

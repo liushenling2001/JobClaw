@@ -67,6 +67,17 @@ public class ContextBuilder {
                           SkillsService skillsService,
                           SummaryService summaryService,
                           MCPService mcpService) {
+        this(config, sessionManager, skillsService, summaryService, mcpService,
+                new MemoryStore(config.getWorkspacePath()));
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public ContextBuilder(Config config,
+                          SessionManager sessionManager,
+                          SkillsService skillsService,
+                          SummaryService summaryService,
+                          MCPService mcpService,
+                          MemoryStore memoryStore) {
         this.config = config;
         this.sessionManager = sessionManager;
         this.skillsService = skillsService;
@@ -75,7 +86,7 @@ public class ContextBuilder {
         this.fileContentCache = new ConcurrentHashMap<>();
         this.workspace = ConfigLoader.expandHome(config.getAgent().getWorkspace());
         this.contextWindow = config.getAgent().getContextWindow();
-        this.memoryStore = new MemoryStore(this.workspace);
+        this.memoryStore = memoryStore;
 
         logger.info("ContextBuilder initialized with workspace: {}", this.workspace);
     }
@@ -240,8 +251,8 @@ public class ContextBuilder {
         sb.append("Working directory: ").append(workingDirectory).append("\n");
         sb.append("Use this directory as the default location for task inputs and outputs.\n\n");
         sb.append("## Global Memory\n");
-        sb.append("- Memory: ").append(globalWorkspacePath).append("/memory/MEMORY.md\n");
-        sb.append("- Daily notes: ").append(globalWorkspacePath).append("/memory/YYYYMM/YYYYMMDD.md\n\n");
+        sb.append("- Durable memory: use the memory tool; project memory is scoped to the working directory.\n");
+        sb.append("- Daily notes: managed by the framework and isolated by workspace.\n\n");
         sb.append("## Rules\n\n");
         sb.append("1. Use tools when you need to perform actions.\n");
         sb.append("2. Be concise and accurate.\n");

@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.jobclaw.agent.AgentConstants;
+import io.jobclaw.agent.AgentExecutionContext;
+import io.jobclaw.workspace.WorkspaceRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -12,6 +14,9 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
@@ -29,7 +34,7 @@ import java.util.stream.Collectors;
  * 核心能力：
  * - Token 预算控制：根据上下文窗口分配记忆预算，防止上下文爆炸
  * - 相关性检索：根据当前对话内容，优先选取相关记忆
- * - 重要性排序：综合考虑重要性评分、时间衰减、访问频率
+ * - 重要性排序：相关性准入后考虑重要性与时间衰减，访问次数仅用于诊断
  * - 结构化存储：每条记忆带有元数据，支持自动进化
  */
 public class MemoryStore {
@@ -51,6 +56,7 @@ public class MemoryStore {
     private final String memoriesJsonFile;
     private final String archiveJsonFile;
     private final ObjectMapper objectMapper;
+    private final WorkspaceRegistry workspaceRegistry;
 
     /** 内存中的结构化记忆缓存，线程安全 */
     private final CopyOnWriteArrayList<MemoryEntry> entries;
@@ -61,7 +67,12 @@ public class MemoryStore {
      * @param workspace 工作空间根路径
      */
     public MemoryStore(String workspace) {
+        this(workspace, null);
+    }
+
+    public MemoryStore(String workspace, WorkspaceRegistry workspaceRegistry) {
         this.workspace = workspace;
+        this.workspaceRegistry = workspaceRegistry;
         this.memoryDir = Paths.get(workspace, "memory").toString();
         this.memoryFile = Paths.get(memoryDir, "MEMORY.md").toString();
         this.memoriesJsonFile = Paths.get(memoryDir, MEMORIES_FILE).toString();
@@ -88,12 +99,86 @@ public class MemoryStore {
      * @param tags       标签列表
      * @param source     来源标识（如 session_summary, heartbeat, user_explicit, evolution）
      */
-    public void addEntry(String content, double importance, List<String> tags, String source) {
+    public synchronized void addEntry(String content, double importance, List<String> tags, String source) {
+        addEntry(content, importance, tags, source, "project", scopeFor(null));
+    }
+
+    public synchronized MemoryEntry addEntry(String content, double importance, List<String> tags, String source,
+                                              String scope, MemoryScope owner) {
+        if (content == null || content.isBlank() || scope == null || !Set.of("user", "project", "agent").contains(scope)) {
+            throw new IllegalArgumentException("Memory requires non-empty content and a valid scope");
+        }
+        if (!"user".equals(scope) && (owner == null || owner.workspace() == null)) {
+            throw new IllegalArgumentException("Project and agent memories require a workspace");
+        }
         MemoryEntry entry = new MemoryEntry(content, importance, tags, source);
-        entries.add(entry);
-        saveEntries();
+        entry.setScope(scope);
+        entry.setWorkspace("user".equals(scope) ? null : owner.workspace());
+        entry.setAgentId("agent".equals(scope) ? owner.agentId() : null);
+        List<MemoryEntry> updated = new ArrayList<>(entries);
+        updated.add(entry);
+        commitEntries(updated);
         logger.debug("Added memory entry: source={}, importance={}, tags={}",
                 source, importance, tags != null ? tags.toString() : "[]");
+        return copy(entry);
+    }
+
+    public MemoryScope scopeFor(String sessionId) {
+        var current = AgentExecutionContext.getCurrentScope();
+        boolean currentSession = current != null && (sessionId == null || sessionId.equals(current.sessionKey()));
+        String directory = currentSession ? current.workingDirectory() : null;
+        String key = sessionId != null ? sessionId : AgentExecutionContext.getCurrentSessionKey();
+        if ((directory == null || directory.isBlank()) && key != null && workspaceRegistry != null) {
+            directory = workspaceRegistry.resolveWorkingDirectory(key);
+        }
+        String agent = currentSession && current.definition() != null ? current.definition().getCode() : "default";
+        return new MemoryScope(directory == null || directory.isBlank() ? workspace : directory, agent);
+    }
+
+    public MemoryScope defaultScope() {
+        return new MemoryScope(workspace, "default");
+    }
+
+    public synchronized List<MemoryEntry> getEntries(MemoryScope scope) {
+        return entries.stream().filter(entry -> visible(entry, scope)).map(this::copy).toList();
+    }
+
+    private boolean visible(MemoryEntry entry, MemoryScope scope) {
+        return scope.permits(entry.getScope(), entry.getWorkspace(), entry.getAgentId());
+    }
+
+    private MemoryEntry copy(MemoryEntry entry) {
+        return objectMapper.convertValue(entry, MemoryEntry.class);
+    }
+
+    public synchronized MemoryEntry updateEntry(String id, String content, Double importance, MemoryScope scope) {
+        if (content == null || content.isBlank()) {
+            throw new IllegalArgumentException("Updated memory content must not be empty");
+        }
+        for (MemoryEntry entry : entries) {
+            if (Objects.equals(id, entry.getId()) && visible(entry, scope)) {
+                MemoryEntry updated = copy(entry);
+                Instant now = Instant.now();
+                updated.getRevisions().add(new MemoryEntry.Revision(entry.getContent(), entry.getImportance(), now));
+                updated.setContent(content);
+                if (importance != null) {
+                    updated.setImportance(importance);
+                }
+                updated.setUpdatedAt(now);
+                List<MemoryEntry> next = new ArrayList<>(entries);
+                next.set(next.indexOf(entry), updated);
+                commitEntries(next);
+                return copy(updated);
+            }
+        }
+        return null;
+    }
+
+    public synchronized MemoryEntry removeEntry(String id, MemoryScope scope) {
+        if (entries.stream().noneMatch(entry -> Objects.equals(id, entry.getId()) && visible(entry, scope))) {
+            return null;
+        }
+        return removeEntry(id);
     }
 
     /**
@@ -101,8 +186,8 @@ public class MemoryStore {
      *
      * @return 记忆条目列表
      */
-    public List<MemoryEntry> getEntries() {
-        return Collections.unmodifiableList(new ArrayList<>(entries));
+    public synchronized List<MemoryEntry> getEntries() {
+        return entries.stream().map(this::copy).toList();
     }
 
     /**
@@ -110,12 +195,10 @@ public class MemoryStore {
      *
      * @param newEntries 新的记忆条目列表
      */
-    public void replaceEntries(List<MemoryEntry> newEntries) {
-        entries.clear();
-        if (newEntries != null) {
-            entries.addAll(newEntries);
-        }
-        saveEntries();
+    public synchronized void replaceEntries(List<MemoryEntry> newEntries) {
+        List<MemoryEntry> next = newEntries == null ? List.of() : newEntries.stream()
+                .map(this::copy).peek(this::normalizeLegacyScope).toList();
+        commitEntries(next);
         logger.info("Replaced all memory entries: count={}", entries.size());
     }
 
@@ -125,12 +208,13 @@ public class MemoryStore {
      * @param entryId 要移除的条目 ID
      * @return 被移除的条目，未找到返回 null
      */
-    public MemoryEntry removeEntry(String entryId) {
+    public synchronized MemoryEntry removeEntry(String entryId) {
         for (MemoryEntry entry : entries) {
             if (entryId.equals(entry.getId())) {
-                entries.remove(entry);
-                saveEntries();
-                return entry;
+                List<MemoryEntry> next = new ArrayList<>(entries);
+                next.remove(entry);
+                commitEntries(next);
+                return copy(entry);
             }
         }
         return null;
@@ -141,7 +225,7 @@ public class MemoryStore {
      *
      * @param entriesToArchive 要归档的条目列表
      */
-    public void archiveEntries(List<MemoryEntry> entriesToArchive) {
+    public synchronized void archiveEntries(List<MemoryEntry> entriesToArchive) {
         if (entriesToArchive == null || entriesToArchive.isEmpty()) {
             return;
         }
@@ -154,8 +238,9 @@ public class MemoryStore {
         saveEntriesToFile(archiveJsonFile, archived);
 
         // 从活跃记忆中移除
-        entries.removeAll(entriesToArchive);
-        saveEntries();
+        List<MemoryEntry> next = new ArrayList<>(entries);
+        next.removeAll(entriesToArchive);
+        commitEntries(next);
 
         logger.info("Archived memory entries: count={}", entriesToArchive.size());
     }
@@ -175,6 +260,10 @@ public class MemoryStore {
      * @return 格式化的记忆上下文，如果没有记忆则返回空字符串
      */
     public String getMemoryContext(String currentMessage, int tokenBudget) {
+        return getMemoryContext(currentMessage, tokenBudget, scopeFor(null));
+    }
+
+    public synchronized String getMemoryContext(String currentMessage, int tokenBudget, MemoryScope scope) {
         if (tokenBudget <= 0) {
             tokenBudget = DEFAULT_MEMORY_TOKEN_BUDGET;
         }
@@ -184,21 +273,22 @@ public class MemoryStore {
 
         // 1. 结构化记忆（按相关性 + 重要性排序，占 50% 预算）
         int structuredBudget = (int) (tokenBudget * AgentConstants.STRUCTURED_MEMORY_TOKEN_RATIO);
-        String structuredSection = buildStructuredMemorySection(keywords, structuredBudget);
+        String structuredSection = buildStructuredMemorySection(keywords, structuredBudget, scope);
         if (structuredSection != null && !structuredSection.isEmpty()) {
             parts.add(structuredSection);
         }
 
         // 2. 每日笔记（占 30% 预算）
         int dailyNotesBudget = (int) (tokenBudget * AgentConstants.DAILY_NOTES_TOKEN_RATIO);
-        String dailyNotesSection = buildDailyNotesSection(dailyNotesBudget);
+        boolean legacyVisible = Objects.equals(scope.workspace(), defaultScope().workspace());
+        String dailyNotesSection = buildDailyNotesSection(dailyNotesBudget, keywords, scope);
         if (dailyNotesSection != null && !dailyNotesSection.isEmpty()) {
             parts.add(dailyNotesSection);
         }
 
         // 3. 传统 MEMORY.md（占 20% 预算）
         int legacyBudget = (int) (tokenBudget * AgentConstants.LEGACY_MEMORY_TOKEN_RATIO);
-        String legacySection = buildLegacyMemorySection(legacyBudget);
+        String legacySection = legacyVisible ? buildLegacyMemorySection(legacyBudget, keywords) : "";
         if (legacySection != null && !legacySection.isEmpty()) {
             parts.add(legacySection);
         }
@@ -211,7 +301,7 @@ public class MemoryStore {
     }
 
     /**
-     * 向后兼容的无参版本，使用默认预算且不做相关性过滤。
+     * 无参版本只允许明确的全局用户偏好，不填充无关的任务记忆。
      *
      * @return 格式化的记忆上下文
      */
@@ -222,20 +312,22 @@ public class MemoryStore {
     /**
      * 构建结构化记忆部分。
      *
-     * 按综合得分（重要性 × 衰减 × 访问频率 × 相关性加成）排序，
+     * 按综合得分（重要性 × 衰减 × 相关性加成）排序，
      * 从高到低选取记忆条目，直到用完 token 预算。
      *
      * @param keywords    当前对话的关键词
      * @param tokenBudget 此部分的 token 预算
      * @return 格式化的结构化记忆字符串
      */
-    private String buildStructuredMemorySection(List<String> keywords, int tokenBudget) {
+    private String buildStructuredMemorySection(List<String> keywords, int tokenBudget, MemoryScope scope) {
         if (entries.isEmpty() || tokenBudget <= 0) {
             return "";
         }
 
         // 计算每条记忆的综合得分（基础分 + 相关性加成）
         List<ScoredEntry> scoredEntries = entries.stream()
+                .filter(entry -> visible(entry, scope))
+                .filter(entry -> entry.computeRelevance(keywords) > 0 || isExplicitPreference(entry))
                 .map(entry -> {
                     double baseScore = entry.computeScore();
                     int relevance = entry.computeRelevance(keywords);
@@ -280,14 +372,14 @@ public class MemoryStore {
         }
 
         // 如果有未选中的记忆，提示 Agent
-        int totalEntries = entries.size();
+        int totalEntries = scoredEntries.size();
         if (selectedCount < totalEntries) {
             section.append(String.format("\n_(%d of %d memories shown, filtered by relevance and importance)_\n",
                     selectedCount, totalEntries));
         }
 
-        // 异步保存访问计数更新
-        saveEntriesAsync();
+        // Persist under the same store lock; no stale asynchronous snapshot can overwrite a write.
+        saveEntries();
 
         return section.toString();
     }
@@ -298,7 +390,7 @@ public class MemoryStore {
      * @param tokenBudget 此部分的 token 预算
      * @return 格式化的每日笔记字符串
      */
-    private String buildDailyNotesSection(int tokenBudget) {
+    private String buildDailyNotesSection(int tokenBudget, List<String> keywords, MemoryScope scope) {
         if (tokenBudget <= 0) {
             return "";
         }
@@ -315,7 +407,7 @@ public class MemoryStore {
             LocalDate date = today.minusDays(dayOffset);
             String dateStr = date.format(DateTimeFormatter.ofPattern("yyyyMMdd"));
             String monthDir = dateStr.substring(0, 6);
-            String filePath = Paths.get(memoryDir, monthDir, dateStr + ".md").toString();
+            String filePath = scopedNotesDirectory(scope).resolve(monthDir).resolve(dateStr + ".md").toString();
 
             try {
                 if (!Files.exists(Paths.get(filePath))) {
@@ -323,6 +415,10 @@ public class MemoryStore {
                 }
 
                 String noteContent = Files.readString(Paths.get(filePath));
+                noteContent = relevantParagraphs(noteContent, keywords);
+                if (noteContent.isBlank()) {
+                    continue;
+                }
                 int noteTokens = estimateTokens(noteContent);
 
                 if (usedTokens + noteTokens > tokenBudget) {
@@ -355,12 +451,12 @@ public class MemoryStore {
      * @param tokenBudget 此部分的 token 预算
      * @return 格式化的传统记忆字符串
      */
-    private String buildLegacyMemorySection(int tokenBudget) {
+    private String buildLegacyMemorySection(int tokenBudget, List<String> keywords) {
         if (tokenBudget <= 0) {
             return "";
         }
 
-        String longTerm = readLongTerm();
+        String longTerm = relevantParagraphs(readLongTerm(), keywords);
         if (longTerm == null || longTerm.isEmpty()) {
             return "";
         }
@@ -479,12 +575,12 @@ public class MemoryStore {
      *
      * @param content 要写入的长期记忆内容
      */
-    public void writeLongTerm(String content) {
+    public synchronized void writeLongTerm(String content) {
         try {
-            Files.writeString(Paths.get(memoryFile), content);
+            writeAtomically(Path.of(memoryFile), content);
             logger.debug("Wrote long-term memory");
         } catch (IOException e) {
-            logger.error("Failed to write long-term memory: {}", e.getMessage());
+            throw new IllegalStateException("Failed to write long-term memory", e);
         }
     }
 
@@ -511,7 +607,12 @@ public class MemoryStore {
      * @param content 要追加的内容
      */
     public void appendToday(String content) {
-        String todayFile = getTodayFile();
+        appendToday(content, scopeFor(null));
+    }
+
+    public synchronized void appendToday(String content, MemoryScope scope) {
+        String date = LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE);
+        String todayFile = scopedNotesDirectory(scope).resolve(date.substring(0, 6)).resolve(date + ".md").toString();
 
         try {
             Path monthDirPath = Paths.get(todayFile).getParent();
@@ -529,13 +630,13 @@ public class MemoryStore {
                 String header = "# " + LocalDate.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd")) + "\n\n";
                 newContent = header + content;
             } else {
-                newContent = existingContent + "\n" + content;
+                newContent = existingContent + "\n\n" + content;
             }
 
-            Files.writeString(Paths.get(todayFile), newContent);
+            writeAtomically(Path.of(todayFile), newContent);
             logger.debug("Appended to today's note");
         } catch (IOException e) {
-            logger.error("Failed to append to today's note: {}", e.getMessage());
+            throw new IllegalStateException("Failed to append daily memory note", e);
         }
     }
 
@@ -546,6 +647,7 @@ public class MemoryStore {
      */
     private void loadEntries() {
         List<MemoryEntry> loaded = loadEntriesFromFile(memoriesJsonFile);
+        loaded.forEach(this::normalizeLegacyScope);
         entries.addAll(loaded);
         if (!loaded.isEmpty()) {
             logger.info("Loaded memory entries: count={}", loaded.size());
@@ -559,19 +661,54 @@ public class MemoryStore {
         saveEntriesToFile(memoriesJsonFile, new ArrayList<>(entries));
     }
 
+    private void commitEntries(List<MemoryEntry> next) {
+        saveEntriesToFile(memoriesJsonFile, next);
+        entries.clear();
+        entries.addAll(next);
+    }
+
     /**
-     * 异步保存记忆条目（用于访问计数更新等非关键写入）。
+     * 旧记录没有范围时保守绑定默认工作区，不推断为全局经验。
      */
-    private void saveEntriesAsync() {
-        Thread saveThread = new Thread(() -> {
-            try {
-                saveEntries();
-            } catch (Exception e) {
-                logger.warn("Async save failed: {}", e.getMessage());
-            }
-        });
-        saveThread.setDaemon(true);
-        saveThread.start();
+    private void normalizeLegacyScope(MemoryEntry entry) {
+        if (entry.getScope() == null || entry.getScope().isBlank()) {
+            boolean explicitUser = "user_explicit".equals(entry.getSource()) && entry.getTags() != null
+                    && entry.getTags().contains("user") && !entry.getTags().contains("project")
+                    && !entry.getTags().contains("agent");
+            boolean legacyAgent = entry.getTags() != null && entry.getTags().contains("agent");
+            entry.setScope(explicitUser ? "user" : legacyAgent ? "agent" : "project");
+        }
+        if (!"user".equals(entry.getScope()) && entry.getWorkspace() == null) {
+            entry.setWorkspace(defaultScope().workspace());
+        }
+        if ("agent".equals(entry.getScope()) && entry.getAgentId() == null) {
+            entry.setAgentId("default");
+        }
+    }
+
+    private Path scopedNotesDirectory(MemoryScope scope) {
+        // Old mixed-workspace daily notes remain on disk, but are not automatically injected.
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(
+                    Objects.requireNonNull(scope.workspace()).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return Path.of(memoryDir, "workspaces", HexFormat.of().formatHex(digest), "notes");
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    private boolean isExplicitPreference(MemoryEntry entry) {
+        return "user".equals(entry.getScope()) && "user_explicit".equals(entry.getSource())
+                && entry.getTags() != null && entry.getTags().contains("preference");
+    }
+
+    private String relevantParagraphs(String text, List<String> keywords) {
+        if (text == null || keywords.isEmpty()) {
+            return "";
+        }
+        return Arrays.stream(text.split("\\R\\s*\\R"))
+                .filter(part -> MemoryRelevance.score(String.join(" ", keywords), part) > 0)
+                .collect(Collectors.joining("\n\n"));
     }
 
     /**
@@ -590,7 +727,7 @@ public class MemoryStore {
                 }
             }
         } catch (IOException e) {
-            logger.warn("Failed to load entries from {}: {}", filePath, e.getMessage());
+            throw new IllegalStateException("Failed to load memory: " + filePath, e);
         }
         return new ArrayList<>();
     }
@@ -604,9 +741,31 @@ public class MemoryStore {
     private void saveEntriesToFile(String filePath, List<MemoryEntry> entriesToSave) {
         try {
             String json = objectMapper.writeValueAsString(entriesToSave);
-            Files.writeString(Paths.get(filePath), json);
+            writeAtomically(Path.of(filePath), json);
         } catch (IOException e) {
-            logger.error("Failed to save entries to {}: {}", filePath, e.getMessage());
+            throw new IllegalStateException("Failed to save memory: " + filePath, e);
+        }
+    }
+
+    private void writeAtomically(Path path, String content) throws IOException {
+        Path temporary = null;
+        Path target = path.toAbsolutePath();
+        try {
+            temporary = Files.createTempFile(target.getParent(), "memory-", ".tmp");
+            Files.writeString(temporary, content);
+            try {
+                Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            if (temporary != null) {
+                try {
+                    Files.deleteIfExists(temporary);
+                } catch (IOException e) {
+                    logger.warn("Failed to remove temporary memory file: {}", temporary);
+                }
+            }
         }
     }
 
@@ -645,7 +804,7 @@ public class MemoryStore {
         LocalDate today = LocalDate.now();
         String dateStr = today.format(DateTimeFormatter.ofPattern("yyyyMMdd"));
         String monthDir = dateStr.substring(0, 6);
-        return Paths.get(memoryDir, monthDir, dateStr + ".md").toString();
+        return scopedNotesDirectory(scopeFor(null)).resolve(monthDir).resolve(dateStr + ".md").toString();
     }
 
     private void ensureDirectoryExists(Path path) {

@@ -12,6 +12,8 @@ import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.api.io.TempDir;
 import io.jobclaw.agent.completion.CompletionRegistry;
 import io.jobclaw.agent.completion.ActiveExecutionRegistry;
@@ -148,6 +150,33 @@ class AgentLoopTurnResponseReplayTest {
         server.enqueue(sse(chunk("检查结束。", "stop") + "data: [DONE]\n\n"));
         assertEquals("检查结束。", runFullTurn("检查目录"));
         assertEquals(3, server.getRequestCount());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"继续查看下一个目录", "接下来查看剩余目录。", "接着核对文件清单。", "我再读取第二个文件。"})
+    void continuesAfterBarePromiseAtTheEndOfAToolRound(String promise) throws Exception {
+        server.start();
+        server.enqueue(sse(toolFixture()));
+        server.enqueue(sse(chunk(promise.substring(0, 3), null) + chunk(promise.substring(3), "stop") + "data: [DONE]\n\n"));
+        server.enqueue(sse(toolFixture()));
+        server.enqueue(sse(chunk("检查结束，没有异常。", "stop") + "data: [DONE]\n\n"));
+        assertEquals("检查结束，没有异常。", runFullTurn("检查目录"));
+        assertEquals(4, server.getRequestCount());
+        server.takeRequest();
+        server.takeRequest();
+        String recovery = server.takeRequest().getBody().readUtf8();
+        assertTrue(recovery.contains("JOBCLAW_PROMISE_CONTINUATION"));
+        assertFalse(recovery.contains("JOBCLAW_ARTIFACT_COMPLETION_GUARD"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"继续查看下一个目录。", "下一步读取配置。", "我马上检查文件。"})
+    void barePromiseWithAFollowingToolDoesNotNudge(String promise) throws Exception {
+        server.start();
+        server.enqueue(sse(chunk(promise, null) + toolFixture()));
+        server.enqueue(sse(chunk("检查结束，没有异常。", "stop") + "data: [DONE]\n\n"));
+        assertTrue(runFullTurn("检查目录").endsWith("检查结束，没有异常。"));
+        assertEquals(2, server.getRequestCount());
     }
 
     private String toolFixture() throws Exception {

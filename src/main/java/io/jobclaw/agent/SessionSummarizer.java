@@ -186,9 +186,10 @@ public class SessionSummarizer {
             return;  // 已经在摘要中，跳过
         }
 
+        var memoryScope = memoryStore.scopeFor(sessionKey);
         Thread thread = new Thread(() -> {
             try {
-                summarize(sessionKey);
+                summarize(sessionKey, memoryScope);
             } catch (Exception e) {
                 logger.error("Async summarize failed for session: {}, error: {}",
                         sessionKey, e.getMessage());
@@ -206,7 +207,7 @@ public class SessionSummarizer {
      *
      * @param sessionKey 会话键
      */
-    private void summarize(String sessionKey) {
+    private void summarize(String sessionKey, io.jobclaw.agent.evolution.MemoryScope memoryScope) {
         List<Message> history = sessions.getHistory(sessionKey);
         long summarizedSequence = summaryService.getSessionSummary(sessionKey)
                 .map(SessionSummaryRecord::sourceChunkEndSequence)
@@ -236,7 +237,7 @@ public class SessionSummarizer {
         String finalSummary = mergeSummaries(existingSummary, chunkSummary);
 
         if (finalSummary != null && !finalSummary.isEmpty()) {
-            saveSummary(sessionKey, toSummarize, validMessages, chunkSummary, finalSummary, eligibleEndExclusive);
+            saveSummary(sessionKey, toSummarize, validMessages, chunkSummary, finalSummary, eligibleEndExclusive, memoryScope);
         }
     }
 
@@ -440,7 +441,8 @@ public class SessionSummarizer {
                              List<Message> validMessages,
                              String chunkSummary,
                              String summary,
-                             int sourceEndSequenceExclusive) {
+                             int sourceEndSequenceExclusive,
+                             io.jobclaw.agent.evolution.MemoryScope memoryScope) {
         try {
             sessions.setSummary(sessionKey, summary);
         } catch (Exception e) {
@@ -452,7 +454,7 @@ public class SessionSummarizer {
         // 将摘要写入每日笔记，形成可追溯的对话记录
         try {
             String dailyNote = String.format("[%s] %s", sessionKey, summary);
-            memoryStore.appendToday(dailyNote);
+            memoryStore.appendToday(dailyNote, memoryScope);
         } catch (Exception e) {
             logger.warn("Failed to write daily note for summary: {}", e.getMessage());
         }
@@ -462,7 +464,7 @@ public class SessionSummarizer {
         // 从摘要中快速提炼结构化记忆
         if (memoryEvolver != null) {
             try {
-                memoryEvolver.quickExtractFromSummary(sessionKey, summary);
+                memoryEvolver.quickExtractFromSummary(sessionKey, summary, memoryScope);
             } catch (Exception e) {
                 logger.warn("Failed to extract memory from summary: {}", e.getMessage());
             }
