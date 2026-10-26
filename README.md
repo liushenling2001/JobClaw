@@ -463,6 +463,21 @@ voice-sidecar-local/
 
 如果 sidecar 或模型不存在，前端会禁用语音能力，并显示不可用状态。
 
+Ubuntu 使用同一套语音模型目录，但 Python 解释器默认位于
+`voice-sidecar-local/python/bin/python3`，也兼容该目录下只有 `python` 的虚拟环境。
+需要在 Linux 上单独创建 Python 环境并安装语音依赖，不能复制 Windows 的 `python.exe` 使用。
+可以通过环境变量 `JOBCLAW_VOICE_PYTHON` 或 JVM 参数 `-Djobclaw.voice.python=/绝对路径/bin/python`
+指定解释器；解释器必须存在且具有执行权限。语音不可用不影响普通文本对话。
+
+### Ubuntu 部署注意事项
+
+- 使用 Java 25。可直接运行已打包的 JAR，无需安装 Maven、Node.js 或重新下载 Spring AI 依赖。
+- 启动命令为 `java -jar jobclaw-1.0.0.jar gateway`，不使用 Windows 的 `run.bat`。
+- 默认配置为启动用户的 `~/.jobclaw/config.json`。迁移配置和 `workspaces.json` 时，将 Windows 路径替换为 Linux 实际目录，并确保工作目录、配置目录和日志目录可写。
+- skill、MCP 和语音使用的外部程序需安装 Linux 版本；命令工具在 Linux 使用 `sh -c`，需要 Bash 语法时显式使用 `bash`。
+- Linux 工作区路径区分大小写，例如 `/data/Project` 和 `/data/project` 是不同工作区。
+- 本项目使用本地修复的 Spring AI。部署现成 JAR 会保留其中的修复；若重新编译，必须先安装相同修复版本的依赖，不能直接用远端同名 SNAPSHOT 替代。
+
 ## 重要目录
 
 以 workspace 为根目录，JobClaw 会使用这些目录保存状态：

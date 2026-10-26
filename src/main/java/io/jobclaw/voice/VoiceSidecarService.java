@@ -55,7 +55,8 @@ public class VoiceSidecarService {
     }
 
     public synchronized VoiceStatus status() {
-        boolean runtimeReady = Files.exists(pythonPath())
+        boolean runtimeReady = Files.isRegularFile(pythonPath())
+                && (java.io.File.separatorChar == '\\' || Files.isExecutable(pythonPath()))
                 && Files.exists(asrModelPath().resolve("model.bin"))
                 && ttsRuntimeReady();
         boolean running = isRunning();
@@ -297,7 +298,24 @@ public class VoiceSidecarService {
     }
 
     private Path pythonPath() {
-        return voiceRoot.resolve("python").resolve("python.exe");
+        String configured = System.getProperty("jobclaw.voice.python");
+        if (configured == null || configured.isBlank()) {
+            configured = System.getenv("JOBCLAW_VOICE_PYTHON");
+        }
+        return resolvePythonPath(voiceRoot, java.io.File.separatorChar == '\\', configured);
+    }
+
+    static Path resolvePythonPath(Path root, boolean windows, String configured) {
+        if (configured != null && !configured.isBlank()) {
+            return Path.of(configured.trim()).toAbsolutePath().normalize();
+        }
+        if (windows) {
+            return root.resolve("python").resolve("python.exe");
+        }
+        Path bin = root.resolve("python").resolve("bin");
+        Path python3 = bin.resolve("python3");
+        return Files.isRegularFile(python3) || !Files.isRegularFile(bin.resolve("python"))
+                ? python3 : bin.resolve("python");
     }
 
     private Path asrModelPath() {

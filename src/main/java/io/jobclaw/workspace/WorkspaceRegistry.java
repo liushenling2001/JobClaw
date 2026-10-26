@@ -56,7 +56,7 @@ public class WorkspaceRegistry {
     public synchronized WorkspaceRecord create(String path, String title) {
         String canonicalPath = requireDirectory(path);
         Optional<WorkspaceRecord> existing = workspaces.values().stream()
-                .filter(workspace -> canonicalPath.equalsIgnoreCase(workspace.getPath()))
+                .filter(workspace -> Path.of(canonicalPath).equals(Path.of(workspace.getPath())))
                 .findFirst();
         if (existing.isPresent()) {
             return copy(existing.get());
@@ -136,7 +136,7 @@ public class WorkspaceRegistry {
             return;
         }
         WorkspaceRecord fallback = workspaces.values().stream()
-                .filter(workspace -> fallbackPath.equalsIgnoreCase(workspace.getPath()))
+                .filter(workspace -> Path.of(fallbackPath).equals(Path.of(workspace.getPath())))
                 .findFirst()
                 .orElse(null);
         if (fallback == null) {

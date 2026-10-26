@@ -16,6 +16,31 @@ class WorkspaceRegistryTest {
     Path tempDir;
 
     @Test
+    void respectsPlatformCaseRulesForCreationAndLegacySessionMigration() throws Exception {
+        Path upper = Files.createDirectory(tempDir.resolve("Project"));
+        Path lower = tempDir.resolve("project");
+        if (!Files.exists(lower)) {
+            Files.createDirectory(lower);
+        }
+        Path store = tempDir.resolve("case-workspaces.json");
+        WorkspaceRegistry registry = new WorkspaceRegistry(store, upper.toString());
+        WorkspaceRecord first = registry.list().getFirst();
+        WorkspaceRecord second = registry.create(lower.toString(), "Lowercase");
+        if (java.io.File.separatorChar == '\\') {
+            assertThat(second.getId()).isEqualTo(first.getId());
+            assertThat(registry.list()).hasSize(1);
+        } else {
+            assertThat(second.getId()).isNotEqualTo(first.getId());
+            assertThat(registry.list()).hasSize(2);
+        }
+
+        WorkspaceRegistry reloaded = new WorkspaceRegistry(store, lower.toString());
+        reloaded.attachLegacySessionsToFallback(List.of("web:legacy-case"));
+        assertThat(reloaded.findBySession("web:legacy-case").orElseThrow().getId())
+                .isEqualTo(second.getId());
+    }
+
+    @Test
     void createsDefaultWorkspaceAndPersistsSessionMembership() throws Exception {
         Path defaultDirectory = Files.createDirectory(tempDir.resolve("default"));
         Path store = tempDir.resolve("state").resolve("workspaces.json");

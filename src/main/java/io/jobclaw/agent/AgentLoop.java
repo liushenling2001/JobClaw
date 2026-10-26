@@ -168,6 +168,11 @@ public class AgentLoop {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final int ASSISTANT_DRAFT_CHECKPOINT_CHARS = 1000;
     private static final Pattern WINDOWS_ABSOLUTE_PATH = Pattern.compile("[A-Za-z]:\\\\[^\\r\\n<>|?*\"]+");
+    // Quoted POSIX paths may contain spaces; bare paths must not start inside a URL or relative path.
+    private static final Pattern POSIX_ABSOLUTE_PATH = Pattern.compile(
+            "\"(/[^\"\\r\\n]+)\"|'(/[^'\\r\\n]+)'|`(/[^`\\r\\n]+)`"
+                    + "|(?<![\\p{L}\\p{N}_:/\\\\.~-])(/(?!/)[^\\s<>|?*\"'`\\[\\](){}，。；、,;]+)"
+    );
     private static final Pattern ARTIFACT_ACTION_PATTERN = Pattern.compile(
             "(?i)(生成|新建|另存|保存|导出|写入|形成|产出|输出|修改|修订|改完|放在|存到|new\\s+file|save\\s+as|export|write\\s+(?:to|file)|generate|create)"
     );
@@ -1304,17 +1309,35 @@ public class AgentLoop {
     }
 
     static boolean containsArtifactPath(String text) {
+        return !extractArtifactPaths(text).isEmpty();
+    }
+
+    static List<String> extractArtifactPaths(String text) {
         if (text == null || text.isBlank()) {
-            return false;
+            return List.of();
         }
+        Set<String> paths = new LinkedHashSet<>();
         Matcher matcher = WINDOWS_ABSOLUTE_PATH.matcher(text);
         while (matcher.find()) {
             String path = trimArtifactPathCandidate(matcher.group());
             if (!path.isBlank()) {
-                return true;
+                paths.add(path);
             }
         }
-        return false;
+        matcher = POSIX_ABSOLUTE_PATH.matcher(text);
+        while (matcher.find()) {
+            for (int group = 1; group <= matcher.groupCount(); group++) {
+                String candidate = matcher.group(group);
+                if (candidate != null) {
+                    String path = group == 4 ? trimArtifactPathCandidate(candidate) : candidate;
+                    if (path.length() > 1 && !path.startsWith("//")) {
+                        paths.add(path);
+                    }
+                    break;
+                }
+            }
+        }
+        return List.copyOf(paths);
     }
 
     private static String trimArtifactPathCandidate(String value) {
@@ -3833,13 +3856,8 @@ public class AgentLoop {
         }
 
         private void collectPaths(String text) {
-            if (text == null || text.isBlank()) {
-                return;
-            }
-            Matcher matcher = WINDOWS_ABSOLUTE_PATH.matcher(text);
-            while (matcher.find()) {
-                String path = trimArtifactPathCandidate(matcher.group());
-                if (!path.isBlank() && !artifactPaths.contains(path)) {
+            for (String path : extractArtifactPaths(text)) {
+                if (!artifactPaths.contains(path)) {
                     artifactPaths.add(path);
                 }
             }
